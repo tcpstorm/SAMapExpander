@@ -4,6 +4,7 @@
 #include "RadarOverlay.h"
 #include "MenuMapFix.h"
 #include "PickupFix.h"
+#include "Water.h"
 #include "DebugKeys.h"
 
 using namespace plugin;
@@ -17,6 +18,7 @@ public:
         if (!Settings::regions.empty()) {
             RadarOverlay::Install();
             if (Settings::world.extendPauseMap) MenuMapFix::Install();
+            Water::Install();
         }
         if (Settings::world.fixPickupPositions || Settings::world.fixCarGeneratorPositions) PickupFix::Install();
         DebugKeys::Install();
