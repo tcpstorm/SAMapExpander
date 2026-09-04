@@ -7,6 +7,8 @@
 #include "Water.h"
 #include "IplLoader.h"
 #include "DebugKeys.h"
+#include "Gxt.h"
+#include "Zones.h"
 
 using namespace plugin;
 
@@ -16,8 +18,10 @@ public:
         Log::Open();
         Settings::Load();
 
+        Gxt::Install();
         if (!Settings::regions.empty()) {
             RadarOverlay::Install();
+            Zones::Install();
             if (Settings::world.extendPauseMap) MenuMapFix::Install();
             Water::Install();
         }

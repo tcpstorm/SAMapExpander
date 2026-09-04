@@ -1,4 +1,5 @@
 #include <plugin.h>
+#include <cctype>
 #include "Settings.h"
 #include "Ini.h"
 #include "Log.h"
@@ -53,6 +54,8 @@ namespace Settings {
             world.pauseMapMinY = w->GetFloat("PauseMapMinY", 0.0f);
             world.pauseMapMaxY = w->GetFloat("PauseMapMaxY", 0.0f);
             if (world.compressedPositionScale <= 0.0f) world.compressedPositionScale = 4.0f;
+            world.gxtFiles = SplitPaths(w->GetString("Gxt", ""));
+            world.gxtLogMisses = w->GetBool("GxtLogMisses", false);
         }
 
         for (auto& s : ini.Sections()) {
@@ -69,6 +72,8 @@ namespace Settings {
             r.tilesX = s.GetInt("TilesX", 0);
             r.tilesY = s.GetInt("TilesY", 0);
             r.iplFiles = SplitPaths(s.GetString("Ipl", ""));
+            r.zoneFiles = SplitPaths(s.GetString("Zones", ""));
+            if (s.Has("ZoneNames")) r.zoneNamesFile = ResolveGamePath(s.GetString("ZoneNames", ""));
 
             bool hasOrigin = s.Has("WorldOriginX") && s.Has("WorldOriginY");
             bool hasExtent = s.Has("WorldMinX") && s.Has("WorldMaxX") && s.Has("WorldMinY") && s.Has("WorldMaxY");
