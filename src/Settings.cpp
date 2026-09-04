@@ -33,7 +33,13 @@ namespace Settings {
 
     void Load() {
         regions.clear();
-        world = { true, true, 4.0f, true, 1500.0f, false, 0.0f, 0.0f, 0.0f, 0.0f, true, false };
+        world = {};
+        world.fixPickupPositions = true;
+        world.fixCarGeneratorPositions = true;
+        world.compressedPositionScale = 4.0f;
+        world.extendPauseMap = true;
+        world.pauseMapMargin = 1500.0f;
+        world.extendWaterRendering = true;
 
         IniFile ini;
         if (!ini.Load(PLUGIN_PATH("MapExpander.ini"))) {
