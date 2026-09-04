@@ -10,7 +10,24 @@ namespace Settings {
     WorldSettings world;
 
     static std::string ResolveGamePath(const std::string& relative) {
+        if (relative.size() > 1 && (relative[1] == ':' || relative[0] == '\\' || relative[0] == '/'))
+            return relative;
         return GAME_PATH(relative.c_str());
+    }
+
+    static std::vector<std::string> SplitPaths(const std::string& list) {
+        std::vector<std::string> out;
+        size_t i = 0;
+        while (i <= list.size()) {
+            size_t end = list.find(',', i);
+            if (end == std::string::npos) end = list.size();
+            size_t a = list.find_first_not_of(" \t", i);
+            size_t b = list.find_last_not_of(" \t", end ? end - 1 : 0);
+            if (a != std::string::npos && a < end && b != std::string::npos && b >= a)
+                out.push_back(ResolveGamePath(list.substr(a, b - a + 1)));
+            i = end + 1;
+        }
+        return out;
     }
 
     void Load() {
@@ -51,6 +68,7 @@ namespace Settings {
             r.tileSize = s.GetFloat("TileSize", 500.0f);
             r.tilesX = s.GetInt("TilesX", 0);
             r.tilesY = s.GetInt("TilesY", 0);
+            r.iplFiles = SplitPaths(s.GetString("Ipl", ""));
 
             bool hasOrigin = s.Has("WorldOriginX") && s.Has("WorldOriginY");
             bool hasExtent = s.Has("WorldMinX") && s.Has("WorldMaxX") && s.Has("WorldMinY") && s.Has("WorldMaxY");
@@ -77,6 +95,7 @@ namespace Settings {
             Log::Write("[%s] origin=(%.1f, %.1f) tiles=%dx%d size=%.0f grid local x>=%.0f y<=%.0f folder=%s",
                        r.name.c_str(), r.originX, r.originY, r.tilesX, r.tilesY, r.tileSize,
                        r.gridMinX, r.gridMaxY, r.tileFolder.c_str());
+            for (auto& f : r.iplFiles) Log::Write("[%s] ipl: %s", r.name.c_str(), f.c_str());
             regions.push_back(r);
         }
     }

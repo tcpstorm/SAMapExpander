@@ -5,6 +5,7 @@
 #include "MenuMapFix.h"
 #include "PickupFix.h"
 #include "Water.h"
+#include "IplLoader.h"
 #include "DebugKeys.h"
 
 using namespace plugin;
@@ -21,6 +22,7 @@ public:
             Water::Install();
         }
         if (Settings::world.fixPickupPositions || Settings::world.fixCarGeneratorPositions) PickupFix::Install();
+        IplLoader::Install();
         DebugKeys::Install();
 
         Log::Write("MapExpander initialised: %u region(s)", (unsigned)Settings::regions.size());
