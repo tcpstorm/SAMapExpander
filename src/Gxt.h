@@ -8,4 +8,7 @@ namespace Gxt {
     // `source` names where it came from and is only used for logging. Returns false if the key was
     // unusable. Installs the hook on first use, so it works before or after Install().
     bool AddString(const char* key, const char* text, const char* source);
+
+    // True if one of our loaded files or an earlier AddString already provides this key.
+    bool Has(const char* key);
 }

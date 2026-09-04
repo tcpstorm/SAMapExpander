@@ -381,6 +381,11 @@ namespace Gxt {
         return AddHashed(HashKey(upper), upper, text, source);
     }
 
+    bool Has(const char* key) {
+        if (!key || !key[0]) return false;
+        return gEntries.count(HashKey(key)) != 0;
+    }
+
     void Install() {
         gLogMisses = Settings::world.gxtLogMisses;
         if (Settings::world.gxtFiles.empty()) return;

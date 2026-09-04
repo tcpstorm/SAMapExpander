@@ -341,9 +341,11 @@ namespace Zones {
         }
         if (gDefs.empty()) return;
 
+        // A loaded GXT (the map's own american.gxt) already names its zones; only invent a name
+        // when nobody provides one.
         for (const ZoneDef& d : gDefs) {
             std::string key(d.textLabel, strnlen(d.textLabel, 8));
-            if (!gNameMap.count(key)) gNameMap[key] = DeriveName(key.c_str());
+            if (!gNameMap.count(key) && !Gxt::Has(key.c_str())) gNameMap[key] = DeriveName(key.c_str());
         }
         int named = 0;
         for (const auto& kv : gNameMap)
