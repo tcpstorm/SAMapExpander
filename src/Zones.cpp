@@ -7,6 +7,7 @@
 // re-pointed at load. And the zone labels are GXT keys that only exist in the other game's
 // american.gxt, so the display names are registered with Gxt, which answers CText::Get for them.
 #include <plugin.h>
+#include <windows.h>
 #include <safetyhook.hpp>
 #include <algorithm>
 #include <cctype>
@@ -248,8 +249,23 @@ void LoadNameFile(const MapRegion& region, const std::string& path) {
 
 // ---------------------------------------------------------------- array relocation
 
+bool Readable(uintptr_t address, size_t bytes) {
+    MEMORY_BASIC_INFORMATION mbi{};
+    if (!VirtualQuery(reinterpret_cast<void*>(address), &mbi, sizeof(mbi))) return false;
+    if (mbi.State != MEM_COMMIT) return false;
+    if (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) return false;
+    uintptr_t regionEnd = reinterpret_cast<uintptr_t>(mbi.BaseAddress) + mbi.RegionSize;
+    return address + bytes <= regionEnd;
+}
+
 bool RelocateNaviArray(int capacity) {
+    Log::Write("zones: checking %d reference sites", (int)std::size(kNaviRefs));
     for (const RefSite& r : kNaviRefs) {
+        if (!Readable(r.address, r.dispOffset + 4)) {
+            Log::Write("zone array not relocated: 0x%X is not readable memory (packed or unmapped section)",
+                       (unsigned)r.address);
+            return false;
+        }
         uint32_t current = (uint32_t)patch::GetUInt(r.address + r.dispOffset);
         if (current != r.oldValue) {
             Log::Write("zone array not relocated: 0x%X holds 0x%X, expected 0x%X (another mod moved it?)",
@@ -258,6 +274,7 @@ bool RelocateNaviArray(int capacity) {
         }
     }
 
+    Log::Write("zones: all sites verified, relocating");
     SaZone* moved = (SaZone*)calloc((size_t)capacity, sizeof(SaZone));
     if (!moved) return false;
     memcpy(moved, reinterpret_cast<const void*>(kNaviArray), kVanillaNaviCapacity * sizeof(SaZone));
@@ -347,6 +364,7 @@ namespace Zones {
             std::string key(d.textLabel, strnlen(d.textLabel, 8));
             if (!gNameMap.count(key) && !Gxt::Has(key.c_str())) gNameMap[key] = DeriveName(key.c_str());
         }
+        Log::Write("zones: registering %u fallback name(s)", (unsigned)gNameMap.size());
         int named = 0;
         for (const auto& kv : gNameMap)
             if (Gxt::AddString(kv.first.c_str(), kv.second.c_str(), "zone names")) named++;
@@ -361,6 +379,7 @@ namespace Zones {
             Log::Write("ERROR: the zone array stays at 380 entries, which vanilla SA already fills; "
                        "expect almost none of the region's zones to be created");
 
+        Log::Write("zones: hooking CTheZones::Update at 0x%X", (unsigned)kZonesUpdate);
         gUpdateHook = safetyhook::create_inline(reinterpret_cast<void*>(kZonesUpdate),
                                                 reinterpret_cast<void*>(&Hooked_ZonesUpdate));
         if (!gUpdateHook) {

@@ -130,6 +130,7 @@ bool gHookTried = false;
 void EnsureHook() {
     if (gHookTried) return;
     gHookTried = true;
+    Log::Write("GXT: hooking CText::Get at 0x%X", (unsigned)kTextGet);
     gTextGetHook = safetyhook::create_inline(reinterpret_cast<void*>(kTextGet),
                                              reinterpret_cast<void*>(&Hooked_TextGet));
     if (!gTextGetHook)
@@ -319,10 +320,33 @@ bool LoadGxtFile(const std::string& path, int& added) {
     Reader r{ data, path };
 
     if (r.Magic(0, "TKEY")) {
-        // III/VC: no file header, one TKEY/TDAT pair, 16 bit characters.
+        // GTA III: no file header, one TKEY/TDAT pair, 16 bit characters.
         added += LoadTablePair(r, 0, 12, 16, nullptr);
         if (!r.ok) return false;
-        Log::Write("GXT: %s: III/VC format, %d entries", path.c_str(), added);
+        Log::Write("GXT: %s: III format, %d entries", path.c_str(), added);
+        return true;
+    }
+
+    if (r.Magic(0, "TABL")) {
+        // Vice City: no file header either, but a TABL of named tables (MAIN first, unprefixed;
+        // the rest carry their 8 byte name), 12 byte named keys and 16 bit characters.
+        uint32_t tablSize = r.U32(4);
+        size_t tabl = 8;
+        if (!r.Has(tabl, tablSize)) { r.Fail(0, "TABL block runs past the end of the file"); return false; }
+        std::vector<size_t> tables;
+        for (size_t e = tabl; e + 12 <= tabl + tablSize; e += 12) {
+            uint32_t offset = r.U32(e + 8);
+            if (offset + 8 <= data.size()) tables.push_back(offset);
+            else Log::Write("GXT: %s: table entry at byte %u points past the file; skipped",
+                            path.c_str(), (unsigned)e);
+        }
+        if (tables.empty()) { r.Fail(0, "TABL lists no tables"); return false; }
+        for (size_t offset : tables) {
+            size_t end = 0;
+            added += LoadTablePair(r, offset, 12, 16, &end);
+            if (!r.ok) return false;
+        }
+        Log::Write("GXT: %s: VC format, %u table(s), %d entries", path.c_str(), (unsigned)tables.size(), added);
         return true;
     }
 
