@@ -9,6 +9,7 @@
 #include "Water.h"
 #include "IplLoader.h"
 #include "WaterRender.h"
+#include "CityLoader.h"
 #include "DebugKeys.h"
 #include "Gxt.h"
 #include "Zones.h"
@@ -31,6 +32,7 @@ public:
             if (Settings::world.extendPauseMap) MenuMapFix::Install();
             Water::Install();
             WaterRender::Install();
+            CityLoader::Install();
         }
         if (Settings::world.fixPickupPositions || Settings::world.fixCarGeneratorPositions) PickupFix::Install();
         if (Settings::world.fixMeleeBeyondMap) MeleeFix::Install();

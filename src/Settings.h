@@ -11,7 +11,11 @@ struct MapRegion {
     std::string waterFile;    // absolute path to a SA water.dat or III/VC waterpro.dat, or empty
     float waterXOffset;       // waterpro.dat only: VC's WATER_X_OFFSET (400), 0 for GTA III
 
+    // The region's own map assets, all in the region's coordinate system.
+    std::vector<std::string> imgFiles;  // IMG archives registered with the streamer
+    std::vector<std::string> ideFiles;  // IDE files; model ids are remapped into the free range
     std::vector<std::string> iplFiles;  // IPL files to load with the origin added to every coordinate
+    std::vector<std::string> colFiles;  // .col archives loaded into permanent collision slots
     std::string zoneInfoLabel;          // existing zone whose CZoneInfo slot region zones share
     std::string regionName;             // area name over the whole tile grid, empty for none
 
@@ -42,6 +46,8 @@ struct WorldSettings {
     bool gxtLogMisses;                  // log keys neither the game nor we can answer
     int extendWaterRendering;        // 0 off, 1 full, 2 only hide SA's ocean in coverage, 3 only draw region quads
     int modelIdLimit;                // number of DFF ids; 20000 leaves the game alone
+    int freeModelIdStart, freeModelIdEnd;  // inclusive range of model ids region IDEs may claim; end < 0 = up to the model id limit
+    int atomicModelInfoLimit;              // CModelInfo::ms_atomicModelInfoStore capacity; < 0 = ask ModelLimits
     bool debug;                      // verbose log, F8 diagnostics, water render statistics
 };
 

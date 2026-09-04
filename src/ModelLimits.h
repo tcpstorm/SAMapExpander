@@ -15,4 +15,10 @@ namespace ModelLimits {
     int RrrBase();
     int ScmBase();
     int TotalCount();   // CStreamingInfo entries: every resource id plus the 4 list-head sentinels
+
+    // Where the arrays live now: the vanilla globals, or the heap blocks they were moved to.
+    uintptr_t StreamingInfo();   // CStreaming::ms_aInfoForModel
+    uintptr_t ModelInfoPtrs();   // CModelInfo::ms_modelInfoPtrs
+    uintptr_t AtomicStore();     // CModelInfo::ms_atomicModelInfoStore (int32 count, then objects)
+    int AtomicCapacity();        // how many CAtomicModelInfo that store can hold
 }

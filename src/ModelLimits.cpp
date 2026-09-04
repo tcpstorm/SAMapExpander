@@ -157,6 +157,11 @@ int RrrBase() { return kRrrBase + Shift(); }
 int ScmBase() { return kScmBase + Shift(); }
 int TotalCount() { return kVanillaTotal + Shift(); }
 
+uintptr_t StreamingInfo() { return gActive ? (uintptr_t)gInfo : kInfoArray; }
+uintptr_t ModelInfoPtrs() { return gActive ? (uintptr_t)gPtrs : kPtrArray; }
+uintptr_t AtomicStore() { return gActive ? (uintptr_t)gStore : kAtomicStore; }
+int AtomicCapacity() { return gActive ? kVanillaAtomicCapacity + Shift() + kAtomicHeadroom : kVanillaAtomicCapacity; }
+
 void Install() {
     int wanted = Settings::world.modelIdLimit;
     if (wanted <= kVanillaModelCount) {
