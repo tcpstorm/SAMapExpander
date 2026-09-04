@@ -45,6 +45,9 @@ namespace Settings {
             r.name = s.name;
             r.tileFolder = ResolveGamePath(s.GetString("TileFolder", "MapExpander\\tiles\\" + s.name));
             r.filePattern = s.GetString("FilePattern", "tile_%d_%d.png");
+            std::string water = s.GetString("Water", "");
+            r.waterFile = water.empty() ? std::string() : ResolveGamePath(water);
+            r.waterXOffset = s.GetFloat("WaterXOffset", 0.0f);
             r.tileSize = s.GetFloat("TileSize", 500.0f);
             r.tilesX = s.GetInt("TilesX", 0);
             r.tilesY = s.GetInt("TilesY", 0);

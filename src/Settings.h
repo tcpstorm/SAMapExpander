@@ -8,6 +8,8 @@ struct MapRegion {
     std::string name;
     std::string tileFolder;   // absolute path
     std::string filePattern;  // one %d -> row-major index, two %d -> column,row
+    std::string waterFile;    // absolute path to a SA water.dat or III/VC waterpro.dat, or empty
+    float waterXOffset;       // waterpro.dat only: VC's WATER_X_OFFSET (400), 0 for GTA III
 
     float originX, originY;   // SA world coords of the region's local (0,0)
     float tileSize;           // world units per tile
