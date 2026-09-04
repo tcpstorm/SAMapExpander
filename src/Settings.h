@@ -34,6 +34,8 @@ struct WorldSettings {
     float pauseMapMargin;            // world units of free scrolling past the map/regions on every side
     bool pauseMapCustomBounds;       // if set, PauseMapMin/Max override the computed extent
     float pauseMapMinX, pauseMapMaxX, pauseMapMinY, pauseMapMaxY;
+    std::vector<std::string> gxtFiles;  // GXT files patched into the game's text lookup
+    bool gxtLogMisses;                  // log keys neither the game nor we can answer
 };
 
 namespace Settings {

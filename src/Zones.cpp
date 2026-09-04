@@ -5,7 +5,7 @@
 // 379 of them (378 lines in info.zon plus SAN_AND from CTheZones::Init), so every added zone has to
 // go into a bigger array -- the array is a fixed global, so all 62 code sites that name it are
 // re-pointed at load. And the zone labels are GXT keys that only exist in the other game's
-// american.gxt, so CText::Get is hooked to answer for the keys we registered.
+// american.gxt, so the display names are registered with Gxt, which answers CText::Get for them.
 #include <plugin.h>
 #include <safetyhook.hpp>
 #include <algorithm>
@@ -18,6 +18,7 @@
 #include <string>
 #include <vector>
 #include "Zones.h"
+#include "Gxt.h"
 #include "MemPatch.h"
 #include "Settings.h"
 #include "Log.h"
@@ -30,7 +31,6 @@ constexpr uintptr_t kNaviArray = 0xBA3798;   // CTheZones::NavigationZoneArray[3
 constexpr uintptr_t kNaviTotal = 0xBA3794;   // CTheZones::TotalNumberOfNavigationZones (int16)
 constexpr uintptr_t kInfoTotal = 0xBA1DE8;   // CTheZones::TotalNumberOfZoneInfos (int16)
 constexpr uintptr_t kCreateZone = 0x5728A0;
-constexpr uintptr_t kTextGet = 0x6A0050;     // CText::Get(const char*), __thiscall
 constexpr uintptr_t kZonesUpdate = 0x572D10; // CTheZones::Update, once per frame from CGame::Process
 
 constexpr int kVanillaNaviCapacity = 380;
@@ -93,25 +93,17 @@ struct ZoneDef {
     int   level;
 };
 
-struct NameEntry {
-    char        key[8];
-    const char* text;
-};
-
 std::vector<ZoneDef> gDefs;
-std::map<std::string, std::string> gNameMap;  // node based: the strings we hand out never move
-std::vector<NameEntry> gNames;                // sorted by key, searched from the CText::Get hook
+std::map<std::string, std::string> gNameMap;  // GXT key -> display name, from the file or derived
 
 SaZone* gZones = reinterpret_cast<SaZone*>(kNaviArray);
 int gCapacity = kVanillaNaviCapacity;
-bool gAudited = false;
 
 // What the array looked like when we last filled it. Anything else (a new game, a savegame that
 // restored a different set) means the zones have to be put back.
 int gExpectedTotal = -1;
 SaZone gExpectedLast{};
 
-SafetyHookInline gTextGetHook;
 SafetyHookInline gUpdateHook;
 
 int16_t& NaviTotal() { return *reinterpret_cast<int16_t*>(kNaviTotal); }
@@ -124,26 +116,6 @@ int16_t& InfoTotal() { return *reinterpret_cast<int16_t*>(kInfoTotal); }
 void MakeKey(const char* in, char out[8]) {
     memset(out, 0, 8);
     for (int i = 0; i < 7 && in[i]; i++) out[i] = (char)toupper((unsigned char)in[i]);
-}
-
-void PadKey(const char* in, char out[8]) {
-    int i = 0;
-    for (; i < 8 && in[i]; i++) out[i] = in[i];
-    for (; i < 8; i++) out[i] = 0;
-}
-
-const char* FindName(const char* key) {
-    if (gNames.empty()) return nullptr;
-    char padded[8];
-    PadKey(key, padded);
-    size_t lo = 0, hi = gNames.size();
-    while (lo < hi) {
-        size_t mid = (lo + hi) / 2;
-        int cmp = memcmp(padded, gNames[mid].key, 8);
-        if (cmp == 0) return gNames[mid].text;
-        if (cmp < 0) hi = mid; else lo = mid + 1;
-    }
-    return nullptr;
 }
 
 std::string DeriveName(const char* key) {
@@ -274,36 +246,6 @@ void LoadNameFile(const MapRegion& region, const std::string& path) {
     Log::Write("[%s] %s: %d display name(s)", region.name.c_str(), path.c_str(), count);
 }
 
-// ---------------------------------------------------------------- CText::Get
-
-const char* __fastcall Hooked_TextGet(void* self, void* /*edx*/, const char* key) {
-    if (key && key[0] && key[0] != ' ') {
-        if (const char* mine = FindName(key)) return mine;
-    }
-    // unsafe_ skips safetyhook's per-call mutex; this runs several times per frame and the hook
-    // lives until the process ends, so there is nothing to guard against.
-    return gTextGetHook.unsafe_thiscall<const char*>(self, key);
-}
-
-// The game's own GXT wins nothing here: our key would shadow it. Say so once, when the text is
-// loaded, so a clash between a region's labels and SA's own is visible in the log.
-void AuditKeys() {
-    if (gAudited) return;
-    gAudited = true;
-    void* text = reinterpret_cast<void*>(0xC1B340);  // TheText
-    const char* missing = gTextGetHook.thiscall<const char*>(text, "\x01ZZZZZZ");
-    int clashes = 0;
-    for (const NameEntry& e : gNames) {
-        char key[9] = { 0 };
-        memcpy(key, e.key, 8);
-        if (gTextGetHook.thiscall<const char*>(text, key) != missing) {
-            if (clashes < 8) Log::Write("zone name key '%s' also exists in the game's GXT; ours is used", key);
-            clashes++;
-        }
-    }
-    if (clashes) Log::Write("%d zone name key(s) shadow an entry in the game's GXT", clashes);
-}
-
 // ---------------------------------------------------------------- array relocation
 
 bool RelocateNaviArray(int capacity) {
@@ -354,8 +296,6 @@ void EnsureZones() {
         memcmp(&gZones[total - 1], &gExpectedLast, sizeof(SaZone)) == 0)
         return;
 
-    AuditKeys();
-
     int removed = 0;
     while (total > 1 && IsOneOfOurs(gZones[total - 1])) { total--; removed++; }
     if (removed) {
@@ -405,22 +345,9 @@ namespace Zones {
             std::string key(d.textLabel, strnlen(d.textLabel, 8));
             if (!gNameMap.count(key)) gNameMap[key] = DeriveName(key.c_str());
         }
-        for (const auto& kv : gNameMap) {
-            NameEntry e{};
-            PadKey(kv.first.c_str(), e.key);
-            e.text = kv.second.c_str();
-            gNames.push_back(e);
-        }
-        std::sort(gNames.begin(), gNames.end(),
-                  [](const NameEntry& a, const NameEntry& b) { return memcmp(a.key, b.key, 8) < 0; });
-
-        gTextGetHook = safetyhook::create_inline(reinterpret_cast<void*>(kTextGet),
-                                                 reinterpret_cast<void*>(&Hooked_TextGet));
-        if (!gTextGetHook) {
-            Log::Write("could not hook CText::Get; zone names would come out as the GXT error string");
-            gDefs.clear();
-            return;
-        }
+        int named = 0;
+        for (const auto& kv : gNameMap)
+            if (Gxt::AddString(kv.first.c_str(), kv.second.c_str(), "zone names")) named++;
 
         // Vanilla SA already fills 379 of the 380 navigation zones, so anything we add needs a
         // bigger array. The spare room absorbs a savegame written with more regions than are
@@ -439,7 +366,6 @@ namespace Zones {
             return;
         }
 
-        Log::Write("zones: %u to add, %u display name(s) registered",
-                   (unsigned)gDefs.size(), (unsigned)gNames.size());
+        Log::Write("zones: %u to add, %d display name(s) registered", (unsigned)gDefs.size(), named);
     }
 }
