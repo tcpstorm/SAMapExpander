@@ -94,8 +94,10 @@ struct ZoneDef {
     int   level;
 };
 
-std::vector<ZoneDef> gDefs;
-std::map<std::string, std::string> gNameMap;  // GXT key -> display name, from the file or derived
+// Install() runs during the DLL's static initialisation from Main.cpp, before this file's globals
+// are guaranteed to be constructed; function-local statics are constructed on first use.
+std::vector<ZoneDef>& Defs() { static std::vector<ZoneDef> v; return v; }
+std::map<std::string, std::string>& NameMap() { static std::map<std::string, std::string> m; return m; }  // GXT key -> display name
 
 SaZone* gZones = reinterpret_cast<SaZone*>(kNaviArray);
 int gCapacity = kVanillaNaviCapacity;
@@ -213,7 +215,7 @@ int LoadZoneFile(const MapRegion& region, const std::string& path) {
         lo = std::min(d.y1, d.y2); hi = std::max(d.y1, d.y2);
         if (lo < -32000.0f || hi > 32000.0f) { malformed++; continue; }
 
-        gDefs.push_back(d);
+        Defs().push_back(d);
         added++;
     }
 
@@ -241,7 +243,7 @@ void LoadNameFile(const MapRegion& region, const std::string& path) {
         if (!key[0]) continue;
         std::string text = TrimCopy(clean.substr(sep + 1));
         if (text.empty()) continue;
-        gNameMap[std::string(key, strnlen(key, 8))] = text;
+        NameMap()[std::string(key, strnlen(key, 8))] = text;
         count++;
     }
     Log::Write("[%s] %s: %d display name(s)", region.name.c_str(), path.c_str(), count);
@@ -301,7 +303,7 @@ bool IsOneOfOurs(const SaZone& z) {
     bool insideVanillaMap = z.x1 >= -kVanillaMapEdge && z.x2 <= kVanillaMapEdge &&
                             z.y1 >= -kVanillaMapEdge && z.y2 <= kVanillaMapEdge;
     if (insideVanillaMap) return false;
-    for (const ZoneDef& d : gDefs)
+    for (const ZoneDef& d : Defs())
         if (memcmp(z.textLabel, d.textLabel, 8) == 0 && memcmp(z.infoLabel, d.infoLabel, 8) == 0)
             return true;
     return false;
@@ -327,7 +329,7 @@ void EnsureZones() {
     int vanilla = total;
     CreateZoneFn CreateZone = reinterpret_cast<CreateZoneFn>(kCreateZone);
     int created = 0, dropped = 0;
-    for (const ZoneDef& d : gDefs) {
+    for (const ZoneDef& d : Defs()) {
         if (total >= gCapacity || InfoTotal() >= kInfoCapacity - 1) { dropped++; continue; }
         CreateZone(d.infoLabel, 0, d.x1, d.y1, d.z1, d.x2, d.y2, d.z2, d.level, d.textLabel);
         created++;
@@ -356,23 +358,23 @@ namespace Zones {
             if (!r.zoneNamesFile.empty()) LoadNameFile(r, r.zoneNamesFile);
             for (const std::string& f : r.zoneFiles) LoadZoneFile(r, f);
         }
-        if (gDefs.empty()) return;
+        if (Defs().empty()) return;
 
         // A loaded GXT (the map's own american.gxt) already names its zones; only invent a name
         // when nobody provides one.
-        for (const ZoneDef& d : gDefs) {
+        for (const ZoneDef& d : Defs()) {
             std::string key(d.textLabel, strnlen(d.textLabel, 8));
-            if (!gNameMap.count(key) && !Gxt::Has(key.c_str())) gNameMap[key] = DeriveName(key.c_str());
+            if (!NameMap().count(key) && !Gxt::Has(key.c_str())) NameMap()[key] = DeriveName(key.c_str());
         }
-        Log::Write("zones: registering %u fallback name(s)", (unsigned)gNameMap.size());
+        Log::Write("zones: registering %u fallback name(s)", (unsigned)NameMap().size());
         int named = 0;
-        for (const auto& kv : gNameMap)
+        for (const auto& kv : NameMap())
             if (Gxt::AddString(kv.first.c_str(), kv.second.c_str(), "zone names")) named++;
 
         // Vanilla SA already fills 379 of the 380 navigation zones, so anything we add needs a
         // bigger array. The spare room absorbs a savegame written with more regions than are
         // configured right now.
-        if (RelocateNaviArray(kVanillaNaviCapacity + (int)gDefs.size() + 128))
+        if (RelocateNaviArray(kVanillaNaviCapacity + (int)Defs().size() + 128))
             Log::Write("note: savegames written from now on carry these zones; loading one without "
                        "MapExpander would overrun the game's 380-zone array");
         else
@@ -387,6 +389,6 @@ namespace Zones {
             return;
         }
 
-        Log::Write("zones: %u to add, %d display name(s) registered", (unsigned)gDefs.size(), named);
+        Log::Write("zones: %u to add, %d display name(s) registered", (unsigned)Defs().size(), named);
     }
 }

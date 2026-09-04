@@ -60,8 +60,11 @@ uint32_t HashKey(const char* s) {
     return key;
 }
 
-std::unordered_map<uint32_t, Entry> gEntries;
-std::unordered_set<uint32_t> gMissesSeen;
+// Install() is called from Main.cpp's static constructor, i.e. during the DLL's own static
+// initialisation, and this file's globals may not be constructed yet at that point (MinGW runs
+// constructors in reverse link order). Function-local statics are constructed on first use.
+std::unordered_map<uint32_t, Entry>& Entries() { static std::unordered_map<uint32_t, Entry> m; return m; }
+std::unordered_set<uint32_t>& MissesSeen() { static std::unordered_set<uint32_t> s; return s; }
 
 SafetyHookInline gTextGetHook;
 bool gAudited = false;
@@ -98,8 +101,8 @@ const GameKeyEntry* FindGameEntry(uint32_t hash) {
 // ---------------------------------------------------------------- table
 
 bool AddHashed(uint32_t hash, const std::string& name, const std::string& text, const std::string& source) {
-    auto it = gEntries.find(hash);
-    if (it != gEntries.end()) {
+    auto it = Entries().find(hash);
+    if (it != Entries().end()) {
         if (it->second.text != text) {
             gConflicts++;
             if (gConflicts <= 20) {
@@ -115,7 +118,7 @@ bool AddHashed(uint32_t hash, const std::string& name, const std::string& text, 
         it->second = Entry{ text, name.empty() ? it->second.name : name, source };
         return true;
     }
-    gEntries.emplace(hash, Entry{ text, name, source });
+    Entries().emplace(hash, Entry{ text, name, source });
     return true;
 }
 
@@ -140,7 +143,7 @@ void EnsureHook() {
 void NoteMiss(const char* key) {
     if (gMissesLogged >= 50) return;
     uint32_t hash = HashKey(key);
-    if (!gMissesSeen.insert(hash).second) return;
+    if (!MissesSeen().insert(hash).second) return;
     char safe[16] = { 0 };
     for (int i = 0; i < 15 && key[i]; i++) safe[i] = key[i];
     gMissesLogged++;
@@ -151,8 +154,8 @@ void NoteMiss(const char* key) {
 const char* __fastcall Hooked_TextGet(void* self, void* /*edx*/, const char* key) {
     if (!gAudited) Audit();
     if (key && key[0] && key[0] != ' ') {
-        auto it = gEntries.find(HashKey(key));
-        if (it != gEntries.end()) return it->second.text.c_str();
+        auto it = Entries().find(HashKey(key));
+        if (it != Entries().end()) return it->second.text.c_str();
     }
     // unsafe_ skips safetyhook's per-call mutex; this runs many times per frame and the hook lives
     // until the process ends, so there is nothing to guard against.
@@ -170,7 +173,7 @@ void Audit() {
     gMissingText = CallOriginal("\x01ZZZZZZ");
 
     int overrides = 0, same = 0;
-    for (const auto& kv : gEntries) {
+    for (const auto& kv : Entries()) {
         const GameKeyEntry* theirs = FindGameEntry(kv.first);
         if (!theirs || !theirs->text) continue;
         if (kv.second.text == theirs->text) { same++; continue; }
@@ -184,7 +187,7 @@ void Audit() {
     }
     if (overrides > 20) Log::Write("GXT: ... and %d more overridden key(s)", overrides - 20);
     Log::Write("GXT: %d of our %u key(s) override the game's text, %d repeat it unchanged",
-               overrides, (unsigned)gEntries.size(), same);
+               overrides, (unsigned)Entries().size(), same);
 }
 
 // ---------------------------------------------------------------- file parsing
@@ -407,7 +410,7 @@ namespace Gxt {
 
     bool Has(const char* key) {
         if (!key || !key[0]) return false;
-        return gEntries.count(HashKey(key)) != 0;
+        return Entries().count(HashKey(key)) != 0;
     }
 
     void Install() {
@@ -419,7 +422,7 @@ namespace Gxt {
             int added = 0;
             if (LoadGxtFile(path, added)) { files++; entries += added; }
         }
-        if (!gEntries.empty()) EnsureHook();
+        if (!Entries().empty()) EnsureHook();
         Log::Write("GXT: %d of %u file(s) loaded, %d entries, %d duplicate key(s), %d character(s) replaced%s",
                    files, (unsigned)Settings::world.gxtFiles.size(), entries, gConflicts, gReplacements,
                    gLogMisses ? ", missing-key logging on" : "");
