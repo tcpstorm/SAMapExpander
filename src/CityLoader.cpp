@@ -131,8 +131,10 @@ int gNextFreeId = 0;
 bool gAssetsRegistered = false;
 bool gInstancesPlaced = false;
 
-SafetyHookInline gInit2Hook;
-SafetyHookInline gLoadLevelHook;
+// Function-local too: a SafetyHookInline owns a mutex and an allocator handle, so move-assigning
+// create_inline's result into a global that has not been constructed yet crashes in the assignment.
+SafetyHookInline& Init2Original() { static SafetyHookInline h; return h; }
+SafetyHookInline& LoadLevelOriginal() { static SafetyHookInline h; return h; }
 
 // ---------------------------------------------------------------- text helpers
 
@@ -695,12 +697,12 @@ void __cdecl Hooked_StreamingInit2() {
         LoadModelDefinitions();
         LoadCollisionArchives();
     }
-    gInit2Hook.ccall<void>();
+    Init2Original().ccall<void>();
     ReportMissingArchiveEntries();
 }
 
 void __cdecl Hooked_LoadLevel(const char* filename) {
-    gLoadLevelHook.ccall<void>(filename);
+    LoadLevelOriginal().ccall<void>(filename);
     // Only the gta.dat pass reaches Init2 and loads IPLs; default.dat returns before any of it.
     // Nothing here runs a second time, so a restart keeps the entities and models already in place.
     if (gAssetsRegistered && !gInstancesPlaced) {
@@ -726,10 +728,10 @@ namespace CityLoader {
             return;
         }
 
-        gInit2Hook = safetyhook::create_inline(reinterpret_cast<void*>(0x5B8AD0),
-                                               reinterpret_cast<void*>(&Hooked_StreamingInit2));
-        gLoadLevelHook = safetyhook::create_inline(reinterpret_cast<void*>(0x5B9030),
-                                                   reinterpret_cast<void*>(&Hooked_LoadLevel));
+        Init2Original() = safetyhook::create_inline(reinterpret_cast<void*>(0x5B8AD0),
+                                                    reinterpret_cast<void*>(&Hooked_StreamingInit2));
+        LoadLevelOriginal() = safetyhook::create_inline(reinterpret_cast<void*>(0x5B9030),
+                                                       reinterpret_cast<void*>(&Hooked_LoadLevel));
         Log::Write("city: loading own assets for %u region(s), cache in %s",
                    (unsigned)Regions().size(), CacheDir().c_str());
     }
