@@ -12,6 +12,7 @@ struct MapRegion {
     float waterXOffset;       // waterpro.dat only: VC's WATER_X_OFFSET (400), 0 for GTA III
 
     std::vector<std::string> iplFiles;  // IPL files to load with the origin added to every coordinate
+    std::string zoneInfoLabel;          // existing zone whose CZoneInfo slot region zones share
 
     float originX, originY;   // SA world coords of the region's local (0,0)
     float tileSize;           // world units per tile

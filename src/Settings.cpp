@@ -82,6 +82,7 @@ namespace Settings {
             r.iplFiles = SplitPaths(s.GetString("Ipl", ""));
             r.zoneFiles = SplitPaths(s.GetString("Zones", ""));
             if (s.Has("ZoneNames")) r.zoneNamesFile = ResolveGamePath(s.GetString("ZoneNames", ""));
+            r.zoneInfoLabel = s.GetString("ZoneInfoLabel", "SAN_AND");
 
             bool hasOrigin = s.Has("WorldOriginX") && s.Has("WorldOriginY");
             bool hasExtent = s.Has("WorldMinX") && s.Has("WorldMaxX") && s.Has("WorldMinY") && s.Has("WorldMaxY");

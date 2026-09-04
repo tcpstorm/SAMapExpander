@@ -198,7 +198,10 @@ int LoadZoneFile(const MapRegion& region, const std::string& path) {
         if (type != 0 && type != 1) { ignoredType++; continue; }
 
         ZoneDef d{};
-        MakeKey(t[0].c_str(), d.infoLabel);
+        // CTheZones::AssignZoneInfoForThisZone reuses the CZoneInfo of any existing zone with the
+        // same info label and allocates a new one otherwise; vanilla SA fills 379 of the 380 slots,
+        // so region zones share one existing label and keep only their own text label.
+        MakeKey(region.zoneInfoLabel.c_str(), d.infoLabel);
         MakeKey(t.size() >= 10 ? t[9].c_str() : t[0].c_str(), d.textLabel);
         d.x1 = strtof(t[2].c_str(), nullptr) + region.originX;
         d.y1 = strtof(t[3].c_str(), nullptr) + region.originY;
@@ -330,7 +333,10 @@ void EnsureZones() {
     CreateZoneFn CreateZone = reinterpret_cast<CreateZoneFn>(kCreateZone);
     int created = 0, dropped = 0;
     for (const ZoneDef& d : Defs()) {
-        if (total >= gCapacity || InfoTotal() >= kInfoCapacity - 1) { dropped++; continue; }
+        bool infoExists = false;
+        for (int i = 0; i < total && !infoExists; i++)
+            infoExists = memcmp(gZones[i].infoLabel, d.infoLabel, 8) == 0;
+        if (total >= gCapacity || (!infoExists && InfoTotal() >= kInfoCapacity)) { dropped++; continue; }
         CreateZone(d.infoLabel, 0, d.x1, d.y1, d.z1, d.x2, d.y2, d.z2, d.level, d.textLabel);
         created++;
     }

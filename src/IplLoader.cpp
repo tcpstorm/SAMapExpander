@@ -417,17 +417,19 @@ void LoadAll(unsigned mask) {
                MAX_AUDIO_SPHERES, NumOfCarGenerators, PoolFreeSlots(ENEX_POOL), PoolFreeSlots(JUMP_POOL));
 }
 
-SafetyHookInline gLoadLevelHook{};
-SafetyHookInline gInit3Hook{};
-SafetyHookInline gRestartHook{};
+// Install() runs during the DLL's static initialisation, before this file's globals are
+// constructed; a SafetyHookInline must exist before it is assigned, hence function-local statics.
+SafetyHookInline& LoadLevelOriginal() { static SafetyHookInline h; return h; }
+SafetyHookInline& Init3Original() { static SafetyHookInline h; return h; }
+SafetyHookInline& RestartOriginal() { static SafetyHookInline h; return h; }
 
 void __cdecl LoadLevelHook(const char* datFile) {
     ExpandEnexQuadTree();
-    gLoadLevelHook.ccall<void>(datFile);
+    LoadLevelOriginal().ccall<void>(datFile);
 }
 
 bool __cdecl Init3Hook(const char* datFile) {
-    bool result = gInit3Hook.ccall<bool>(datFile);
+    bool result = Init3Original().ccall<bool>(datFile);
     Log::Write("ipl: loading region IPLs after CGame::Init3");
     LoadAll(gPermanentLoaded ? MASK_RESTART : MASK_ALL);
     gPermanentLoaded = true;
@@ -435,7 +437,7 @@ bool __cdecl Init3Hook(const char* datFile) {
 }
 
 void __cdecl InitialiseWhenRestartingHook() {
-    gRestartHook.ccall<void>();
+    RestartOriginal().ccall<void>();
     if (!gPermanentLoaded) return;   // no game has been started yet; nothing was wiped
     Log::Write("ipl: re-adding jump/pick/cars after CGame::InitialiseWhenRestarting");
     LoadAll(MASK_RESTART);
@@ -449,11 +451,11 @@ namespace IplLoader {
         for (const MapRegion& r : Settings::regions) any |= !r.iplFiles.empty();
         if (!any) return;
 
-        gLoadLevelHook = safetyhook::create_inline(reinterpret_cast<void*>(0x5B9030), reinterpret_cast<void*>(&LoadLevelHook));
-        gInit3Hook = safetyhook::create_inline(reinterpret_cast<void*>(0x5BA400), reinterpret_cast<void*>(&Init3Hook));
-        gRestartHook = safetyhook::create_inline(reinterpret_cast<void*>(0x53C680), reinterpret_cast<void*>(&InitialiseWhenRestartingHook));
+        LoadLevelOriginal() = safetyhook::create_inline(reinterpret_cast<void*>(0x5B9030), reinterpret_cast<void*>(&LoadLevelHook));
+        Init3Original() = safetyhook::create_inline(reinterpret_cast<void*>(0x5BA400), reinterpret_cast<void*>(&Init3Hook));
+        RestartOriginal() = safetyhook::create_inline(reinterpret_cast<void*>(0x53C680), reinterpret_cast<void*>(&InitialiseWhenRestartingHook));
 
         Log::Write("ipl loader installed (LoadLevel %d, Init3 %d, InitialiseWhenRestarting %d)",
-                   (int)(bool)gLoadLevelHook, (int)(bool)gInit3Hook, (int)(bool)gRestartHook);
+                   (int)(bool)LoadLevelOriginal(), (int)(bool)Init3Original(), (int)(bool)RestartOriginal());
     }
 }

@@ -66,7 +66,10 @@ uint32_t HashKey(const char* s) {
 std::unordered_map<uint32_t, Entry>& Entries() { static std::unordered_map<uint32_t, Entry> m; return m; }
 std::unordered_set<uint32_t>& MissesSeen() { static std::unordered_set<uint32_t> s; return s; }
 
-SafetyHookInline gTextGetHook;
+// Same static-initialisation caveat as Entries(): a SafetyHookInline holds a mutex and an
+// allocator handle, and assigning into a never-constructed one crashes inside create_inline.
+SafetyHookInline& TextGetHook() { static SafetyHookInline h; return h; }
+SafetyHookInline& TextLoadHook() { static SafetyHookInline h; return h; }
 bool gAudited = false;
 bool gLogMisses = false;
 int gMissesLogged = 0;
@@ -76,7 +79,7 @@ int gReplacements = 0;
 const char* gMissingText = nullptr;   // what CText::Get answers for a key nobody has
 
 const char* CallOriginal(const char* key) {
-    return gTextGetHook.thiscall<const char*>(reinterpret_cast<void*>(kTheText), key);
+    return TextGetHook().thiscall<const char*>(reinterpret_cast<void*>(kTheText), key);
 }
 
 // ---------------------------------------------------------------- the game's own table
@@ -125,19 +128,25 @@ bool AddHashed(uint32_t hash, const std::string& name, const std::string& text, 
 // ---------------------------------------------------------------- hook
 
 const char* __fastcall Hooked_TextGet(void* self, void* /*edx*/, const char* key);
+void __fastcall Hooked_TextLoad(void* self, void* /*edx*/, bool keepMissionPack);
 
 void Audit();
 
 bool gHookTried = false;
+constexpr uintptr_t kTextLoad = 0x6A01A0;   // CText::Load(bool keepMissionPack), __thiscall
 
 void EnsureHook() {
     if (gHookTried) return;
     gHookTried = true;
-    Log::Write("GXT: hooking CText::Get at 0x%X", (unsigned)kTextGet);
-    gTextGetHook = safetyhook::create_inline(reinterpret_cast<void*>(kTextGet),
+    Log::Write("GXT: hooking CText::Get at 0x%X and CText::Load at 0x%X", (unsigned)kTextGet, (unsigned)kTextLoad);
+    TextGetHook() = safetyhook::create_inline(reinterpret_cast<void*>(kTextGet),
                                              reinterpret_cast<void*>(&Hooked_TextGet));
-    if (!gTextGetHook)
+    if (!TextGetHook())
         Log::Write("GXT: could not hook CText::Get; no string of ours will reach the game");
+    TextLoadHook() = safetyhook::create_inline(reinterpret_cast<void*>(kTextLoad),
+                                              reinterpret_cast<void*>(&Hooked_TextLoad));
+    if (!TextLoadHook())
+        Log::Write("GXT: could not hook CText::Load; override report and miss logging are off");
 }
 
 void NoteMiss(const char* key) {
@@ -151,21 +160,28 @@ void NoteMiss(const char* key) {
     if (gMissesLogged == 50) Log::Write("GXT: 50 missing keys logged, no more will be reported");
 }
 
+// CText::Load itself calls Get while its key table still holds file offsets rather than pointers,
+// so nothing here may look inside the game's table; the audit waits for Load to finish.
 const char* __fastcall Hooked_TextGet(void* self, void* /*edx*/, const char* key) {
-    if (!gAudited) Audit();
     if (key && key[0] && key[0] != ' ') {
         auto it = Entries().find(HashKey(key));
         if (it != Entries().end()) return it->second.text.c_str();
     }
     // unsafe_ skips safetyhook's per-call mutex; this runs many times per frame and the hook lives
     // until the process ends, so there is nothing to guard against.
-    const char* result = gTextGetHook.unsafe_thiscall<const char*>(self, key);
-    if (gLogMisses && key && result == gMissingText) NoteMiss(key);
+    const char* result = TextGetHook().unsafe_thiscall<const char*>(self, key);
+    if (gLogMisses && gAudited && key && result == gMissingText) NoteMiss(key);
     return result;
 }
 
-// Runs once, on the first lookup after american.gxt is in memory: only then can we say which of our
-// keys the game also has.
+void __fastcall Hooked_TextLoad(void* self, void* /*edx*/, bool keepMissionPack) {
+    TextLoadHook().thiscall<void>(self, keepMissionPack);
+    gAudited = false;
+    Audit();
+}
+
+// Runs after CText::Load, once the game's key table holds real pointers: only then can we say which
+// of our keys the game also has (and what a miss looks like).
 void Audit() {
     if (GameEntryCount() == 0) return;
     gAudited = true;
