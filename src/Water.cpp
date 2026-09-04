@@ -10,7 +10,7 @@
 // So quads inside the vanilla map go through the vanilla adder and behave like stock water; quads
 // outside live in our own store and are served by an inline hook on GetWaterLevelNoWaves, which
 // every water query in the game funnels through (directly or via CWaterLevel::GetWaterLevel).
-// Rendering those quads would mean growing the block grid itself - see the branch report.
+// WaterRender.cpp draws them; this module only owns the data.
 #include <plugin.h>
 #include <safetyhook.hpp>
 #include <cmath>
@@ -41,20 +41,10 @@ constexpr float kWaterStart = -2048.0f;
 constexpr int kNoWater = -128;
 constexpr size_t kWaterProSize = 4 + 48 * 4 + 48 * 16 + 64 * 64 + 128 * 128;
 
-struct Vert {
-    float x, y, z, bigWaves, smallWaves, flowX, flowY;
-};
-
-// v[0]=(minX,minY) v[1]=(maxX,minY) v[2]=(minX,maxY) v[3]=(maxX,maxY): the order
-// CWaterLevel::AddWaterLevelQuad sorts into and TestQuadToGetWaterLevel (0x6E5BB0) assumes.
-struct Quad {
-    Vert v[4];
-    unsigned flags;
-};
-
-struct Rect {
-    float minX, minY, maxX, maxY;
-};
+using Water::Quad;
+using Water::RenPar;
+using Water::Rect;
+using Water::Vert;
 
 std::vector<Quad> gOutside;    // beyond +/-3000: served by our GetWaterLevelNoWaves hook
 std::vector<Quad> gInside;     // within the vanilla map: handed to CWaterLevel::AddWaterLevelQuad
@@ -64,13 +54,6 @@ std::vector<Rect> gCoverage;   // where a region's water map is authoritative (o
 float gGridMinX = 0.0f, gGridMinY = 0.0f, gGridCell = 512.0f;
 int gGridCols = 0, gGridRows = 0;
 std::vector<std::vector<uint32_t>> gBuckets;
-
-struct RenPar {
-    float z, bigWaves, smallWaves;
-    int8_t flowX, flowY;
-    int8_t pad[2];
-};
-static_assert(sizeof(RenPar) == 16, "CRenPar is 16 bytes");
 
 typedef void(__cdecl* AddQuadFn)(int, int, RenPar, int, int, RenPar, int, int, RenPar,
                                  int, int, RenPar, unsigned);
@@ -440,8 +423,10 @@ namespace Water {
             gLevelHook = safetyhook::create_inline(reinterpret_cast<void*>(0x6E8580),
                                                    reinterpret_cast<void*>(&Hooked_GetWaterLevelNoWaves));
 
-        Log::Write("water: %u quad(s) queued for the game, %u served outside the vanilla map "
-                   "(no rendering there - SA draws its flat ocean at z=0 beyond +/-3000)",
+        Log::Write("water: %u quad(s) queued for the game, %u served outside the vanilla map",
                    (unsigned)gInside.size(), (unsigned)gOutside.size());
     }
+
+    const std::vector<Quad>& OutsideQuads() { return gOutside; }
+    const std::vector<Rect>& Coverage() { return gCoverage; }
 }

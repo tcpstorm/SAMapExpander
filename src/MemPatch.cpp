@@ -17,4 +17,20 @@ namespace MemPatch {
         patch::SetUInt(operand, (uintptr_t)newTarget);
         return true;
     }
+
+    bool RetargetCall(uintptr_t callSite, uint32_t expectedTarget, const void* newTarget) {
+        uint8_t opcode = 0;
+        int32_t rel = 0;
+        patch::GetRaw(callSite, &opcode, sizeof(opcode));
+        patch::GetRaw(callSite + 1, &rel, sizeof(rel));
+        uint32_t current = (uint32_t)(callSite + 5 + rel);
+        if (opcode != 0xE8 || current != expectedTarget) {
+            Log::Write("call patch skipped at 0x%X: found %02X -> 0x%X, expected E8 -> 0x%X "
+                       "(already patched by another mod?)",
+                       (unsigned)callSite, opcode, current, expectedTarget);
+            return false;
+        }
+        patch::SetInt(callSite + 1, (uintptr_t)((intptr_t)newTarget - (intptr_t)(callSite + 5)));
+        return true;
+    }
 }
