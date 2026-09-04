@@ -1,0 +1,5 @@
+build/
+output/
+game/
+*.log
+*.exe

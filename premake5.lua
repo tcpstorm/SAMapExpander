@@ -1,0 +1,84 @@
+local sdkdir = os.getenv("PLUGIN_SDK_DIR")
+if not sdkdir or sdkdir == "" then
+    error("PLUGIN_SDK_DIR environment variable is not set")
+end
+sdkdir = path.translate(sdkdir, "/")
+
+workspace "MapExpander"
+    configurations { "Release", "Debug" }
+    location "build"
+
+project "MapExpander"
+    kind "SharedLib"
+    language "C++"
+    architecture "x86"
+    targetextension ".asi"
+    targetprefix ""
+    targetname "MapExpander.SA"
+    characterset "MBCS"
+    staticruntime "On"
+
+    filter "action:gmake or action:gmake2"
+        toolset "clang"
+        buildoptions {
+            "-fpermissive",
+            "-fcommon",
+            "-fms-extensions",
+            "-Wno-invalid-offsetof",
+            "-Wno-microsoft-include",
+            "-Wno-builtin-macro-redefined",
+            "-static",
+            "-D__cpp_concepts=202202L",
+            "--target=i686-w64-mingw32",
+        }
+        linkoptions {
+            "--target=i686-w64-mingw32",
+            "-static",
+            "-static-libgcc",
+            "-static-libstdc++",
+        }
+    filter {}
+
+    filter "files:**.cpp"
+        buildoptions { "-std=c++2b" }
+    filter {}
+
+    includedirs {
+        "src",
+        sdkdir .. "/shared",
+        sdkdir .. "/shared/game",
+        sdkdir .. "/shared/dxsdk",
+        sdkdir .. "/safetyhook",
+        sdkdir .. "/plugin_sa",
+        sdkdir .. "/plugin_sa/game_sa",
+        sdkdir .. "/plugin_sa/game_sa/enums",
+        sdkdir .. "/plugin_sa/game_sa/rw",
+    }
+
+    libdirs { sdkdir .. "/output/lib" }
+
+    files {
+        "src/**.h",
+        "src/**.cpp",
+    }
+
+    defines {
+        "GTASA",
+        "PLUGIN_SGV_10US",
+        "RW",
+        "TARGET_NAME=\"MapExpander\"",
+    }
+
+    filter "configurations:Release"
+        defines { "NDEBUG" }
+        optimize "On"
+        symbols "Off"
+        links { "Plugin", "ntdll" }
+        targetdir "output/Release"
+
+    filter "configurations:Debug"
+        defines { "DEBUG", "_DEBUG" }
+        symbols "On"
+        links { "Plugin_d", "ntdll" }
+        targetdir "output/Debug"
+    filter {}

@@ -1,0 +1,83 @@
+#include <plugin.h>
+#include "Settings.h"
+#include "Ini.h"
+#include "Log.h"
+
+using namespace plugin;
+
+namespace Settings {
+    std::vector<MapRegion> regions;
+    WorldSettings world;
+
+    static std::string ResolveGamePath(const std::string& relative) {
+        return GAME_PATH(relative.c_str());
+    }
+
+    void Load() {
+        regions.clear();
+        world = { true, true, 4.0f, true };
+
+        IniFile ini;
+        if (!ini.Load(PLUGIN_PATH("MapExpander.ini"))) {
+            Log::Write("MapExpander.ini not found next to the plugin; nothing to do");
+            return;
+        }
+
+        if (auto* w = ini.Find("World")) {
+            world.fixPickupPositions = w->GetBool("FixPickupPositions", true);
+            world.fixCarGeneratorPositions = w->GetBool("FixCarGeneratorPositions", true);
+            world.compressedPositionScale = w->GetFloat("CompressedPositionScale", 4.0f);
+            world.extendPauseMap = w->GetBool("ExtendPauseMap", true);
+            if (world.compressedPositionScale <= 0.0f) world.compressedPositionScale = 4.0f;
+        }
+
+        for (auto& s : ini.Sections()) {
+            if (s.name.empty() || s.name == "World" || s.name == "General") continue;
+
+            MapRegion r;
+            r.name = s.name;
+            r.tileFolder = ResolveGamePath(s.GetString("TileFolder", "MapExpander\\tiles\\" + s.name));
+            r.filePattern = s.GetString("FilePattern", "tile_%d_%d.png");
+            r.tileSize = s.GetFloat("TileSize", 500.0f);
+            r.tilesX = s.GetInt("TilesX", 0);
+            r.tilesY = s.GetInt("TilesY", 0);
+
+            bool hasOrigin = s.Has("WorldOriginX") && s.Has("WorldOriginY");
+            bool hasExtent = s.Has("WorldMinX") && s.Has("WorldMaxX") && s.Has("WorldMinY") && s.Has("WorldMaxY");
+            if (hasOrigin) {
+                r.originX = s.GetFloat("WorldOriginX", 0.0f);
+                r.originY = s.GetFloat("WorldOriginY", 0.0f);
+            } else if (hasExtent) {
+                r.originX = (s.GetFloat("WorldMinX", 0.0f) + s.GetFloat("WorldMaxX", 0.0f)) * 0.5f;
+                r.originY = (s.GetFloat("WorldMinY", 0.0f) + s.GetFloat("WorldMaxY", 0.0f)) * 0.5f;
+            } else {
+                Log::Write("[%s] needs WorldOriginX/Y or WorldMinX/MaxX/MinY/MaxY; skipped", s.name.c_str());
+                continue;
+            }
+
+            // Default grid: centred on the local origin, like SA's own radar (-3000..3000 for 12 tiles).
+            r.gridMinX = s.GetFloat("GridMinX", -0.5f * r.tilesX * r.tileSize);
+            r.gridMaxY = s.GetFloat("GridMaxY", 0.5f * r.tilesY * r.tileSize);
+
+            if (r.tilesX <= 0 || r.tilesY <= 0 || r.tileSize <= 0.0f) {
+                Log::Write("[%s] needs TilesX, TilesY and TileSize > 0; skipped", s.name.c_str());
+                continue;
+            }
+
+            Log::Write("[%s] origin=(%.1f, %.1f) tiles=%dx%d size=%.0f grid local x>=%.0f y<=%.0f folder=%s",
+                       r.name.c_str(), r.originX, r.originY, r.tilesX, r.tilesY, r.tileSize,
+                       r.gridMinX, r.gridMaxY, r.tileFolder.c_str());
+            regions.push_back(r);
+        }
+    }
+
+    void WorldExtent(float& minX, float& maxX, float& minY, float& maxY) {
+        minX = -3000.0f; maxX = 3000.0f; minY = -3000.0f; maxY = 3000.0f;
+        for (auto& r : regions) {
+            if (r.TileWest(0) < minX) minX = r.TileWest(0);
+            if (r.TileWest(r.tilesX) > maxX) maxX = r.TileWest(r.tilesX);
+            if (r.TileNorth(0) > maxY) maxY = r.TileNorth(0);
+            if (r.TileNorth(r.tilesY) < minY) minY = r.TileNorth(r.tilesY);
+        }
+    }
+}
