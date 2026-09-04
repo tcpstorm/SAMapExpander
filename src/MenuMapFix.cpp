@@ -8,6 +8,7 @@
 #include <safetyhook.hpp>
 #include <cmath>
 #include "MenuMapFix.h"
+#include "RadarOverlay.h"
 #include "MemPatch.h"
 #include "Settings.h"
 #include "Log.h"
@@ -56,6 +57,7 @@ static void OnBoundsComputed(safetyhook::Context& ctx) {
 static SafetyHookInline gLimitToMapHook;
 
 static void __cdecl Hooked_LimitToMap(float* x, float* y) {
+    RadarOverlay::EnsureInstalled();
     const CMenuManager& menu = FrontEndMenuManager;
     bool mapLoaded = *reinterpret_cast<const unsigned char*>(0xBA67C0) != 0;
     float zoom = mapLoaded ? menu.m_fMapZoom : 140.0f;
@@ -83,6 +85,7 @@ static void __cdecl Hooked_LimitToMap(float* x, float* y) {
 static SafetyHookInline gLimitRadarPointHook;
 
 static float __cdecl Hooked_LimitRadarPoint(CVector2D* point) {
+    RadarOverlay::EnsureInstalled();
     const CMenuManager& menu = FrontEndMenuManager;
     if (menu.m_bMenuActive && menu.m_nCurrentMenuPage == MENUPAGE_MAP)
         return std::sqrt(point->x * point->x + point->y * point->y);

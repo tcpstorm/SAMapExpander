@@ -2,16 +2,16 @@
 #include <CRadar.h>
 #include <CMenuManager.h>
 #include <CSprite2d.h>
-#include <safetyhook.hpp>
 #include <cmath>
+#include <cstring>
+#include <cstdint>
+#include <cstdio>
 #include "RadarOverlay.h"
 #include "Settings.h"
 #include "TileCache.h"
 #include "Log.h"
 
 using namespace plugin;
-
-static SafetyHookInline gGangOverlayHook;
 
 struct TileRect {
     float west, east, north, south;
@@ -111,7 +111,7 @@ static void DrawCustomTiles(bool inMenu) {
     }
 }
 
-static void __cdecl Hooked_DrawRadarGangOverlay(bool inMenu) {
+static void OnOverlayPoint(bool inMenu) {
     static bool logged[2] = { false, false };
     if (!logged[inMenu]) {
         logged[inMenu] = true;
@@ -119,12 +119,86 @@ static void __cdecl Hooked_DrawRadarGangOverlay(bool inMenu) {
                    inMenu, CRadar::vec2DRadarOrigin.x, CRadar::vec2DRadarOrigin.y, CRadar::m_radarRange);
     }
     DrawCustomTiles(inMenu);
-    gGangOverlayHook.ccall<void>(inMenu);
+}
+
+// Our tiles belong at the two `call CRadar::DrawRadarGangOverlay` sites (CRadar::DrawRadarMap for
+// the HUD, CMenuManager::PrintMap for the pause map). SA-MP rewrites those sites for its own gang
+// zones during its init, so we retarget the call (to a thunk that draws, then calls whatever was
+// there) on the first game tick instead of at load, and only touch bytes we recognise.
+typedef void(__cdecl* OverlayFn)(bool);
+static OverlayFn gOriginalHud = nullptr;
+static OverlayFn gOriginalMenu = nullptr;
+
+static void __cdecl HudThunk(bool inMenu) {
+    OnOverlayPoint(false);
+    if (gOriginalHud) gOriginalHud(inMenu);
+}
+
+static void __cdecl MenuThunk(bool inMenu) {
+    OnOverlayPoint(true);
+    if (gOriginalMenu) gOriginalMenu(inMenu);
+}
+
+// `site` is the address of the `call rel32`. Returns the previous target (nullptr if the site was NOPed).
+static bool RetargetCall(uintptr_t site, const char* name, OverlayFn thunk, OverlayFn& original) {
+    unsigned char bytes[5];
+    patch::GetRaw(site, bytes, sizeof(bytes));
+    Log::Write("%s call site 0x%X: %02X %02X %02X %02X %02X", name, (unsigned)site, bytes[0], bytes[1], bytes[2], bytes[3], bytes[4]);
+
+    bool allNops = true;
+    for (unsigned char b : bytes) allNops &= (b == 0x90);
+
+    if (bytes[0] == 0xE8) {
+        int32_t rel;
+        memcpy(&rel, bytes + 1, sizeof(rel));
+        original = reinterpret_cast<OverlayFn>(site + 5 + rel);
+    } else if (allNops) {
+        original = nullptr;
+    } else {
+        Log::Write("%s call site has unexpected code; overlay not installed there", name);
+        return false;
+    }
+
+    int32_t rel = (int32_t)(reinterpret_cast<uintptr_t>(thunk) - (site + 5));
+    unsigned char call[5] = { 0xE8 };
+    memcpy(call + 1, &rel, sizeof(rel));
+    patch::SetRaw(site, call, sizeof(call));
+    return true;
+}
+
+static bool gInstalled = false;
+
+static void DumpBytes(const char* label, uintptr_t address, unsigned count) {
+    unsigned char b[16];
+    if (count > sizeof(b)) count = sizeof(b);
+    patch::GetRaw(address, b, count);
+    char text[64] = { 0 };
+    for (unsigned i = 0; i < count; i++) snprintf(text + i * 3, sizeof(text) - i * 3, "%02X ", b[i]);
+    Log::Write("%s @0x%X: %s", label, (unsigned)address, text);
+}
+
+static void InstallCallSites() {
+    if (gInstalled) return;
+    gInstalled = true;
+    Log::Write("installing overlay call sites");
+    DumpBytes("  DrawRadarGangOverlay", 0x586650, 8);
+    // DrawRadarMap: `push 0` at 0x5869BD, `call` at 0x5869BF. If the site was NOPed, restore the push too.
+    unsigned char push[2];
+    patch::GetRaw(0x5869BD, push, sizeof(push));
+    if (push[0] == 0x90 && push[1] == 0x90) patch::SetRaw(0x5869BD, (void*)"\x6A\x00", 2);
+    RetargetCall(0x5869BF, "HUD", HudThunk, gOriginalHud);
+    RetargetCall(0x5759E4, "menu", MenuThunk, gOriginalMenu);
 }
 
 namespace RadarOverlay {
     void Install() {
-        gGangOverlayHook = safetyhook::create_inline(reinterpret_cast<void*>(0x586650),
-                                                     reinterpret_cast<void*>(&Hooked_DrawRadarGangOverlay));
+        DumpBytes("at load: DrawRadarGangOverlay", 0x586650, 8);
+        DumpBytes("at load: HUD site", 0x5869BD, 7);
+        DumpBytes("at load: menu site", 0x5759E4, 5);
+        Events::gameProcessEvent += InstallCallSites;
+    }
+
+    void EnsureInstalled() {
+        if (!gInstalled) InstallCallSites();
     }
 }

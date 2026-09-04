@@ -15,7 +15,7 @@ namespace Settings {
 
     void Load() {
         regions.clear();
-        world = { true, true, 4.0f, true };
+        world = { true, true, 4.0f, true, 1500.0f, false, 0.0f, 0.0f, 0.0f, 0.0f };
 
         IniFile ini;
         if (!ini.Load(PLUGIN_PATH("MapExpander.ini"))) {
@@ -28,6 +28,13 @@ namespace Settings {
             world.fixCarGeneratorPositions = w->GetBool("FixCarGeneratorPositions", true);
             world.compressedPositionScale = w->GetFloat("CompressedPositionScale", 4.0f);
             world.extendPauseMap = w->GetBool("ExtendPauseMap", true);
+            world.pauseMapMargin = w->GetFloat("PauseMapMargin", 1500.0f);
+            world.pauseMapCustomBounds = w->Has("PauseMapMinX") && w->Has("PauseMapMaxX") &&
+                                         w->Has("PauseMapMinY") && w->Has("PauseMapMaxY");
+            world.pauseMapMinX = w->GetFloat("PauseMapMinX", 0.0f);
+            world.pauseMapMaxX = w->GetFloat("PauseMapMaxX", 0.0f);
+            world.pauseMapMinY = w->GetFloat("PauseMapMinY", 0.0f);
+            world.pauseMapMaxY = w->GetFloat("PauseMapMaxY", 0.0f);
             if (world.compressedPositionScale <= 0.0f) world.compressedPositionScale = 4.0f;
         }
 
@@ -72,6 +79,11 @@ namespace Settings {
     }
 
     void WorldExtent(float& minX, float& maxX, float& minY, float& maxY) {
+        if (world.pauseMapCustomBounds) {
+            minX = world.pauseMapMinX; maxX = world.pauseMapMaxX;
+            minY = world.pauseMapMinY; maxY = world.pauseMapMaxY;
+            return;
+        }
         minX = -3000.0f; maxX = 3000.0f; minY = -3000.0f; maxY = 3000.0f;
         for (auto& r : regions) {
             if (r.TileWest(0) < minX) minX = r.TileWest(0);
@@ -79,5 +91,7 @@ namespace Settings {
             if (r.TileNorth(0) > maxY) maxY = r.TileNorth(0);
             if (r.TileNorth(r.tilesY) < minY) minY = r.TileNorth(r.tilesY);
         }
+        minX -= world.pauseMapMargin; maxX += world.pauseMapMargin;
+        minY -= world.pauseMapMargin; maxY += world.pauseMapMargin;
     }
 }
