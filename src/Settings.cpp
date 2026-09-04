@@ -33,7 +33,7 @@ namespace Settings {
 
     void Load() {
         regions.clear();
-        world = { true, true, 4.0f, true, 1500.0f, false, 0.0f, 0.0f, 0.0f, 0.0f };
+        world = { true, true, 4.0f, true, 1500.0f, false, 0.0f, 0.0f, 0.0f, 0.0f, true, false };
 
         IniFile ini;
         if (!ini.Load(PLUGIN_PATH("MapExpander.ini"))) {
@@ -53,6 +53,8 @@ namespace Settings {
             world.pauseMapMaxX = w->GetFloat("PauseMapMaxX", 0.0f);
             world.pauseMapMinY = w->GetFloat("PauseMapMinY", 0.0f);
             world.pauseMapMaxY = w->GetFloat("PauseMapMaxY", 0.0f);
+            world.extendWaterRendering = w->GetBool("ExtendWaterRendering", true);
+            world.waterDebug = w->GetBool("WaterDebug", false);
             if (world.compressedPositionScale <= 0.0f) world.compressedPositionScale = 4.0f;
             world.gxtFiles = SplitPaths(w->GetString("Gxt", ""));
             world.gxtLogMisses = w->GetBool("GxtLogMisses", false);

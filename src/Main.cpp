@@ -6,6 +6,7 @@
 #include "PickupFix.h"
 #include "Water.h"
 #include "IplLoader.h"
+#include "WaterRender.h"
 #include "DebugKeys.h"
 #include "Gxt.h"
 #include "Zones.h"
@@ -24,6 +25,7 @@ public:
             Zones::Install();
             if (Settings::world.extendPauseMap) MenuMapFix::Install();
             Water::Install();
+            WaterRender::Install();
         }
         if (Settings::world.fixPickupPositions || Settings::world.fixCarGeneratorPositions) PickupFix::Install();
         IplLoader::Install();

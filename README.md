@@ -72,6 +72,8 @@ SA x 4171..6963, y −778..2626).
 | `ExtendPauseMap` | 1 | free the pause map's scroll/cursor/blip limits |
 | `PauseMapMargin` | 1500 | extra scrollable world units past the map and all regions |
 | `PauseMapMinX/MaxX/MinY/MaxY` | – | fix the scrollable area explicitly instead (all four) |
+| `ExtendWaterRendering` | 1 | draw region water beyond ±3000 instead of SA's flat ocean (see *Region data*) |
+| `WaterDebug` | 0 | log the number of water rectangles drawn (first frame, then once a second) |
 
 ### Region data (feature branches)
 
@@ -81,7 +83,7 @@ be hand-translated. Copy the files straight from the source game's `data\` folde
 | Key | Branch | Source file (Vice City) | Notes |
 |---|---|---|---|
 | `Ipl=` (comma list) | `feature/ipl-sections` | `data\maps\*.ipl` | sections `cull enex tcyc jump pick cars grge auzo`; `inst`/`zone`/`occl` ignored. VC's own IPLs only carry `cull` and `pick`; the SA-only sections must be authored in SA format. The entry/exit quad tree is widened beyond ±3000. Pool limits are checked per line and headroom is logged; `tcyc` (20) and `auzo` spheres (3) are nearly full in vanilla. |
-| `Water=`, `WaterXOffset=` | `feature/water` | `data\waterpro.dat` (`WaterXOffset=400` for VC, 0 for III) or an SA `water.dat` | physics (swimming, boats, camera) use real levels beyond ±3000 via a hook on `CWaterLevel::GetWaterLevelNoWaves`; rendering out there is still SA's flat ocean at z = 0 (VC's sea level). `tools/waterpro_to_dat.py` converts offline. |
+| `Water=`, `WaterXOffset=` | `feature/water` | `data\waterpro.dat` (`WaterXOffset=400` for VC, 0 for III) or an SA `water.dat` | physics (swimming, boats, camera) use real levels beyond ±3000 via a hook on `CWaterLevel::GetWaterLevelNoWaves`, and the same quads are rendered in place of SA's endless ocean. `tools/waterpro_to_dat.py` converts offline. |
 | `Zones=`, `ZoneNames=` | `feature/zones` | `data\navig.zon`, `data\info.zon`, names from `text\american.gxt` | area names on VC through the vanilla zone system and a `CText::Get` hook. |
 
 IPL in one paragraph: "item placement" is the map's placement data — `inst` are the building/prop
@@ -95,7 +97,7 @@ All run in throwaway containers; nothing is installed on the host.
 
 - `tools/sftp.ps1` — serve the project folder over SFTP (port 2222) to test on another machine.
 - `tools/scan.ps1 <gamedir>` / `tools/scan_exe.py` — find every code site using the int16/8 compression constants and the pickup accessors.
-- `tools/xref.py`, `tools/fieldref.py`, `tools/check_fn.py`, `tools/readfloat.py` — capstone helpers for cross-referencing addresses, struct-field accesses, disassembly and constants in `gta_sa.exe`.
+- `tools/xref.py`, `tools/fieldref.py`, `tools/check_fn.py`, `tools/readfloat.py`, `tools/dumpb.py` — capstone helpers for cross-referencing addresses, struct-field accesses, disassembly, constants and raw bytes/branch targets in `gta_sa.exe`.
 - `tools/gen_functions.py` → `tools/sa_functions.txt` — 9.6k named addresses merged from gta-reversed and plugin-sdk, used to label scanner output.
 - `tools/montage.py`, `tools/montage_orders.py`, `tools/tile_order_score.py` — stitch tiles and score the eight possible grid orderings to verify a tile set's numbering.
 
@@ -103,6 +105,10 @@ All run in throwaway containers; nothing is installed on the host.
 
 - SA's static world is 120×120 sectors of 50 units = ±3000; beyond that, sector lookups clamp into the edge sector (works, degrades). Fully enlarging the sector grid is fastman92 Limit Adjuster territory (~700 patch sites) and is not attempted here.
 - The pause map is drawn by `CMenuManager::PrintMap` with `tile = zoom/6` px per 500 units and raw `width/640` scaling — never `CMenuManager::StretchX`, which other mods hook for aspect correction. The overlay replicates the raw arithmetic for that reason.
+- `CWaterLevel::RenderWater` (0x6EF650) draws water outside the 12×12 block grid as one
+  `RenderWaterRectangle` call per 500-unit block (0x6F004E), over the ≤70 blocks
+  `CWaterLevel::BlockHit` (0x6E6CA0) collected from the camera frustum this frame. Retargeting that
+  one call is enough to render arbitrary water out there without touching the block grid.
 - Path nodes (`nodes*.dat`) are `int16 / 8` at ~490 inline sites: traffic and ped paths cannot be extended past ±4096 without a rewrite. Irrelevant under SA-MP.
 - Audio zone boxes and occluders are also `int16 / 8` and stay limited to ±4096.
 
@@ -114,5 +120,4 @@ All run in throwaway containers; nothing is installed on the host.
   `.dff`/`.txd`/`.col` from the source `.img` through `CStreaming`, placing `inst` lines with the origin,
   and lighting/`timecyc` differences. It is the largest remaining piece and would make a region fully
   standalone in single-player.
-- Rendering region water beyond ±3000 (site list in the `feature/water` report).
 - Zone/water array relocation for regions that exceed the vanilla pool sizes.
