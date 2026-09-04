@@ -54,7 +54,7 @@ namespace Settings {
             world.pauseMapMinY = w->GetFloat("PauseMapMinY", 0.0f);
             world.pauseMapMaxY = w->GetFloat("PauseMapMaxY", 0.0f);
             if (world.compressedPositionScale <= 0.0f) world.compressedPositionScale = 4.0f;
-            for (auto& f : SplitList(w->GetString("Gxt", ""))) world.gxtFiles.push_back(ResolveGamePath(f));
+            world.gxtFiles = SplitPaths(w->GetString("Gxt", ""));
             world.gxtLogMisses = w->GetBool("GxtLogMisses", false);
         }
 
