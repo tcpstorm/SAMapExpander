@@ -1,4 +1,5 @@
 #include <plugin.h>
+#include <cctype>
 #include "Settings.h"
 #include "Ini.h"
 #include "Log.h"
@@ -69,6 +70,8 @@ namespace Settings {
             r.tilesX = s.GetInt("TilesX", 0);
             r.tilesY = s.GetInt("TilesY", 0);
             r.iplFiles = SplitPaths(s.GetString("Ipl", ""));
+            r.zoneFiles = SplitPaths(s.GetString("Zones", ""));
+            if (s.Has("ZoneNames")) r.zoneNamesFile = ResolveGamePath(s.GetString("ZoneNames", ""));
 
             bool hasOrigin = s.Has("WorldOriginX") && s.Has("WorldOriginY");
             bool hasExtent = s.Has("WorldMinX") && s.Has("WorldMaxX") && s.Has("WorldMinY") && s.Has("WorldMaxY");

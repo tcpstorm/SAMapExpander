@@ -7,6 +7,7 @@
 #include "Water.h"
 #include "IplLoader.h"
 #include "DebugKeys.h"
+#include "Zones.h"
 
 using namespace plugin;
 
@@ -18,6 +19,7 @@ public:
 
         if (!Settings::regions.empty()) {
             RadarOverlay::Install();
+            Zones::Install();
             if (Settings::world.extendPauseMap) MenuMapFix::Install();
             Water::Install();
         }

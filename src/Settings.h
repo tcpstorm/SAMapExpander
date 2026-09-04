@@ -19,6 +19,9 @@ struct MapRegion {
     float gridMaxY;           // local Y of the north edge of row 0
     int tilesX, tilesY;
 
+    std::vector<std::string> zoneFiles;  // III/VC .zon or SA IPL files, in the region's own coords
+    std::string zoneNamesFile;           // "GXTKEY = Display Name" lines; empty if none
+
     float TileWest(int col) const  { return originX + gridMinX + col * tileSize; }
     float TileNorth(int row) const { return originY + gridMaxY - row * tileSize; }
 };
