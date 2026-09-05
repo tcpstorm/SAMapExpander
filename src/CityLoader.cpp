@@ -38,12 +38,10 @@ namespace {
 
 typedef unsigned(__cdecl* AddImageToListFn)(const char*, bool);
 typedef void(__cdecl* LoadFileFn)(const char*);
-typedef void(__cdecl* LoadCollisionFileFn)(const char*, unsigned char);
 
 const AddImageToListFn CallAddImageToList = reinterpret_cast<AddImageToListFn>(0x407610);
 const LoadFileFn CallLoadObjectTypes = reinterpret_cast<LoadFileFn>(0x5B8400);
 const LoadFileFn CallLoadScene = reinterpret_cast<LoadFileFn>(0x5B8700);
-const LoadCollisionFileFn CallLoadCollisionFile = reinterpret_cast<LoadCollisionFileFn>(0x5B4E60);
 
 // CStreaming::ms_files: 8 x tStreamingFileDesc(0x30), the archive name at offset 0.
 constexpr uintptr_t kStreamingFiles = 0x8E48D8;
@@ -548,66 +546,58 @@ void LoadModelDefinitions() {
     }
 }
 
-// CFileLoader::LoadCollisionFile walks the chunk chain (4cc, size, then 24 bytes of name and model
-// id, with `size` counted from after the 4cc/size pair) into a fixed 32 KB scratch buffer at
-// 0xBC40D8, and it checks neither the size nor the 4cc. A model too big for the buffer, or the
-// zero padding an IMG extractor leaves at the end of a .col, would both send it off the rails - so
-// walk the chunks here first and hand the game a copy trimmed to the chunks that are actually
-// sound. Returns the path to load, or an empty string if there is nothing usable.
-std::string PrepareColFile(const RegionState& rs, const std::string& path, int& models) {
+// A .col archive is a chain of chunks: 4cc, size, then 24 bytes of name and model id, with `size`
+// counted from after the 4cc/size pair. Neither game loader checks the 4cc or the size, and the
+// zero padding an IMG extractor leaves at the end of a file would send them off the rails - so walk
+// the chunks here and hand the game only the bytes that hold sound chunks. Returns that length (0
+// if nothing is usable) and the file's bytes.
+size_t ReadColFile(const RegionState& rs, const std::string& path, std::vector<uint8_t>& data, int& models) {
     FILE* f = fopen(path.c_str(), "rb");
-    if (!f) return std::string();
+    if (!f) return 0;
+    fseek(f, 0, SEEK_END);
+    long total = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    data.resize(total > 0 ? (size_t)total : 0);
+    bool read = data.empty() || fread(data.data(), 1, data.size(), f) == data.size();
+    fclose(f);
+    if (!read) return 0;
 
     models = 0;
-    long good = 0;
-    unsigned char header[32];
-    while (fread(header, 1, sizeof(header), f) == sizeof(header)) {
+    size_t good = 0;
+    while (good + 32 <= data.size()) {
+        const uint8_t* header = data.data() + good;
         // Version 1 (III/VC and SA's own generic.col) is "COLL"; later ones "COL2".."COL4".
         if (memcmp(header, "COL", 3) != 0 || !(header[3] == 'L' || (header[3] >= '2' && header[3] <= '4'))) break;
-        unsigned size = *reinterpret_cast<unsigned*>(header + 4);
-        if (size < 24) break;
-        if (size - 24 > 0x8000) {
-            Log::Write("[%s] col: %s stops at '%.22s' - %u bytes of collision data, more than the "
-                       "game's 32768-byte buffer", rs.region->name.c_str(), path.c_str(),
-                       (const char*)header + 8, size - 24);
-            break;
-        }
+        unsigned size = *reinterpret_cast<const unsigned*>(header + 4);
+        if (size < 24 || good + 8 + size > data.size()) break;
         if (header[3] == '4')
             Log::Write("[%s] col: %s contains COL4 data, which this loader path does not read",
                        rs.region->name.c_str(), path.c_str());
-        if (fseek(f, (long)(size - 24), SEEK_CUR) != 0) break;
-        good = ftell(f);
+        good += 8 + size;
         models++;
     }
 
-    fseek(f, 0, SEEK_END);
-    long total = ftell(f);
     if (models == 0) {
-        fclose(f);
         Log::Write("[%s] col: %s holds no readable collision models", rs.region->name.c_str(), path.c_str());
-        return std::string();
+        return 0;
     }
-    if (good == total) { fclose(f); return path; }
-
-    std::string trimmed;
-    trimmed.resize((size_t)good);
-    fseek(f, 0, SEEK_SET);
-    bool read = fread(&trimmed[0], 1, trimmed.size(), f) == trimmed.size();
-    fclose(f);
-
-    std::string cached = CacheDir() + "\\" + SafeName(rs.region->name) + "_" +
-                         SafeName(BaseName(path)) + ".col";
-    if (!read || !WriteWholeFile(cached, trimmed)) {
-        Log::Write("[%s] col: cannot write the trimmed copy %s", rs.region->name.c_str(), cached.c_str());
-        return std::string();
-    }
-    Log::Write("[%s] col: %s has %ld byte(s) of trailing data after its last collision model; "
-               "loading the trimmed copy %s", rs.region->name.c_str(), path.c_str(), total - good,
-               cached.c_str());
-    return cached;
+    if (good != data.size())
+        Log::Write("[%s] col: %s has %u byte(s) of trailing data after its last collision model; ignored",
+                   rs.region->name.c_str(), path.c_str(), (unsigned)(data.size() - good));
+    return good;
 }
 
+// CFileLoader::LoadCollisionFileFirstTime(data, size, colSlot) is the loader SA itself uses for the
+// col chunks of an archive: it looks each model up by the header's id and name, allocates a CColModel
+// for one that has none yet, and records the model in the col slot. The by-path variant
+// (LoadCollisionFile, 0x5B4E60) allocates that CColModel into a stack slot and then hands the
+// register it never updated to LoadCollisionModel - fine for SA, whose models all have one by the
+// time it runs, a wild write for ours.
+typedef void(__cdecl* LoadCollisionDataFn)(const uint8_t*, unsigned, unsigned char);
+const LoadCollisionDataFn CallLoadCollisionData = reinterpret_cast<LoadCollisionDataFn>(0x5B5000);
+
 void LoadCollisionArchives() {
+    std::vector<uint8_t> data;
     for (RegionState& rs : Regions()) {
         for (const std::string& path : rs.region->colFiles) {
             if (!FileExists(path)) {
@@ -615,9 +605,9 @@ void LoadCollisionArchives() {
                 continue;
             }
             int models = 0;
-            std::string load = PrepareColFile(rs, path, models);
-            if (load.empty()) continue;
-            CallLoadCollisionFile(load.c_str(), kPermanentColSlot);
+            size_t bytes = ReadColFile(rs, path, data, models);
+            if (!bytes) continue;
+            CallLoadCollisionData(data.data(), (unsigned)bytes, kPermanentColSlot);
             Log::Write("[%s] col: %s loaded into col slot %u - %d collision model(s), permanently in "
                        "memory (the streamer never touches slot 0)",
                        rs.region->name.c_str(), path.c_str(), kPermanentColSlot, models);
