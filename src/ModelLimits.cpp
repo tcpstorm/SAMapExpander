@@ -174,8 +174,8 @@ void Install() {
                    wanted, kMaxModelCount);
         wanted = kMaxModelCount;
     }
-    if (GetModuleHandleA("samp.dll")) {
-        Log::Write("SA-MP loaded: the model id limit stays at %d, the server owns the id space",
+    if (Settings::RunningUnderSaMp()) {
+        Log::Write("SA-MP: the model id limit stays at %d, the server owns the id space",
                    kVanillaModelCount);
         return;
     }

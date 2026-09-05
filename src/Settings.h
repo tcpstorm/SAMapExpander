@@ -57,4 +57,8 @@ namespace Settings {
     void Load();
     // Bounding box of the vanilla map plus every region's tile grid, in SA world coordinates.
     void WorldExtent(float& minX, float& maxX, float& minY, float& maxY);
+    // True when this process was started by an SA-MP launcher. samp.dll is injected after ASI
+    // plugins have already run, so its presence cannot be relied on this early; the launcher's
+    // command line (-c -h <host> -p <port> -n <nick>) can.
+    bool RunningUnderSaMp();
 }

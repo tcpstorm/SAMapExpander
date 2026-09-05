@@ -167,6 +167,24 @@ namespace Settings {
         }
     }
 
+    bool RunningUnderSaMp() {
+        static int cached = -1;
+        if (cached >= 0) return cached != 0;
+        const char* why = nullptr;
+        if (GetModuleHandleA("samp.dll")) why = "samp.dll is loaded";
+        else {
+            std::string cmd = GetCommandLineA();
+            for (char& c : cmd) c = (char)tolower((unsigned char)c);
+            bool host = cmd.find(" -h ") != std::string::npos;
+            bool nick = cmd.find(" -n ") != std::string::npos;
+            bool port = cmd.find(" -p ") != std::string::npos;
+            if (host && (nick || port)) why = "started by the SA-MP launcher (-h/-p/-n on the command line)";
+        }
+        cached = why ? 1 : 0;
+        if (why) Log::Write("SA-MP detected: %s", why);
+        return cached != 0;
+    }
+
     void WorldExtent(float& minX, float& maxX, float& minY, float& maxY) {
         if (world.pauseMapCustomBounds) {
             minX = world.pauseMapMinX; maxX = world.pauseMapMaxX;

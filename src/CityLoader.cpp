@@ -627,7 +627,33 @@ void ReportMissingArchiveEntries() {
     }
 }
 
+// CWorld::Add -> CEntity::GetBoundRect reads the model's CColModel without a null check. SA's
+// buildings all have one by the time LoadScene runs: CFileLoader::LoadLevel calls
+// CColStore::LoadAllCollision right after Init2, which loads every col file once (and unloads the
+// data again, but the CColModel objects stay). A model in no col file at all - VC's LOD models,
+// for instance - has none, so give those the placeholder box the game hands its peds
+// (CTempColModels::ms_colModelBBox, from CFileLoader::LoadPedObject).
+constexpr uintptr_t kColModelBBox = 0x968DF0;
+constexpr uintptr_t kSetColModel = 0x4C4BC0;   // CBaseModelInfo::SetColModel(CColModel*, bool own), __thiscall
+
+void GivePlaceholderCollision() {
+    typedef void(__thiscall* SetColModelFn)(void*, void*, bool);
+    for (RegionState& rs : Regions()) {
+        int given = 0;
+        for (const auto& pair : rs.ids) {
+            uint8_t* mi = static_cast<uint8_t*>(ModelInfoAt(pair.second));
+            if (!mi || *reinterpret_cast<void**>(mi + 0x14)) continue;
+            reinterpret_cast<SetColModelFn>(kSetColModel)(mi, reinterpret_cast<void*>(kColModelBBox), false);
+            given++;
+        }
+        if (given)
+            Log::Write("[%s] col: %d model(s) appear in no collision file and got the placeholder box "
+                       "(walk-through, like a LOD)", rs.region->name.c_str(), given);
+    }
+}
+
 void PlaceInstances() {
+    GivePlaceholderCollision();
     int budget = PoolFree(kBuildingPool) - kBuildingPoolReserve;
     Log::Write("inst: %d free building-pool entries, %d free dummy-pool entries",
                budget + kBuildingPoolReserve, PoolFree(kDummyPool));
@@ -715,8 +741,8 @@ namespace CityLoader {
         if (Regions().empty()) return;
 
         // A server places its own objects and owns the model id space; the same INI serves both.
-        if (GetModuleHandleA("samp.dll")) {
-            Log::Write("SA-MP loaded: region Img/Ide/Col are left alone, the server places the city");
+        if (Settings::RunningUnderSaMp()) {
+            Log::Write("SA-MP: region Img/Ide/Col are left alone, the server places the city");
             Regions().clear();
             return;
         }
