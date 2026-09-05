@@ -34,7 +34,22 @@ constexpr uintptr_t kNaviArray = 0xBA3798;   // CTheZones::NavigationZoneArray[3
 constexpr uintptr_t kNaviTotal = 0xBA3794;   // CTheZones::TotalNumberOfNavigationZones (int16)
 constexpr uintptr_t kInfoTotal = 0xBA1DE8;   // CTheZones::TotalNumberOfZoneInfos (int16)
 constexpr uintptr_t kCreateZone = 0x5728A0;
-constexpr uintptr_t kZonesUpdate = 0x572D10; // CTheZones::Update, once per frame from CGame::Process
+constexpr uintptr_t kZonesUpdate = 0x572D10;  // CTheZones::Update, once per frame from CGame::Process
+constexpr uintptr_t kZoneRevealed = 0x572130; // CTheZones::GetCurrentZoneLockedOrUnlocked(x, y)
+constexpr uintptr_t kFindSmallest = 0x572360; // CTheZones::FindSmallestZoneForPosition
+constexpr uintptr_t kLevelFromPos = 0x572300; // CTheZones::GetLevelFromPosition
+constexpr uintptr_t kGetForMap = 0x571D90;    // CPlaceName::GetForMap, the pause map's hover name
+constexpr uintptr_t kTextGet = 0x6A0050;      // CText::Get, __thiscall
+constexpr uintptr_t kTheText = 0xC1B340;
+constexpr uintptr_t kCurrLevel = 0xBA6718;    // CTheZones::m_CurrLevel
+constexpr uintptr_t kZonesRevealed = 0xBA372C;
+
+// Every lookup that names a place tests z (CTheZones::PointLiesWithinZone, 0x572270) and the pause
+// map's CPlaceName::GetForMap (0x571D90) uses the *player's* z for the hovered x/y, so a zone file's
+// ground-level band (Vice City: 0..300) would lose the name in the air or in interiors. Navigation
+// zones are ranked by x/y size alone, so the full altitude band costs nothing.
+constexpr float kZoneFloor = -2000.0f;
+constexpr float kZoneCeiling = 2000.0f;
 
 constexpr int kVanillaNaviCapacity = 380;
 constexpr int kInfoCapacity = 380;           // CTheZones::ZoneInfoArray, not relocated
@@ -110,6 +125,7 @@ int gExpectedTotal = -1;
 SaZone gExpectedLast{};
 
 SafetyHookInline gUpdateHook;
+SafetyHookInline gRevealedHook;
 
 int16_t& NaviTotal() { return *reinterpret_cast<int16_t*>(kNaviTotal); }
 int16_t& InfoTotal() { return *reinterpret_cast<int16_t*>(kInfoTotal); }
@@ -207,10 +223,10 @@ int LoadZoneFile(const MapRegion& region, const std::string& path) {
         MakeKey(t.size() >= 10 ? t[9].c_str() : t[0].c_str(), d.textLabel);
         d.x1 = strtof(t[2].c_str(), nullptr) + region.originX;
         d.y1 = strtof(t[3].c_str(), nullptr) + region.originY;
-        d.z1 = strtof(t[4].c_str(), nullptr) + region.originZ;
+        d.z1 = std::min(strtof(t[4].c_str(), nullptr) + region.originZ, kZoneFloor);
         d.x2 = strtof(t[5].c_str(), nullptr) + region.originX;
         d.y2 = strtof(t[6].c_str(), nullptr) + region.originY;
-        d.z2 = strtof(t[7].c_str(), nullptr) + region.originZ;
+        d.z2 = std::max(strtof(t[7].c_str(), nullptr) + region.originZ, kZoneCeiling);
         d.level = atoi(t[8].c_str());
         if (d.level < 0 || d.level > 3) d.level = 0;
 
@@ -368,6 +384,29 @@ void __cdecl Hooked_ZonesUpdate() {
     EnsureZones();
 }
 
+// CTheZones::GetCurrentZoneLockedOrUnlocked (0x572130) indexes the 10x10 ZonesVisited grid with
+// (x + 3000) / 600 and never bounds-checks, so a point in a region lands well past the table. Its
+// callers -- the pause map's area-name gate (0x575E38), CRadar::HasThisBlipBeenRevealed (0x583B23)
+// and the "unlock the zone the player stands in" write (0x57283D) -- all want a plain "yes" out
+// here: names and blips show, and nothing is written past the table.
+bool __cdecl Hooked_ZoneRevealed(float x, float y) {
+    if (x < -kVanillaMapEdge || x > kVanillaMapEdge || y < -kVanillaMapEdge || y > kVanillaMapEdge)
+        return true;
+    return gRevealedHook.ccall<bool>(x, y);
+}
+
+// ---------------------------------------------------------------- diagnostics
+
+using FindSmallestFn = SaZone*(__cdecl*)(const float* point, int naviOnly);
+using LevelFromPosFn = int(__cdecl*)(const float* point);
+using GetForMapFn = const char*(__stdcall*)(float x, float y);  // CPlaceName::GetForMap ignores `this`
+
+const char* Translate(const char* key) {
+    char zeroTerminated[9] = { 0 };
+    memcpy(zeroTerminated, key, 8);
+    return plugin::CallMethodAndReturnDynGlobal<const char*>(kTextGet, (void*)kTheText, zeroTerminated);
+}
+
 }  // namespace
 
 namespace Zones {
@@ -425,6 +464,48 @@ namespace Zones {
             return;
         }
 
-        Log::Write("zones: %u to add, %d display name(s) registered", (unsigned)Defs().size(), named);
+        gRevealedHook = safetyhook::create_inline(reinterpret_cast<void*>(kZoneRevealed),
+                                                  reinterpret_cast<void*>(&Hooked_ZoneRevealed));
+        Log::Write("zones: %u to add, %d display name(s) registered, revealed-cell hook at 0x%X %s",
+                   (unsigned)Defs().size(), named, (unsigned)kZoneRevealed,
+                   gRevealedHook ? "installed" : "FAILED (region names may not show on the pause map)");
+    }
+
+    void LogPlayerZone(float x, float y, float z) {
+        const float point[3] = { x, y, z };
+        int16_t total = NaviTotal();
+        Log::Write("F8 zones: %d navigation zone(s) of %d, %d zone info(s) of %d, ZonesRevealed %d, "
+                   "m_CurrLevel %d, level here %d",
+                   (int)total, gCapacity, (int)InfoTotal(), kInfoCapacity,
+                   *reinterpret_cast<const int*>(kZonesRevealed),
+                   *reinterpret_cast<const int*>(kCurrLevel),
+                   reinterpret_cast<LevelFromPosFn>(kLevelFromPos)(point));
+
+        // The HUD (CPlaceName::Process) and the pause map (CPlaceName::GetForMap) both land here.
+        SaZone* zone = reinterpret_cast<FindSmallestFn>(kFindSmallest)(point, 0);
+        if (!zone) {
+            Log::Write("F8 zones: FindSmallestZoneForPosition returned nothing");
+            return;
+        }
+        long index = (long)(zone - gZones);
+        Log::Write("F8 zones: here -> #%ld text \"%.8s\" info \"%.8s\" (info #%d) type %d level %d "
+                   "box x %d..%d y %d..%d z %d..%d, shows as \"%s\"",
+                   index, zone->textLabel, zone->infoLabel, (int)zone->infoIndex, (int)zone->type,
+                   (int)zone->level, (int)zone->x1, (int)zone->x2, (int)zone->y1, (int)zone->y2,
+                   (int)zone->z1, (int)zone->z2, Translate(zone->textLabel));
+        Log::Write("F8 zones: pause map hover here -> \"%s\", cell %s the 10x10 visited grid",
+                   reinterpret_cast<GetForMapFn>(kGetForMap)(x, y),
+                   (x < -kVanillaMapEdge || x > kVanillaMapEdge ||
+                    y < -kVanillaMapEdge || y > kVanillaMapEdge) ? "outside (forced revealed)" : "inside");
+
+        int present = 0, coverXY = 0;
+        for (const ZoneDef& d : Defs()) {
+            for (int i = 0; i < total; i++)
+                if (memcmp(gZones[i].textLabel, d.textLabel, 8) == 0) { present++; break; }
+            if (x >= std::min(d.x1, d.x2) && x <= std::max(d.x1, d.x2) &&
+                y >= std::min(d.y1, d.y2) && y <= std::max(d.y1, d.y2)) coverXY++;
+        }
+        Log::Write("F8 zones: %d of our %u zone(s) in the array, %d cover this x/y",
+                   present, (unsigned)Defs().size(), coverXY);
     }
 }
