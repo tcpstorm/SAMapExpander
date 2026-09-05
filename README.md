@@ -19,6 +19,10 @@ What it does today:
   grid before wrapping it into the repeat-sector array, so outside the map a ped's ped and vehicle
   scanners came back empty: punches animated but never connected, and ped AI ignored everyone around
   it. Four two-byte patches drop the clamps.
+- **A region's own map assets.** Point a region at its original `.img`, `.ide`, `.ipl` and `.col` and the
+  plugin registers the archive, remaps the model ids into a free range and places every `inst` line at
+  the region's origin — through the game's own loaders. See *Loading a city's own assets*; `ModelIdLimit`
+  raises the DFF id ceiling so a whole city's models fit.
 - **Feature branches (pull requests open):** offset loading of original IPL sections (`feature/ipl-sections`),
   original water maps (`feature/water`), and original zone names (`feature/zones`). See *Region data*.
 
@@ -65,6 +69,7 @@ handy for placing an origin against a known landmark. Leave it off for normal pl
 | `WorldOriginX/Y` | SA world position of the region's local (0,0) |
 | `WorldOriginZ` | height added to everything the region loads (water levels, zone boxes, IPL and inst coordinates) when the map was placed higher or lower than in its own game; default 0 |
 | `WorldMinX/MaxX/MinY/MaxY` | alternative to the origin: extent in SA space; the origin becomes its centre |
+| `Img`, `Ide`, `Ipl`, `Col` | the region's own map assets — see *Loading a city's own assets* |
 
 Vice City as shipped in the example: 8×8 tiles of 500 covering local −2000..2000, origin
 `5998.5, 1052.5` (VC is placed by `SA = VC + offset` in the VC2SAMP conversion, so its landmass spans
@@ -84,6 +89,9 @@ SA x 4171..6963, y −778..2626).
 | `ExtendWaterRendering` | 1 | draw region water beyond ±3000 instead of SA's flat ocean (see *Region data*); 2/3 are bisect modes for diagnosing rendering problems |
 | `Gxt` | – | comma list of GXT files (III/VC/SA format) merged into the game's text table; ours win on a shared key |
 | `GxtLogMisses` | 0 | diagnostic: hook `CText::Get` to log keys nobody provides (conflicts with SA-MP's own hook; keep off) |
+| `ModelIdLimit` | 25000 | number of DFF model ids; 20000 turns it off, 26400 is the ceiling. Skipped under SA-MP. Savegames are not compatible across a change. |
+| `FreeModelIdStart`, `FreeModelIdEnd` | 18631, `ModelIdLimit`−1 | model ids region IDEs may claim |
+| `AtomicModelInfoLimit` | grows with `ModelIdLimit` (14000 stock) | capacity of SA's atomic model-info store; set only if another limit adjuster changed it |
 | `Debug` | 0 | verbose log, F8 diagnostics, water render statistics |
 
 ### Region data (feature branches)
@@ -95,7 +103,49 @@ be hand-translated. Copy the files straight from the source game's `data\` folde
 |---|---|---|---|
 | `Ipl=` (comma list) | `feature/ipl-sections` | `data\maps\*.ipl` | sections `cull enex tcyc jump pick cars grge auzo`; `inst`/`zone`/`occl` ignored. VC's own IPLs only carry `cull` and `pick`; the SA-only sections must be authored in SA format. The entry/exit quad tree is widened beyond ±3000. Pool limits are checked per line and headroom is logged; `tcyc` (20) and `auzo` spheres (3) are nearly full in vanilla. |
 | `Water=`, `WaterXOffset=` | `feature/water` | `data\waterpro.dat` (`WaterXOffset=400` for VC, 0 for III) or an SA `water.dat` | physics (swimming, boats, camera) use real levels beyond ±3000 via a hook on `CWaterLevel::GetWaterLevelNoWaves`, and the same quads are rendered in place of SA's endless ocean. `tools/waterpro_to_dat.py` converts offline. |
+| `Img=`, `Ide=`, `Ipl=`, `Col=` | `feature/city-loader` | `models\gta3.img`, `data\maps\*.ide`, `data\maps\*.ipl` | the region's own buildings; the `inst` section of an IPL is used here, the other sections by the IPL loader above. See *Loading a city's own assets*. |
 | `Zones=`, `ZoneNames=` | `feature/zones` | `data\navig.zon`, `data\info.zon`, names from `text\american.gxt` | area names on VC through the vanilla zone system; their display names are merged into the game's own GXT key table. |
+
+## Loading a city's own assets
+
+With `Img`, `Ide`, `Ipl` and `Col` a region brings its own buildings instead of relying on a server to
+place them. Everything stays in the region's coordinates; the plugin adds the origin.
+
+```ini
+[ViceCity]
+Img = MapExpander\vicecity\vicecity.img
+Ide = MapExpander\vicecity\ide\generic.ide, MapExpander\vicecity\ide\downtown.ide
+Ipl = MapExpander\vicecity\ipl\downtown.ipl, MapExpander\vicecity\ipl\docks.ipl
+Col = MapExpander\vicecity\vicecity.col
+```
+
+**What goes in the IMG.** One `.dff` per model and one `.txd` per texture dictionary named by your
+IDE lines — a plain SA *IMG version 2* archive, built with any IMG tool from the source game's
+`gta3.img`. San Andreas resolves archive contents purely by name, so a model whose name also exists
+in `gta3.img` loses: SA's file wins and the region's model stays invisible. Rename such models in
+both the IDE and the archive. The models themselves must be RenderWare clumps San Andreas can read;
+Vice City geometry generally loads, but anything the game refuses shows up as a missing model, not as
+a crash. There are 8 archive slots in total and SA uses 3, so up to 5 region archives can be added.
+
+**What the plugin does with them.** Region archives are registered just before SA scans archive
+directories; the IDE files are then fed through the game's own parser with every model id rewritten
+into the free range, and each `inst` line is placed through the game's own scene loader with the
+origin added to x and y. All three `inst` dialects are accepted — GTA III's 12 fields, Vice City's 13
+and San Andreas' 11 — and LOD parents keep working because the whole file goes through in order. The
+rotation quaternion is copied verbatim (all three games store the same conjugate convention) and the
+III/VC scale columns are dropped, which loses nothing: those games ignore them too. The rewritten files land in `MapExpander\cache\` — read them when a
+region looks wrong.
+
+**Collision** comes from loose `.col` files (not from inside the IMG). They go into collision slot 0,
+the one slot San Andreas never streams out, so a region's collision is in memory for the whole
+session and does not depend on the collision quad tree, which cannot address anything past ±3000.
+
+**The ID limit, and why it bites.** Model ids 18631–19999 are free — 1369 for all regions together.
+That is not the real ceiling: SA's *atomic model-info store* holds 14000 entries and vanilla already
+uses almost all of them, so only a few dozen models fit before the store is full. `tobj` and `anim`
+models have no room at all (SA fills those stores exactly). The plugin never overruns a store: it
+stops and writes to `MapExpander.log` how many models were dropped and which limit ran out. Loading a
+whole city therefore needs a limit adjuster or the model-limit work that is still to come.
 
 IPL in one paragraph: "item placement" is the map's placement data — `inst` are the building/prop
 objects themselves, `cull` invisible behaviour boxes (interior lighting, no-rain, mirrors, tunnels),
@@ -111,6 +161,7 @@ All run in throwaway containers; nothing is installed on the host.
 - `tools/xref.py`, `tools/fieldref.py`, `tools/check_fn.py`, `tools/readfloat.py`, `tools/dumpb.py` — capstone helpers for cross-referencing addresses, struct-field accesses, disassembly, constants and raw bytes/branch targets in `gta_sa.exe`.
 - `tools/gen_functions.py` → `tools/sa_functions.txt` — 9.6k named addresses merged from gta-reversed and plugin-sdk, used to label scanner output.
 - `tools/montage.py`, `tools/montage_orders.py`, `tools/tile_order_score.py` — stitch tiles and score the eight possible grid orderings to verify a tile set's numbering.
+- `tools/scan_model_limit_sites.py` → `tools/model_limit_sites.txt` → `tools/gen_model_limit_sites.py` → `src/ModelLimitSites.h` — the 1380 instructions `ModelIdLimit` rewrites, with the candidates it deliberately leaves alone and why. `tools/verify_model_limit_sites.py` re-reads every one of them out of `gta_sa.exe` and must pass 100% before the table ships.
 
 ## Engine facts worth knowing
 
@@ -126,13 +177,12 @@ All run in throwaway containers; nothing is installed on the host.
   one call is enough to render arbitrary water out there without touching the block grid.
 - Path nodes (`nodes*.dat`) are `int16 / 8` at ~490 inline sites: traffic and ped paths cannot be extended past ±4096 without a rewrite. Irrelevant under SA-MP.
 - Audio zone boxes and occluders are also `int16 / 8` and stay limited to ±4096.
+- Every streamable resource shares one id space: DFF 0 (20000), TXD 20000 (5000), COL 25000 (255), IPL 25255 (256), DAT 25511 (64), IFP 25575 (180), RRR 25755 (475), SCM 26230 (82), plus 4 list-head sentinels — 26316 `CStreamingInfo` entries. `ModelIdLimit` shifts every base above the DFF range and reallocates the three arrays that size with it (`ms_aInfoForModel`, `ms_modelInfoPtrs`, `ms_atomicModelInfoStore`); the streaming lists link entries with `int16` indices, hence the 26400 ceiling. The other model-info stores keep their vanilla capacities (damage 70, time 169, weapon 51, clump 92, vehicle 212, ped 278, 2dfx 100) and none of them is bounds-checked.
 
 ## Roadmap
 
-- **Self-contained city loading.** Today the objects themselves come from elsewhere (for Vice City, the
-  VC2SAMP server places them). Loading a city from its original files inside the plugin means:
-  registering models from the source `.ide` (`objs`/`tobj` with a free model-id range), streaming
-  `.dff`/`.txd`/`.col` from the source `.img` through `CStreaming`, placing `inst` lines with the origin,
-  and lighting/`timecyc` differences. It is the largest remaining piece and would make a region fully
-  standalone in single-player.
+- **More than 26400 models.** `ModelIdLimit` frees DFF ids past 20000 and grows the atomic model-info
+  store to match, but the streaming lists link entries with int16 indices, so 26400 is where that
+  approach stops; a second city the size of Vice City needs those lists widened too.
+- Lighting and `timecyc` differences between the source game and San Andreas.
 - Zone/water array relocation for regions that exceed the vanilla pool sizes.

@@ -9,9 +9,11 @@
 #include "Water.h"
 #include "IplLoader.h"
 #include "WaterRender.h"
+#include "CityLoader.h"
 #include "DebugKeys.h"
 #include "Gxt.h"
 #include "Zones.h"
+#include "ModelLimits.h"
 
 using namespace plugin;
 
@@ -22,6 +24,7 @@ public:
         CrashLog::Install();
         Settings::Load();
 
+        ModelLimits::Install();   // must move the streaming arrays before the game initialises them
         Gxt::Install();
         if (!Settings::regions.empty()) {
             RadarOverlay::Install();
@@ -29,6 +32,7 @@ public:
             if (Settings::world.extendPauseMap) MenuMapFix::Install();
             Water::Install();
             WaterRender::Install();
+            CityLoader::Install();
         }
         if (Settings::world.fixPickupPositions || Settings::world.fixCarGeneratorPositions) PickupFix::Install();
         if (Settings::world.fixMeleeBeyondMap) MeleeFix::Install();

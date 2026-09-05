@@ -33,6 +33,8 @@ namespace Settings {
 
     void Load() {
         regions.clear();
+        // Field by field: WorldSettings holds a std::vector, so a brace list would silently leave
+        // every field after it at whatever the aggregate default is.
         world = {};
         world.fixPickupPositions = true;
         world.fixCarGeneratorPositions = true;
@@ -41,6 +43,10 @@ namespace Settings {
         world.extendPauseMap = true;
         world.pauseMapMargin = 1500.0f;
         world.extendWaterRendering = 1;
+        world.modelIdLimit = 25000;
+        world.freeModelIdStart = 18631;
+        world.freeModelIdEnd = -1;         // up to ModelIdLimit - 1
+        world.atomicModelInfoLimit = -1;   // the store's real capacity
 
         IniFile ini;
         if (!ini.Load(PLUGIN_PATH("MapExpander.ini"))) {
@@ -64,9 +70,13 @@ namespace Settings {
             world.pauseMapMinY = w->GetFloat("PauseMapMinY", 0.0f);
             world.pauseMapMaxY = w->GetFloat("PauseMapMaxY", 0.0f);
             world.extendWaterRendering = w->GetInt("ExtendWaterRendering", 1);
+            world.freeModelIdStart = w->GetInt("FreeModelIdStart", 18631);
+            world.freeModelIdEnd = w->GetInt("FreeModelIdEnd", -1);   // -1: up to ModelIdLimit
+            world.atomicModelInfoLimit = w->GetInt("AtomicModelInfoLimit", -1);
             if (world.compressedPositionScale <= 0.0f) world.compressedPositionScale = 4.0f;
             world.gxtFiles = SplitPaths(w->GetString("Gxt", ""));
             world.gxtLogMisses = w->GetBool("GxtLogMisses", false);
+            world.modelIdLimit = w->GetInt("ModelIdLimit", 25000);
         }
 
         for (auto& s : ini.Sections()) {
@@ -79,6 +89,9 @@ namespace Settings {
             std::string water = s.GetString("Water", "");
             r.waterFile = water.empty() ? std::string() : ResolveGamePath(water);
             r.waterXOffset = s.GetFloat("WaterXOffset", 0.0f);
+            r.imgFiles = SplitPaths(s.GetString("Img", ""));
+            r.ideFiles = SplitPaths(s.GetString("Ide", ""));
+            r.colFiles = SplitPaths(s.GetString("Col", ""));
             r.tileSize = s.GetFloat("TileSize", 500.0f);
             r.tilesX = s.GetInt("TilesX", 0);
             r.tilesY = s.GetInt("TilesY", 0);
