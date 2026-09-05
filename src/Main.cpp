@@ -10,6 +10,7 @@
 #include "IplLoader.h"
 #include "WaterRender.h"
 #include "CityLoader.h"
+#include "WorldSectors.h"
 #include "DebugKeys.h"
 #include "Gxt.h"
 #include "Zones.h"
@@ -33,6 +34,10 @@ public:
             Water::Install();
             WaterRender::Install();
             CityLoader::Install();
+            // Only when this process is the one placing the region: under SA-MP the server owns
+            // the objects and already handles distant ones, so the world grid is left alone.
+            if (CityLoader::PlacesOwnEntities() && Settings::world.extendWorldSectors)
+                WorldSectors::Install();
         }
         if (Settings::world.fixPickupPositions || Settings::world.fixCarGeneratorPositions) PickupFix::Install();
         if (Settings::world.fixMeleeBeyondMap) MeleeFix::Install();
