@@ -293,15 +293,21 @@ def convert_texture_native(body):
     return bytes(out) + tail
 
 
-def convert_txd(data):
-    """A III/VC TXD rebuilt for San Andreas. Returns (bytes, converted, failed)."""
+def txd_texture_chunks(data):
+    """Every texture in a III/VC TXD, converted to San Andreas' D3D9 form.
+
+    Returns (chunks, converted, failed), where chunks is a list of (texture name, chunk bytes) in
+    the order the dictionary held them, or (None, 0, 0) if the blob is not a texture dictionary.
+    Kept separate from building the dictionary back up so that two files carrying the same name can
+    be merged into one - see the packing loop in main().
+    """
     dictionary = None
     for kind, s, e in rw_sections(data, 0, len(data)):
         if kind == RW_TEX_DICTIONARY:
             dictionary = (s, e)
             break
     if dictionary is None:
-        return data, 0, 0
+        return None, 0, 0
 
     textures, converted, failed = [], 0, 0
     for kind, s, e in rw_sections(data, *dictionary):
@@ -315,16 +321,28 @@ def convert_txd(data):
                 failed += 1
             else:
                 converted += 1
+                name = body[8:40].split(b"\0")[0].decode("ascii", "replace")
                 # An empty extension: whatever III/VC hung off the texture means nothing here.
-                textures.append(rw_chunk(RW_TEXTURE_NATIVE,
-                                         rw_chunk(RW_STRUCT, body) + rw_chunk(RW_EXTENSION, b"")))
+                textures.append((name, rw_chunk(RW_TEXTURE_NATIVE,
+                                                rw_chunk(RW_STRUCT, body) + rw_chunk(RW_EXTENSION, b""))))
             break
 
-    if not textures:
-        return data, 0, failed
-    header = rw_chunk(RW_STRUCT, struct.pack("<HH", len(textures), 2))   # deviceId 2 = D3D9
-    body = header + b"".join(textures) + rw_chunk(RW_EXTENSION, b"")
-    return rw_chunk(RW_TEX_DICTIONARY, body), converted, failed
+    return textures, converted, failed
+
+
+def build_txd(chunks):
+    """A San Andreas texture dictionary holding the given (name, chunk bytes) textures."""
+    header = rw_chunk(RW_STRUCT, struct.pack("<HH", len(chunks), 2))   # deviceId 2 = D3D9
+    body = header + b"".join(c for _name, c in chunks) + rw_chunk(RW_EXTENSION, b"")
+    return rw_chunk(RW_TEX_DICTIONARY, body)
+
+
+def convert_txd(data):
+    """A III/VC TXD rebuilt for San Andreas. Returns (bytes, converted, failed)."""
+    chunks, converted, failed = txd_texture_chunks(data)
+    if not chunks:
+        return data, converted, failed
+    return build_txd(chunks), converted, failed
 
 
 def write_png(path, width, height, rgba):
@@ -521,6 +539,7 @@ def main():
     # Split the archive: models/textures into the new IMG, collision into loose files,
     # radar tiles into PNGs. Everything else (audio, misc) is dropped.
     packed, cols, tiles, skipped = [], 0, 0, 0
+    txd_parts = {}
     tex_done, tex_failed, txds = 0, 0, 0
     for name, off, size in entries:
         blob = archive[off:off + size]
@@ -542,14 +561,41 @@ def main():
             cols += 1
         elif ext == ".txd":
             txds += 1
-            blob, done, bad = convert_txd(blob)
+            chunks, done, bad = txd_texture_chunks(blob)
             tex_done += done
             tex_failed += bad
-            packed.append((renamed(name), blob))
+            key = renamed(name)
+            if chunks is None:
+                packed.append((key, blob))          # not a dictionary; pass it through untouched
+            else:
+                part = txd_parts.setdefault(key.lower(), [key, [], 0])
+                part[1].extend(chunks)
+                part[2] += 1
         elif ext == ".dff":
             packed.append((renamed(name), blob))
         else:
             skipped += 1
+    # Vice City's own gta3.dir carries the same TXD name more than once: generic.txd is in there
+    # both as the dictionary holding the tree leaf textures and as a second one holding ivy and road
+    # surfaces. A name is one streaming slot, so packing both means the second silently replaces the
+    # first and every model bound to it renders untextured - white leaves, in the case that found
+    # this. Merge same-named dictionaries into one instead, keeping the first texture of any name.
+    shared = []
+    for key, chunks, sources in txd_parts.values():
+        seen, unique = set(), []
+        for texname, chunk in chunks:
+            low = texname.lower()
+            if low in seen:
+                continue
+            seen.add(low)
+            unique.append((texname, chunk))
+        if sources > 1:
+            shared.append("%s (%d dictionaries, %d texture(s))" % (key, sources, len(unique)))
+        packed.append((key, build_txd(unique)))
+    if shared:
+        print("merged %d texture dictionary name(s) the source archive carried more than once: %s"
+              % (len(shared), ", ".join(sorted(shared))))
+
     if lite:
         print("%d radar tiles" % tiles)
     else:
