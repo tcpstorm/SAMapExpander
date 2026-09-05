@@ -63,6 +63,7 @@ handy for placing an origin against a known landmark. Leave it off for normal pl
 | `GridMinX` | local X of the west edge of column 0 (default `-TilesX*TileSize/2`) |
 | `GridMaxY` | local Y of the north edge of row 0 (default `+TilesY*TileSize/2`) |
 | `WorldOriginX/Y` | SA world position of the region's local (0,0) |
+| `WorldOriginZ` | height added to everything the region loads (water levels, zone boxes, IPL and inst coordinates) when the map was placed higher or lower than in its own game; default 0 |
 | `WorldMinX/MaxX/MinY/MaxY` | alternative to the origin: extent in SA space; the origin becomes its centre |
 
 Vice City as shipped in the example: 8×8 tiles of 500 covering local −2000..2000, origin

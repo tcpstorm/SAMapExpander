@@ -16,7 +16,7 @@ struct MapRegion {
     std::string regionName;             // area name over the whole tile grid, empty for none
 
     float originX, originY;   // SA world coords of the region's local (0,0)
-    float originZ;            // added to every region height (water levels, zone boxes)
+    float originZ;            // added to every region height (water levels, zone boxes, IPL/inst z)
     float tileSize;           // world units per tile
     float gridMinX;           // local X of the west edge of column 0
     float gridMaxY;           // local Y of the north edge of row 0

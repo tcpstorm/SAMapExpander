@@ -85,40 +85,40 @@ int PoolFreeSlots(uintptr_t poolPointer) {
 }
 
 // One accepted field layout for a section: how many whitespace-separated tokens it has and which
-// of them are absolute X / Y world coordinates. Everything else (sizes, angles, ranges, flags) is
-// relative and must be left alone.
+// of them are absolute X / Y / Z world coordinates. Everything else (sizes, angles, ranges, flags)
+// is relative and must be left alone.
 struct Variant {
     int           tokens;
-    unsigned char nx, ny;
-    unsigned char x[5], y[5];
+    unsigned char nx, ny, nz;
+    unsigned char x[5], y[5], z[5];
 };
 
 const Variant CULL_V[] = {
-    { 14, 1, 1, { 0 }, { 1 } },                              // mirror zone: centre, then vectors + mirror plane
-    { 11, 1, 1, { 0 }, { 1 } },                              // attribute / tunnel zone: centre, then vectors
+    { 14, 1, 1, 1, { 0 }, { 1 }, { 2 } },                                       // mirror zone: centre, then vectors + mirror plane
+    { 11, 1, 1, 1, { 0 }, { 1 }, { 2 } },                                       // attribute / tunnel zone: centre, then vectors
 };
 const Variant ENEX_V[] = {
-    { 18, 2, 2, { 0, 7 }, { 1, 8 } },                        // entrance xyz, ..., exit xyz
+    { 18, 2, 2, 2, { 0, 7 }, { 1, 8 }, { 2, 9 } },                              // entrance xyz, ..., exit xyz
 };
 const Variant TCYC_V[] = {
-    { 12, 2, 2, { 0, 3 }, { 1, 4 } },                        // box corner A, corner B
-    { 11, 2, 2, { 0, 3 }, { 1, 4 } },
+    { 12, 2, 2, 2, { 0, 3 }, { 1, 4 }, { 2, 5 } },                              // box corner A, corner B
+    { 11, 2, 2, 2, { 0, 3 }, { 1, 4 }, { 2, 5 } },
 };
 const Variant JUMP_V[] = {
-    { 16, 5, 5, { 0, 3, 6, 9, 12 }, { 1, 4, 7, 10, 13 } },   // start min/max, target min/max, camera
+    { 16, 5, 5, 5, { 0, 3, 6, 9, 12 }, { 1, 4, 7, 10, 13 }, { 2, 5, 8, 11, 14 } },   // start min/max, target min/max, camera
 };
 const Variant PICK_V[] = {
-    { 4, 1, 1, { 1 }, { 2 } },                               // weapon id, xyz
+    { 4, 1, 1, 1, { 1 }, { 2 }, { 3 } },                                        // weapon id, xyz
 };
 const Variant CARS_V[] = {
-    { 12, 1, 1, { 0 }, { 1 } },                              // xyz, angle, ...
+    { 12, 1, 1, 1, { 0 }, { 1 }, { 2 } },                                       // xyz, angle, ...
 };
 const Variant GRGE_V[] = {
-    { 11, 3, 3, { 0, 3, 5 }, { 1, 4, 6 } },                  // corner, front point, opposite corner
+    { 11, 3, 3, 2, { 0, 3, 5 }, { 1, 4, 6 }, { 2, 7 } },                        // corner xyz, front point xy, opposite corner xyz
 };
 const Variant AUZO_V[] = {
-    { 9, 2, 2, { 3, 6 }, { 4, 7 } },                         // name, id, flags, box min, box max
-    { 7, 1, 1, { 3 }, { 4 } },                               // name, id, flags, centre, radius
+    { 9, 2, 2, 2, { 3, 6 }, { 4, 7 }, { 5, 8 } },                               // name, id, flags, box min, box max
+    { 7, 1, 1, 1, { 3 }, { 4 }, { 5 } },                                        // name, id, flags, centre, radius
 };
 
 struct SectionSpec {
@@ -339,12 +339,14 @@ void ProcessFile(const MapRegion& region, const std::string& path, unsigned mask
 
         for (int i = 0; i < variant->nx; i++) SetNum(tokens, variant->x[i], Num(tokens, variant->x[i]) + region.originX);
         for (int i = 0; i < variant->ny; i++) SetNum(tokens, variant->y[i], Num(tokens, variant->y[i]) + region.originY);
+        for (int i = 0; i < variant->nz; i++) SetNum(tokens, variant->z[i], Num(tokens, variant->z[i]) + region.originZ);
 
         // A mirror cull zone also carries the mirror plane's own coordinate along its normal axis.
         if (section == SEC_CULL && tokens.size() == 14) {
             double nx = Num(tokens, 10), ny = Num(tokens, 11);
             if (fabs(nx) > 0.5)      SetNum(tokens, 13, Num(tokens, 13) + region.originX);
             else if (fabs(ny) > 0.5) SetNum(tokens, 13, Num(tokens, 13) + region.originY);
+            else                     SetNum(tokens, 13, Num(tokens, 13) + region.originZ);
         }
 
         float limit = 0.0f;
