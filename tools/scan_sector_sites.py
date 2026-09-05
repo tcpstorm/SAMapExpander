@@ -19,8 +19,10 @@ unrelated use in the game (516 and 373 references). So each conversion's operand
 private copy instead, the way ModelLimits repoints the streaming arrays.
 
 Site kinds:
-    fine        fmul operand of a 50-unit conversion    -> our 0.01
-    coarse      fmul operand of a 200-unit conversion   -> our 0.0025
+    fine        fmul operand of a 50-unit conversion    -> our fine scale
+    coarse      fmul operand of a 200-unit conversion   -> our coarse scale
+    finecentre  fadd operand of the same conversion     -> our fine centre
+    coarsecentre  fadd operand of the same conversion   -> our coarse centre
     low/high    the +/-3000 bound a coordinate is clamped to before conversion, as a disp32
     lowimm      the -3000.0f a clamp stores as an immediate
     highimm     the 2999.5f a clamp stores as an immediate
@@ -90,6 +92,13 @@ def scan(pe):
                 for prev in reversed(window[:-1]):
                     if disp_of(prev) == scale and prev.mnemonic.startswith("fmul"):
                         rows.append((prev.address + prev.encoding.disp_offset, kind, scale))
+                        # The centre too. Repointing only the scale keeps the grid centred on 0, so
+                        # it has to reach as far the wrong way as the right way and the cells come
+                        # out twice as big as they need to be. With the centre ours as well the grid
+                        # can be shifted onto the ground that is actually used, and a cell stays as
+                        # small as the span allows - which is what every sector scan costs.
+                        rows.append((ins.address + ins.encoding.disp_offset,
+                                     kind + "centre", disp))
                         break
 
             if disp in (LOW, HIGH) and any(lo <= ins.address < hi for lo, hi in CLAMPERS):
@@ -114,7 +123,8 @@ def scan(pe):
     return unique
 
 
-KINDS = {"fine": "kFineScale", "coarse": "kCoarseScale", "low": "kLowBound",
+KINDS = {"fine": "kFineScale", "coarse": "kCoarseScale",
+         "finecentre": "kFineCentre", "coarsecentre": "kCoarseCentre", "low": "kLowBound",
          "high": "kHighBound", "lowimm": "kLowImmediate", "highimm": "kHighImmediate"}
 
 
@@ -133,7 +143,8 @@ def main():
         out.write("#pragma once\n#include <cstdint>\n\nnamespace WorldSectors {\n\n")
         out.write("enum SiteKind : uint8_t {\n")
         for name in ("kFineScale", "kCoarseScale", "kLowBound", "kHighBound",
-                     "kLowImmediate", "kHighImmediate", "kSiteKindCount"):
+                     "kLowImmediate", "kHighImmediate", "kFineCentre",
+                     "kCoarseCentre", "kSiteKindCount"):
             out.write("    %s,\n" % name)
         out.write("};\n\nstruct Site {\n    uint32_t operand;   // address of the 4 bytes to rewrite\n"
                   "    uint32_t oldValue;  // what it must still hold\n    uint8_t  kind;\n};\n\n")

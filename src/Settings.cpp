@@ -195,12 +195,11 @@ namespace Settings {
         return cached != 0;
     }
 
-    void WorldExtent(float& minX, float& maxX, float& minY, float& maxY) {
-        if (world.pauseMapCustomBounds) {
-            minX = world.pauseMapMinX; maxX = world.pauseMapMaxX;
-            minY = world.pauseMapMinY; maxY = world.pauseMapMaxY;
-            return;
-        }
+    // The ground that has to be addressable: San Andreas' own +/-3000 and every region's tiles.
+    // Deliberately without the pause map's margin and without its custom bounds - those say what
+    // the map screen scrolls over, and paying for them in the world grid costs cell size, which
+    // every sector scan pays for again on every frame.
+    void RegionExtent(float& minX, float& maxX, float& minY, float& maxY) {
         minX = -3000.0f; maxX = 3000.0f; minY = -3000.0f; maxY = 3000.0f;
         for (auto& r : regions) {
             if (r.TileWest(0) < minX) minX = r.TileWest(0);
@@ -208,6 +207,15 @@ namespace Settings {
             if (r.TileNorth(0) > maxY) maxY = r.TileNorth(0);
             if (r.TileNorth(r.tilesY) < minY) minY = r.TileNorth(r.tilesY);
         }
+    }
+
+    void WorldExtent(float& minX, float& maxX, float& minY, float& maxY) {
+        if (world.pauseMapCustomBounds) {
+            minX = world.pauseMapMinX; maxX = world.pauseMapMaxX;
+            minY = world.pauseMapMinY; maxY = world.pauseMapMaxY;
+            return;
+        }
+        RegionExtent(minX, maxX, minY, maxY);
         minX -= world.pauseMapMargin; maxX += world.pauseMapMargin;
         minY -= world.pauseMapMargin; maxY += world.pauseMapMargin;
     }
