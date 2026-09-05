@@ -600,7 +600,6 @@
 0x4C5960 | ptr        | +3 | 4 | 0x00A9B0C8 | 1 | Models::GetModelInfo+0x20 | ms_modelInfoPtrs[0]
 0x4C5971 | res        | +2 | 4 | 0x00004E20 | 1 | Models::GetModelInfo+0x31 | TXD (array reference at 0x4C5960)
 0x4C5980 | ptr        | +3 | 4 | 0x00A9B0C8 | 1 | Models::GetModelInfo+0x40 | ms_modelInfoPtrs[0]
-0x4C59A1 | ptr        | +2 | 4 | 0x00AAE948 | 1 | Models::GetModelInfo+0x61 | ms_modelInfoPtrs[20000]
 0x4C59C0 | ptr        | +3 | 4 | 0x00A9B0C8 | 1 | Models::GetModelInfoFromHashKey+0x10 | ms_modelInfoPtrs[0]
 0x4C59D1 | res        | +2 | 4 | 0x00004E20 | 1 | Models::GetModelInfoFromHashKey+0x21 | TXD (call Models::GetModelInfoFromHashKey+0x10)
 0x4C5A40 | ptr        | +3 | 4 | 0x00A9B0C8 | 1 | Models::GetModelInfo+0x20 | ms_modelInfoPtrs[0]
@@ -686,9 +685,6 @@
 0x4C6A47 | ptr        | +2 | 4 | 0x00A9B6BC | 1 | Models::Initialise+0x237 | ms_modelInfoPtrs[381]
 0x4C85D6 | ptr        | +3 | 4 | 0x00A9B0C8 | 1 | CLinkedUpgradeList::ChooseVehicleColour+0xD6 | ms_modelInfoPtrs[0]
 0x4C89B8 | ptr        | +3 | 4 | 0x00A9B0C8 | 1 | CLinkedUpgradeList::GetMaximumNumberOfPassengersFromNumberOfDoors+0x8 | ms_modelInfoPtrs[0]
-0x4CDE60 | ptr        | +2 | 4 | 0x00AAE948 | 1 | ? | ms_modelInfoPtrs[20000]
-0x4CDF37 | ptr        | +2 | 4 | 0x00AAE948 | 1 | Animation::Constructor+0xC7 | ms_modelInfoPtrs[20000]
-0x4CE4E2 | ptr        | +2 | 4 | 0x00AAE948 | 1 | Animation::CreateAssociations+0x132 | ms_modelInfoPtrs[20000]
 0x4D3D52 | ptr        | +3 | 4 | 0x00A9B0C8 | 1 | Animation::CreateAnimAssocGroups+0x92 | ms_modelInfoPtrs[0]
 0x4D4133 | res        | +2 | 4 | 0x000063E7 | 1 | Animation::Shutdown+0x3 | IFP as displacement
 0x4D5C57 | info       | +4 | 4 | 0x008E4CC6 | 1 | CCutsceneMgr::LoadEverythingBecauseCutsceneDeletedAllOfIt+0x47 | ms_aInfoForModel[0]+0x6
@@ -1355,6 +1351,7 @@
 0x15651B1 | res        | +1 | 4 | 0x000062A7 | 1 | ? | IPL
 0x156526C | ptr        | +3 | 4 | 0x00A9B0C8 | 1 | ? | ms_modelInfoPtrs[0]
 0x15656D2 | res        | +2 | 4 | 0x000063A7 | 1 | ? | DAT as displacement
+0x15662F5 | ptr        | +3 | 4 | 0x00A9B0C8 | 1 | ? | ms_modelInfoPtrs[0] (anchored on the constant)
 0x15663C9 | info       | +2 | 4 | 0x008E4CCC | 1 | ? | ms_aInfoForModel[0]+0xC
 0x15663D8 | info       | +3 | 4 | 0x008E4CC7 | 1 | ? | ms_aInfoForModel[0]+0x7
 0x15663EB | info       | +2 | 4 | 0x008E4CC8 | 1 | ? | ms_aInfoForModel[0]+0x8
@@ -1504,4 +1501,4 @@
 # 0x15665DA | bound of the special-model array at 0x8E4AF8, not of ms_aInfoForModel | cmp esi, 0x8f8378 | ms_aInfoForModel[3977]+0x4
 # 0x15665E2 | bound of the special-model array at 0x8E4AF8, not of ms_aInfoForModel | cmp esi, 0x8fd198 | ms_aInfoForModel[4977]+0x4
 #
-# 1407 sites: atomic=37, count4=1, info=363, ptr=743, res=229, resneg=30, sentinel16=4
+# 1404 sites: atomic=37, count4=1, info=363, ptr=740, res=229, resneg=30, sentinel16=4

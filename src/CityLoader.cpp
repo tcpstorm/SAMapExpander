@@ -47,6 +47,13 @@ const LoadFileFn CallLoadScene = reinterpret_cast<LoadFileFn>(0x5B8700);
 constexpr uintptr_t kStreamingFiles = 0x8E48D8;
 constexpr unsigned kStreamingFileStride = 0x30;
 constexpr unsigned kMaxArchives = 8;
+// That name is 40 bytes, with the "not player.img" flag right behind it at 0x28, and
+// CStreaming::AddImageToList copies into it without leaving room for a terminator. A longer path
+// comes back out truncated, CFileMgr::OpenFile fails on it and CStreaming::LoadCdDirectory binds
+// nothing at all - with no complaint of its own, so the whole archive's models simply stay
+// invisible. gta.dat's own IMG lines are game-relative and CFileMgr resolves them against the game
+// directory, so give a region's archive its path back in that form.
+constexpr size_t kArchivePathMax = 39;
 
 // CStreaming::ms_aInfoForModel: 26316 x CStreamingInfo(0x14), m_CDSize at 0xC. Zero means no
 // archive claimed this id, i.e. nothing in any IMG is named after the model.
@@ -76,10 +83,72 @@ constexpr unsigned kMaxInstPerFile = 4096;
 constexpr unsigned char kPermanentColSlot = 0;
 
 // CPools::ms_pBuildingPool / ms_pDummyPool. Every inst line consumes one entry, and CPool::New
-// returns null when full, which LoadObjectInstance would dereference straight away.
+// returns null when full, which LoadObjectInstance dereferences straight away (0x5381A5).
+//
+// Vanilla San Andreas places about 9200 buildings from gta.dat and leaves the rest of the 13000 for
+// the IPL sections it streams in as the camera moves, so a region's entities cannot come out of
+// what is left: fitting them in there both loses most of the city and starves the streamer, which
+// then dies on the first section it cannot place. Grow both pools by what the region's IPLs hold
+// instead, before CPools::Initialise creates them, and SA keeps exactly the headroom it had.
 constexpr uintptr_t kBuildingPool = 0xB74498;
 constexpr uintptr_t kDummyPool = 0xB744A0;
 constexpr int kBuildingPoolReserve = 128;
+constexpr uintptr_t kBuildingPoolSizeOperand = 0x55105F;  // imm32 of `push 13000` in CPools::Initialise
+constexpr uintptr_t kDummyPoolSizeOperand = 0x5510CF;     // imm32 of `push 2500`
+constexpr int kVanillaBuildingPool = 13000;
+constexpr int kVanillaDummyPool = 2500;
+// An inst line becomes a building or a dummy depending on flags this pre-count cannot read, so both
+// pools get room for all of them; the entries are 0x40-odd bytes each.
+constexpr int kEntityPoolMargin = 256;
+
+// CPools::ms_pPtrNodeSingleLinkPool. CEntity::Add files a static entity into every sector its bound
+// rect covers, and each of those takes one node out of this pool; CPtrListSingleLink::AddItem then
+// writes through whatever CPool::New handed back, so a full pool is a null store at 0x533606. A
+// region's buildings need their own nodes on top of the ones San Andreas' map already holds, and a
+// building spans a few 50-unit sectors, so budget several per inst line.
+constexpr uintptr_t kPtrNodePoolSizeOperand = 0x550F46;  // imm32 of `push 70000` in CPools::Initialise
+constexpr int kVanillaPtrNodePool = 70000;
+constexpr int kPtrNodesPerInstLine = 8;
+constexpr int kPtrNodePoolMargin = 1024;
+
+// CPools::ms_pColModelPool, same story: CColModel::operator new (0x40FC30) is CPool::New on this
+// pool, and CFileLoader::LoadCollisionFileFirstTime hands whatever it returns straight to
+// LoadCollisionModelVer2/3/4, which write the bounding sphere through it with no null check. Every
+// collision model a region adds takes an entry, and vanilla San Andreas leaves only a few hundred
+// of the 10150 spare - so the pool has to be grown before CPools::Initialise creates it, or SA's
+// own collision runs out of entries halfway through CColStore::LoadAllBoundingBoxes and the game
+// dies at CFileLoader::LoadCollisionModelVer3+0x32 on a model that has nothing to do with us.
+constexpr uintptr_t kColModelPoolSizeOperand = 0x551107;  // imm32 of `push 10150` in CPools::Initialise
+constexpr int kVanillaColModelPool = 10150;
+constexpr int kColModelPoolMargin = 128;
+
+// CIplStore keeps one entity-index array per IPL file - the table that turns an inst line's LOD
+// column into the entity the streamer later loads for it - and CFileLoader::LoadScene takes a fresh
+// one every time it runs. CIplStore::GetNewIplEntityIndexArray appends to that table with no bounds
+// check at all, and the table is 40 pointers with the store's own globals directly behind it:
+//
+//     0x8E3F00 ms_numEntityIndexArrays   0x8E3F08 ms_pEntityIndexArrays[40] (ends at 0x8E3FA8)
+//     0x8E3FA8 a flag   0x8E3FAC ms_pQuadTree   0x8E3FB0 ms_pPool
+//
+// San Andreas' own gta.dat uses about 29 of them, so the spare room is not enough for a region's
+// IPLs: entry 41 lands on the quad tree and entry 42 on ms_pPool, replacing the pool with a
+// freshly malloc'd int array. Nothing notices until CIplStore::SetupRelatedIpls walks the pool at
+// the end of the next LoadScene and follows m_pObjects into unmapped memory. So move the table to
+// the heap with room for the region's files. Only the five instructions that name it change; the
+// count keeps its global, and CIplStore::Shutdown frees out of the new table the same way.
+constexpr uintptr_t kIplEntityArrays = 0x8E3F08;
+constexpr uintptr_t kIplEntityArrayCount = 0x8E3F00;
+constexpr int kVanillaIplEntityArrays = 40;
+constexpr int kIplEntityArrayMargin = 64;
+constexpr uintptr_t kIplEntityArraySites[] = {
+    0x405C3D,   // CIplStore::LoadIplBoundingBox   mov eax, [edx*4 + table]
+    0x40619B,   // CIplStore::LoadIpl              mov edx, [ecx*4 + table]
+    0x1561160,  // CIplStore::Shutdown             mov edx, [esi*4 + table]
+    0x15649FA,  // GetNewIplEntityIndexArray       mov [ecx*4 + table], eax
+    0x1569777,  // GetIplEntityIndexArray          mov eax, [eax*4 + table]
+};
+
+int gIplEntityArrayCapacity = kVanillaIplEntityArrays;
 
 unsigned StoreCount(uintptr_t store) { return *reinterpret_cast<unsigned*>(store); }
 
@@ -128,6 +197,7 @@ std::string& CacheDir() { static std::string s; return s; }
 int gNextFreeId = 0;
 bool gAssetsRegistered = false;
 bool gInstancesPlaced = false;
+bool gPlacesOwnEntities = false;
 
 // Function-local too: a SafetyHookInline owns a mutex and an allocator handle, so move-assigning
 // create_inline's result into a global that has not been constructed yet crashes in the assignment.
@@ -173,6 +243,19 @@ bool WriteWholeFile(const std::string& path, const std::string& text) {
     bool ok = text.empty() || fwrite(text.data(), 1, text.size(), f) == text.size();
     fclose(f);
     return ok;
+}
+
+// Settings resolves every path in the INI against the game directory; this puts one back the way
+// it was written, for the places that pass a path on to the game rather than open it themselves.
+std::string GameRelativePath(const std::string& path) {
+    // GAME_PATH(x) is the game directory with x appended, so asking it for a one-character name and
+    // dropping that character leaves the prefix Settings put in front of every configured path.
+    std::string probe = std::string(GAME_PATH("?"));
+    std::string root = probe.empty() ? probe : probe.substr(0, probe.size() - 1);
+    if (!root.empty() && path.size() > root.size() &&
+        _strnicmp(path.c_str(), root.c_str(), root.size()) == 0)
+        return path.substr(root.size());
+    return path;
 }
 
 bool FileExists(const std::string& path) {
@@ -490,10 +573,19 @@ void RegisterArchives() {
                            rs.region->name.c_str(), path.c_str(), used, kMaxArchives);
                 continue;
             }
-            unsigned slot = CallAddImageToList(path.c_str(), true);
+            std::string shortPath = GameRelativePath(path);
+            if (shortPath.size() > kArchivePathMax) {
+                Log::Write("[%s] img: %s NOT registered - CStreaming::ms_files keeps only %u "
+                           "characters of an archive path and this one needs %u; put the archive "
+                           "closer to the game directory or give it a shorter name",
+                           rs.region->name.c_str(), path.c_str(), (unsigned)kArchivePathMax,
+                           (unsigned)shortPath.size());
+                continue;
+            }
+            unsigned slot = CallAddImageToList(shortPath.c_str(), true);
             used++;
             Log::Write("[%s] img: %s registered as archive %u (%u/%u slots used)",
-                       rs.region->name.c_str(), path.c_str(), slot, used, kMaxArchives);
+                       rs.region->name.c_str(), shortPath.c_str(), slot, used, kMaxArchives);
         }
     }
 }
@@ -549,20 +641,24 @@ void LoadModelDefinitions() {
 // A .col archive is a chain of chunks: 4cc, size, then 24 bytes of name and model id, with `size`
 // counted from after the 4cc/size pair. Neither game loader checks the 4cc or the size, and the
 // zero padding an IMG extractor leaves at the end of a file would send them off the rails - so walk
-// the chunks here and hand the game only the bytes that hold sound chunks. Returns that length (0
-// if nothing is usable) and the file's bytes.
-size_t ReadColFile(const RegionState& rs, const std::string& path, std::vector<uint8_t>& data, int& models) {
+// the chunks here and hand the game only the bytes that hold sound chunks.
+bool ReadWholeFile(const std::string& path, std::vector<uint8_t>& data) {
     FILE* f = fopen(path.c_str(), "rb");
-    if (!f) return 0;
+    if (!f) return false;
     fseek(f, 0, SEEK_END);
     long total = ftell(f);
     fseek(f, 0, SEEK_SET);
     data.resize(total > 0 ? (size_t)total : 0);
     bool read = data.empty() || fread(data.data(), 1, data.size(), f) == data.size();
     fclose(f);
-    if (!read) return 0;
+    return read;
+}
 
+// The length of the leading run of well-formed chunks, with their number in `models` and whether
+// any of them is a COL4.
+size_t ColChunkRun(const std::vector<uint8_t>& data, int& models, bool& anyCol4) {
     models = 0;
+    anyCol4 = false;
     size_t good = 0;
     while (good + 32 <= data.size()) {
         const uint8_t* header = data.data() + good;
@@ -570,12 +666,22 @@ size_t ReadColFile(const RegionState& rs, const std::string& path, std::vector<u
         if (memcmp(header, "COL", 3) != 0 || !(header[3] == 'L' || (header[3] >= '2' && header[3] <= '4'))) break;
         unsigned size = *reinterpret_cast<const unsigned*>(header + 4);
         if (size < 24 || good + 8 + size > data.size()) break;
-        if (header[3] == '4')
-            Log::Write("[%s] col: %s contains COL4 data, which this loader path does not read",
-                       rs.region->name.c_str(), path.c_str());
+        if (header[3] == '4') anyCol4 = true;
         good += 8 + size;
         models++;
     }
+    return good;
+}
+
+// Returns the usable length (0 if nothing is), the file's bytes and how many models they hold.
+size_t ReadColFile(const RegionState& rs, const std::string& path, std::vector<uint8_t>& data, int& models) {
+    if (!ReadWholeFile(path, data)) return 0;
+
+    bool anyCol4 = false;
+    size_t good = ColChunkRun(data, models, anyCol4);
+    if (anyCol4)
+        Log::Write("[%s] col: %s contains COL4 data, which this loader path does not read",
+                   rs.region->name.c_str(), path.c_str());
 
     if (models == 0) {
         Log::Write("[%s] col: %s holds no readable collision models", rs.region->name.c_str(), path.c_str());
@@ -595,6 +701,140 @@ size_t ReadColFile(const RegionState& rs, const std::string& path, std::vector<u
 // time it runs, a wild write for ours.
 typedef void(__cdecl* LoadCollisionDataFn)(const uint8_t*, unsigned, unsigned char);
 const LoadCollisionDataFn CallLoadCollisionData = reinterpret_cast<LoadCollisionDataFn>(0x5B5000);
+
+// Reads every region col file once, at install time, only to count its chunks: CPools::Initialise
+// runs long before Init2, so the pool has to be sized before a single one of them is loaded.
+int RegionColModelCount() {
+    std::vector<uint8_t> data;
+    int total = 0;
+    for (RegionState& rs : Regions()) {
+        for (const std::string& path : rs.region->colFiles) {
+            if (!ReadWholeFile(path, data)) continue;
+            int models = 0;
+            bool anyCol4 = false;
+            ColChunkRun(data, models, anyCol4);
+            total += models;
+        }
+    }
+    return total;
+}
+
+// Counts inst lines the same way CollectInsts walks them, without needing the model ids it has not
+// assigned yet. An upper bound: lines whose model no IDE defines are counted here and dropped there.
+int RegionInstLineCount() {
+    int total = 0;
+    for (RegionState& rs : Regions()) {
+        for (const std::string& source : rs.region->iplFiles) {
+            bool inInst = false;
+            for (const std::string& raw : ReadLines(source)) {
+                std::string line = Normalise(raw);
+                if (line.empty() || line[0] == '#') continue;
+                std::string head = SectionOf(line);
+                if (!inInst) {
+                    inInst = head == "inst";
+                } else if (head == "end") {
+                    inInst = false;
+                } else {
+                    total++;
+                }
+            }
+        }
+    }
+    return total;
+}
+
+void RaiseEntityPools() {
+    int building = (int)patch::GetUInt(kBuildingPoolSizeOperand);
+    int dummy = (int)patch::GetUInt(kDummyPoolSizeOperand);
+    int lines = RegionInstLineCount();
+    if (!lines) return;
+    if (building != kVanillaBuildingPool || dummy != kVanillaDummyPool)
+        Log::Write("inst: the entity pools are already sized %d/%d rather than the vanilla %d/%d - "
+                   "another limit adjuster got here first",
+                   building, dummy, kVanillaBuildingPool, kVanillaDummyPool);
+
+    int wantBuilding = Settings::world.buildingPoolLimit;
+    int wantDummy = Settings::world.dummyPoolLimit;
+    if (wantBuilding < 0) wantBuilding = building + lines + kEntityPoolMargin;
+    if (wantDummy < 0) wantDummy = dummy + lines + kEntityPoolMargin;
+
+    if (wantBuilding > building) patch::SetUInt(kBuildingPoolSizeOperand, (unsigned)wantBuilding);
+    if (wantDummy > dummy) patch::SetUInt(kDummyPoolSizeOperand, (unsigned)wantDummy);
+    Log::Write("inst: building pool %d -> %d, dummy pool %d -> %d entries (%d inst line(s) in the "
+               "region IPLs)", building, wantBuilding > building ? wantBuilding : building,
+               dummy, wantDummy > dummy ? wantDummy : dummy, lines);
+
+    int nodes = (int)patch::GetUInt(kPtrNodePoolSizeOperand);
+    int wantNodes = Settings::world.ptrNodePoolLimit;
+    if (wantNodes < 0) wantNodes = nodes + lines * kPtrNodesPerInstLine + kPtrNodePoolMargin;
+    if (wantNodes > nodes) {
+        patch::SetUInt(kPtrNodePoolSizeOperand, (unsigned)wantNodes);
+        Log::Write("inst: sector pointer-node pool %d -> %d entries (a building takes one per "
+                   "50-unit sector it covers)", nodes, wantNodes);
+    }
+}
+
+// One entity-index array per CFileLoader::LoadScene call, so one per cached file we are about to
+// write: a region's IPL list, plus a file for every further kMaxInstPerFile lines it splits into.
+int RegionLoadSceneCount() {
+    int lines = RegionInstLineCount();
+    int files = 0;
+    for (RegionState& rs : Regions()) files += (int)rs.region->iplFiles.size();
+    return files + lines / (int)kMaxInstPerFile + 1;
+}
+
+void MoveIplEntityArrays() {
+    int wanted = kVanillaIplEntityArrays + RegionLoadSceneCount() + kIplEntityArrayMargin;
+    for (uintptr_t site : kIplEntityArraySites) {
+        if (patch::GetUInt(site) == kIplEntityArrays) continue;
+        Log::Write("ipl store: the entity-array table at %08X is not where it should be (site %08X "
+                   "holds %08X); left alone, and a region's IPLs will overrun it",
+                   kIplEntityArrays, (unsigned)site, patch::GetUInt(site));
+        return;
+    }
+
+    void* table = calloc((size_t)wanted, sizeof(void*));
+    if (!table) {
+        Log::Write("ipl store: cannot allocate %d entity-array slots; left alone", wanted);
+        return;
+    }
+    for (uintptr_t site : kIplEntityArraySites) patch::SetUInt(site, (unsigned)(uintptr_t)table);
+    gIplEntityArrayCapacity = wanted;
+    Log::Write("ipl store: entity-array table %d -> %d slots at %08X (%d of ours, %d for San "
+               "Andreas' own IPLs, %d spare) - the vanilla table has CIplStore's pool right behind "
+               "it and no bounds check in front of it",
+               kVanillaIplEntityArrays, wanted, (unsigned)(uintptr_t)table, RegionLoadSceneCount(),
+               kVanillaIplEntityArrays, kIplEntityArrayMargin);
+}
+
+// The count is still unchecked, so say so if a region ever gets near the new end.
+void ReportIplEntityArrayUse() {
+    int used = (int)*reinterpret_cast<unsigned*>(kIplEntityArrayCount);
+    if (used > gIplEntityArrayCapacity - kIplEntityArrayMargin / 2)
+        Log::Write("ipl store: %d of %d entity-array slots used - close enough to the end to be "
+                   "worth raising", used, gIplEntityArrayCapacity);
+}
+
+void RaiseColModelPool() {
+    int current = (int)patch::GetUInt(kColModelPoolSizeOperand);
+    if (current != kVanillaColModelPool)
+        Log::Write("col: the col model pool is already sized %d rather than the vanilla %d - "
+                   "another limit adjuster got here first", current, kVanillaColModelPool);
+
+    int wanted = Settings::world.colModelPoolLimit;
+    int needed = RegionColModelCount();
+    if (wanted < 0) wanted = current + needed + kColModelPoolMargin;
+    if (wanted <= current) {
+        if (needed)
+            Log::Write("col: model pool left at %d entries; the region collision needs %d and the "
+                       "configured limit is %d", current, needed, wanted);
+        return;
+    }
+
+    patch::SetUInt(kColModelPoolSizeOperand, (unsigned)wanted);
+    Log::Write("col: model pool %d -> %d entries (%d collision model(s) in the region col files, "
+               "%d spare)", current, wanted, needed, wanted - current - needed);
+}
 
 void LoadCollisionArchives() {
     std::vector<uint8_t> data;
@@ -699,13 +939,14 @@ void PlaceInstances() {
             Log::Write("[%s] inst: %d line(s) carried a non-unit scale, which San Andreas has no "
                        "field for - placed at scale 1", rs.region->name.c_str(), stats.scaled);
         if (refused)
-            Log::Write("[%s] inst: %d line(s) dropped - SA's 13000-entry building pool has no room "
-                       "left", rs.region->name.c_str(), refused);
+            Log::Write("[%s] inst: %d line(s) dropped - the building pool has no room left; raise "
+                       "BuildingPoolLimit", rs.region->name.c_str(), refused);
         if (stats.interior)
             Log::Write("[%s] inst: %d line(s) name an interior; the number is kept as written, and "
                        "the source game's interior numbering is not San Andreas'",
                        rs.region->name.c_str(), stats.interior);
     }
+    ReportIplEntityArrayUse();
 }
 
 // ---------------------------------------------------------------- hooks
@@ -755,11 +996,18 @@ namespace CityLoader {
             return;
         }
 
+        RaiseColModelPool();
+        RaiseEntityPools();
+        MoveIplEntityArrays();
+
         Init2Original() = safetyhook::create_inline(reinterpret_cast<void*>(0x5B8AD0),
                                                     reinterpret_cast<void*>(&Hooked_StreamingInit2));
         LoadLevelOriginal() = safetyhook::create_inline(reinterpret_cast<void*>(0x5B9030),
                                                        reinterpret_cast<void*>(&Hooked_LoadLevel));
+        gPlacesOwnEntities = true;
         Log::Write("city: loading own assets for %u region(s), cache in %s",
                    (unsigned)Regions().size(), CacheDir().c_str());
     }
+
+    bool PlacesOwnEntities() { return gPlacesOwnEntities; }
 }

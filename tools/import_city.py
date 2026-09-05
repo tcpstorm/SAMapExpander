@@ -193,9 +193,9 @@ def txd_first_texture(data):
                     at += 64
                 size = struct.unpack_from("<I", data, at)[0]
                 at += 4
-                if platform == 9:   # D3D9: d3d_or_alpha is a D3DFORMAT when flag & 0x80
+                if platform == 9:   # D3D9: d3d_or_alpha is a D3DFORMAT, a FOURCC when flag & 8
                     fourcc = struct.pack("<I", d3d_or_alpha)
-                    if flag & 0x80 and fourcc in (b"DXT1", b"DXT3"):
+                    if flag & 0x08 and fourcc in (b"DXT1", b"DXT3"):
                         return width, height, decode_dxt(data, at, width, height, fourcc == b"DXT3")
                 elif flag in (1, 3):   # D3D8: dxtCompression
                     return width, height, decode_dxt(data, at, width, height, flag == 3)
@@ -203,6 +203,128 @@ def txd_first_texture(data):
                     raise ValueError("PAL4 rasters are not supported")
                 return width, height, decode_raw(data, at, width, height, depth, fmt, palette)
     return None
+
+
+# ---------------------------------------------------------------- TXD -> San Andreas
+
+# San Andreas' raster reader is _rwD3D9NativeTextureRead and it only accepts platform 9. Vice City
+# and GTA III write platform 8 (D3D8), so their textures are silently rejected and every model that
+# uses them renders white - the geometry loads perfectly, which makes it look like a texture path
+# problem rather than a format one. The two native-texture structs are the same 88-byte layout and
+# the pixel data is identical; only three fields mean anything different:
+#
+#     offset 0    platformId          8 -> 9
+#     offset 76   hasAlpha            -> d3dFormat (a D3DFORMAT, or a FOURCC when compressed)
+#     offset 87   dxtCompression      -> flags: bit0 alpha, bit1 cube, bit2 automipmaps, bit3 compressed
+#
+# so this rewrites the headers and copies the levels through untouched, rather than decoding and
+# re-encoding every texture. Palettised rasters are the exception - see expand_palette.
+SA_LIB_ID = 0x1803FFFF          # RenderWare 3.6.0.3, the version San Andreas writes
+RW_STRUCT, RW_EXTENSION, RW_TEXTURE_NATIVE, RW_TEX_DICTIONARY = 0x01, 0x03, 0x15, 0x16
+
+# rasterFormat (masked with 0x0F00) -> D3DFORMAT, for the uncompressed cases.
+D3D_FORMATS = {
+    0x0100: 25,   # 1555 -> A1R5G5B5
+    0x0200: 23,   # 565  -> R5G6B5
+    0x0300: 26,   # 4444 -> A4R4G4B4
+    0x0400: 50,   # LUM8 -> L8
+    0x0500: 21,   # 8888 -> A8R8G8B8
+    0x0600: 22,   # 888  -> X8R8G8B8
+    0x0A00: 24,   # 555  -> X1R5G5B5
+}
+
+
+def rw_chunk(kind, body):
+    return struct.pack("<III", kind, len(body), SA_LIB_ID) + body
+
+
+def expand_palette(body, levels):
+    """The levels of a PAL8 native texture, as <u32 size><data> blocks of 32-bit pixels."""
+    at = 88
+    lut = [bytes((body[at + i * 4 + 2], body[at + i * 4 + 1], body[at + i * 4], body[at + i * 4 + 3]))
+           for i in range(256)]         # RenderWare keeps palettes in RGBA, Direct3D wants BGRA
+    at += 1024
+    out = []
+    for _ in range(levels):
+        size = struct.unpack_from("<I", body, at)[0]
+        at += 4
+        pixels = b"".join(map(lut.__getitem__, body[at:at + size]))
+        at += size
+        out.append(struct.pack("<I", len(pixels)) + pixels)
+    return b"".join(out)
+
+
+def convert_texture_native(body):
+    """A D3D8 native-texture struct body rewritten as D3D9, or None if it cannot be."""
+    platform = struct.unpack_from("<I", body, 0)[0]
+    if platform == 9:
+        return body                      # already San Andreas' format
+    if platform != 8 or len(body) < 88:
+        return None                      # PS2/Xbox rasters carry different pixel data entirely
+
+    raster_format, has_alpha = struct.unpack_from("<II", body, 72)
+    depth, levels = body[84], body[85]
+    tail, dxt = body[88:], body[87]
+    if dxt > 5:
+        return None                      # nothing else is a D3D compression scheme
+    if dxt:
+        d3d_format = struct.unpack("<I", b"DXT%d" % dxt)[0]
+        flags = 0x08 | (1 if (has_alpha or dxt != 1) else 0)
+    elif raster_format & 0x4000:
+        return None                      # PAL4; neither III nor Vice City has one
+    elif raster_format & 0x2000:
+        # _rwD3D9NativeTextureRead re-reads the raster format off the raster RwRasterCreate handed
+        # it back and drops the texture when the two disagree - and a dropped texture takes the
+        # whole dictionary down with it, not just itself. Direct3D 9 has no palettised texture for
+        # the two to agree on, which is why San Andreas ships none at all, so unpack ours here.
+        tail = expand_palette(body, levels)
+        raster_format = (raster_format & 0x8000) | (0x0500 if has_alpha else 0x0600)
+        d3d_format = 21 if has_alpha else 22
+        depth, flags = 32, (1 if has_alpha else 0)
+    else:
+        d3d_format = D3D_FORMATS.get(raster_format & 0x0F00, 21 if depth == 32 else 22)
+        flags = 1 if has_alpha else 0
+
+    out = bytearray(body[:88])
+    struct.pack_into("<I", out, 0, 9)
+    struct.pack_into("<II", out, 72, raster_format, d3d_format)
+    out[84] = depth
+    out[87] = flags
+    return bytes(out) + tail
+
+
+def convert_txd(data):
+    """A III/VC TXD rebuilt for San Andreas. Returns (bytes, converted, failed)."""
+    dictionary = None
+    for kind, s, e in rw_sections(data, 0, len(data)):
+        if kind == RW_TEX_DICTIONARY:
+            dictionary = (s, e)
+            break
+    if dictionary is None:
+        return data, 0, 0
+
+    textures, converted, failed = [], 0, 0
+    for kind, s, e in rw_sections(data, *dictionary):
+        if kind != RW_TEXTURE_NATIVE:
+            continue
+        for k2, s2, e2 in rw_sections(data, s, e):
+            if k2 != RW_STRUCT:
+                continue
+            body = convert_texture_native(data[s2:e2])
+            if body is None:
+                failed += 1
+            else:
+                converted += 1
+                # An empty extension: whatever III/VC hung off the texture means nothing here.
+                textures.append(rw_chunk(RW_TEXTURE_NATIVE,
+                                         rw_chunk(RW_STRUCT, body) + rw_chunk(RW_EXTENSION, b"")))
+            break
+
+    if not textures:
+        return data, 0, failed
+    header = rw_chunk(RW_STRUCT, struct.pack("<HH", len(textures), 2))   # deviceId 2 = D3D9
+    body = header + b"".join(textures) + rw_chunk(RW_EXTENSION, b"")
+    return rw_chunk(RW_TEX_DICTIONARY, body), converted, failed
 
 
 def write_png(path, width, height, rgba):
@@ -399,6 +521,7 @@ def main():
     # Split the archive: models/textures into the new IMG, collision into loose files,
     # radar tiles into PNGs. Everything else (audio, misc) is dropped.
     packed, cols, tiles, skipped = [], 0, 0, 0
+    tex_done, tex_failed, txds = 0, 0, 0
     for name, off, size in entries:
         blob = archive[off:off + size]
         ext = os.path.splitext(name)[1].lower()
@@ -417,7 +540,13 @@ def main():
             with open(os.path.join(out, "col", name), "wb") as f:
                 f.write(rename_col(blob, renames))
             cols += 1
-        elif ext in (".dff", ".txd"):
+        elif ext == ".txd":
+            txds += 1
+            blob, done, bad = convert_txd(blob)
+            tex_done += done
+            tex_failed += bad
+            packed.append((renamed(name), blob))
+        elif ext == ".dff":
             packed.append((renamed(name), blob))
         else:
             skipped += 1
@@ -427,6 +556,9 @@ def main():
         total = write_img_v2(os.path.join(out, region + ".img"), packed)
         print("%s.img: %d models/textures, %.1f MB; %d collision files, %d radar tiles, %d other entries dropped"
               % (region, len(packed), total / 1e6, cols, tiles, skipped))
+        print("textures: %d raster(s) in %d TXD(s) rewritten from D3D8 to San Andreas' D3D9%s"
+              % (tex_done, txds, "" if not tex_failed else
+                 "; %d left alone and will render white" % tex_failed))
     if renames:
         print("renamed %d entries that also exist in SA's archives (prefix %s): %s%s"
               % (len(renames), prefix, ", ".join(sorted(renames)[:12]), ", ..." if len(renames) > 12 else ""))

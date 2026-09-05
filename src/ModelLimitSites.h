@@ -27,7 +27,7 @@ struct Site {
     uint8_t  scale;          // resource-base multiplier folded into the operand
 };
 
-// 1407 sites: kAtomicStore=37, kCountTimes4=1, kInfoArray=363, kPtrArray=743, kResourceBase=229, kResourceBaseNeg=30, kSentinelIndex=4
+// 1404 sites: kAtomicStore=37, kCountTimes4=1, kInfoArray=363, kPtrArray=740, kResourceBase=229, kResourceBaseNeg=30, kSentinelIndex=4
 constexpr Site kSites[] = {
     { 0x40122A, 0x00A9B0C8, 3, 4, kPtrArray, 1 },
     { 0x403DA4, 0x00A9B0C8, 3, 4, kPtrArray, 1 },
@@ -605,7 +605,6 @@ constexpr Site kSites[] = {
     { 0x4C5960, 0x00A9B0C8, 3, 4, kPtrArray, 1 },
     { 0x4C5971, 0x00004E20, 2, 4, kResourceBase, 1 },
     { 0x4C5980, 0x00A9B0C8, 3, 4, kPtrArray, 1 },
-    { 0x4C59A1, 0x00AAE948, 2, 4, kPtrArray, 1 },
     { 0x4C59C0, 0x00A9B0C8, 3, 4, kPtrArray, 1 },
     { 0x4C59D1, 0x00004E20, 2, 4, kResourceBase, 1 },
     { 0x4C5A40, 0x00A9B0C8, 3, 4, kPtrArray, 1 },
@@ -691,9 +690,6 @@ constexpr Site kSites[] = {
     { 0x4C6A47, 0x00A9B6BC, 2, 4, kPtrArray, 1 },
     { 0x4C85D6, 0x00A9B0C8, 3, 4, kPtrArray, 1 },
     { 0x4C89B8, 0x00A9B0C8, 3, 4, kPtrArray, 1 },
-    { 0x4CDE60, 0x00AAE948, 2, 4, kPtrArray, 1 },
-    { 0x4CDF37, 0x00AAE948, 2, 4, kPtrArray, 1 },
-    { 0x4CE4E2, 0x00AAE948, 2, 4, kPtrArray, 1 },
     { 0x4D3D52, 0x00A9B0C8, 3, 4, kPtrArray, 1 },
     { 0x4D4133, 0x000063E7, 2, 4, kResourceBase, 1 },
     { 0x4D5C57, 0x008E4CC6, 4, 4, kInfoArray, 1 },
@@ -1360,6 +1356,7 @@ constexpr Site kSites[] = {
     { 0x15651B1, 0x000062A7, 1, 4, kResourceBase, 1 },
     { 0x156526C, 0x00A9B0C8, 3, 4, kPtrArray, 1 },
     { 0x15656D2, 0x000063A7, 2, 4, kResourceBase, 1 },
+    { 0x15662F5, 0x00A9B0C8, 3, 4, kPtrArray, 1 },
     { 0x15663C9, 0x008E4CCC, 2, 4, kInfoArray, 1 },
     { 0x15663D8, 0x008E4CC7, 3, 4, kInfoArray, 1 },
     { 0x15663EB, 0x008E4CC8, 2, 4, kInfoArray, 1 },

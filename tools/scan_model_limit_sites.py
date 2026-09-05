@@ -26,6 +26,7 @@ sites with no such evidence are listed in ALLOW, the false positives that do hav
 Usage: scan_model_limit_sites.py <gta_sa.exe> [output file]
 """
 import bisect
+import struct
 import sys
 
 from capstone import Cs, CS_ARCH_X86, CS_MODE_32
@@ -146,6 +147,7 @@ def main():
         for site in pending:
             decide(site, rows, skipped, label)
 
+    recover(pe, md, live, rows, label)
     rows.sort()
     for line in __doc__.split("Usage:")[0].rstrip().splitlines():
         out.write(("# " + line).rstrip() + "\n")
@@ -211,8 +213,13 @@ def match_address(value, is_imm):
         elem, field = divmod(v - INFO_BASE, INFO_ELEM)
         if elem < INFO_N or is_imm:
             return [("info", v, 1, "ms_aInfoForModel[%d]+0x%X" % (elem, field))]
+    # Same story one past the pointer array, at 0xAAE948, where the index CModelInfo::GetModelInfo
+    # starts its next scan from lives: an immediate there is the array's end pointer (`cmp esi,
+    # 0xAAE948` closing a walk over it), a displacement is that unrelated int.
     if PTR_BASE <= v < PTR_BASE + PTR_ELEM * (PTR_N + 1) and (v - PTR_BASE) % PTR_ELEM == 0:
-        return [("ptr", v, 1, "ms_modelInfoPtrs[%d]" % ((v - PTR_BASE) // PTR_ELEM))]
+        index = (v - PTR_BASE) // PTR_ELEM
+        if index < PTR_N or is_imm:
+            return [("ptr", v, 1, "ms_modelInfoPtrs[%d]" % index)]
     if v == ATOM_BASE:
         return [("atomic", v, 1, "ms_atomicModelInfoStore.m_nCount")]
     if ATOM_BASE + 4 <= v < ATOM_BASE + 4 + ATOM_ELEM:
@@ -230,6 +237,90 @@ def match_negative(value):
                 return [("resneg", v & 0xFFFFFFFF, scale,
                          "-%s%s" % (name, "" if scale == 1 else " * %d" % scale))]
     return []
+
+
+# Instructions this code never contains. A decode that starts on the wrong byte reaches one of them
+# almost at once, which is what tells a real stub from a misframed read of HOODLUM's own data.
+JUNK = {"ljmp", "lcall", "les", "lds", "lfs", "lgs", "lss", "bound", "arpl", "aaa", "aas", "aad",
+        "aam", "daa", "das", "into", "salc", "xlatb", "in", "out", "insb", "insd", "outsb", "outsd",
+        "loopne", "loope", "jcxz", "hlt", "iret", "iretd", "lock", "sysenter", "sysexit", "ud2"}
+
+
+def anchored(md, code, at, sva):
+    """The instruction whose 4-byte operand is exactly at `at`, or (None, None).
+
+    Backing off far enough for x86 to resynchronise is no help here: HOODLUM puts its own data right
+    in front of a stub, and a decode that runs through it lands one byte early on the constant. So
+    take the nearest start that both puts an operand exactly at the constant and reads as real code
+    for three instructions.
+    """
+    for back in range(1, 16):
+        start = at - back
+        if start < 0:
+            break
+        got = list(md.disasm(code[start:start + 48], sva + start, count=3))
+        if len(got) < 3 or any(i.id == 0 or i.mnemonic in JUNK for i in got):
+            continue
+        ins = got[0]
+        if ins.address + ins.size < sva + at + 4:
+            continue
+        for hit in classify(ins):
+            if hit[2] == 4 and ins.address + hit[1] == sva + at:
+                return ins, hit
+    return None, None
+
+
+def base_reference(v):
+    """True for `array[reg].field`, the one shape a lone anchor can vouch for.
+
+    Everything the sweep records at a fixed index or past the last element - the array end pointers,
+    the globals the linker put behind them, a hardcoded model's entry - reads the same as a decode
+    that framed the constant one byte off, and there is no context here to tell them apart. The
+    array bases are unambiguous, and they are what the compiler emits for an indexed access.
+    """
+    return (INFO_BASE <= v < INFO_BASE + INFO_ELEM or v == PTR_BASE or
+            ATOM_BASE <= v < ATOM_BASE + 4 + ATOM_ELEM)
+
+
+def recover(pe, md, live, rows, label):
+    """Pick up array references a linear sweep walked past.
+
+    HOODLUM's stubs are stolen bytes with its own data between them, so a decode that starts at the
+    top of the section loses its footing and an instruction can begin where the previous one did not
+    end - CStreaming::ConvertBufferToObject's `mov eax, [ebx*4 + ms_modelInfoPtrs]` at 0x15662F5 is
+    one the sweep misses that way, and the game dies on the null it then reads out of the old array.
+    So anchor on the constants instead: every dword in the section that names one of the arrays,
+    whose bytes no site already covers, gets its instruction found by walking back to it.
+
+    .text is not treated this way. It is unbroken code entered at a function boundary, so its sweep
+    is trustworthy, and anchoring there only invents framings that read a displacement one byte late
+    as an immediate (`mov ecx, [ms_pArrayBase]` as `or eax, ms_pArrayBase`) - which would move a
+    global that has to stay put. Only the three address kinds are recovered either way: the
+    ambiguous 20000/25000 literals need the surrounding evidence the sweep collects, which a lone
+    anchor has no way to gather.
+    """
+    covered = {addr + off for addr, _kind, off, _size, _old, _scale, _note, _lbl in rows}
+    for sva, ssize, sname in live:
+        if sname != ".HOODLUM":
+            continue
+        code = pe.read(sva, ssize)
+        for at in range(len(code) - 4):
+            if sva + at in covered:
+                continue
+            v = struct.unpack_from("<I", code, at)[0]
+            if not (match_address(v, False) or match_address(v, True)):
+                continue
+            if not base_reference(v):
+                continue
+            ins, hit = anchored(md, code, at, sva)
+            if ins is None or hit[0] not in ("info", "ptr", "atomic"):
+                continue
+            if ins.address in ADDRESS_DENY:   # the sweep saw it too and it is not an id
+                continue
+            kind, off, size, old, scale, note = hit
+            covered.add(sva + at)
+            rows.append((ins.address, kind, off, size, old, scale,
+                         note + " (anchored on the constant)", label(ins.address)))
 
 
 def decide(site, rows, skipped, label):
