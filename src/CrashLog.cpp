@@ -5,6 +5,7 @@
 #include <windows.h>
 #include <cstdio>
 #include <cstring>
+#include <safetyhook.hpp>
 #include "CrashLog.h"
 #include "Log.h"
 
@@ -113,8 +114,45 @@ static LONG CALLBACK OnException(EXCEPTION_POINTERS* info) {
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
+// Two runs ended with no exception at all: no crash line, no minidump, the log stopping mid-frame,
+// and the process simply gone. The handler above sees every fatal exception code, so whatever ends
+// the process is not raising one - it is asking to be ended. San Andreas does that in a handful of
+// places (the loop in WinMain reads RsGlobal.quit at 0xC17050, and the message-and-quit screen at
+// 0x731520 ends with a write to it), and another ASI could equally call ExitProcess itself.
+//
+// So log the request and who made it. __builtin_return_address gives the instruction after the
+// call, which lands the caller to within one instruction: an address inside gta_sa.exe names the
+// game's own quit path, one inside another module names the mod that decided to leave. Both hooks
+// pass the call straight through afterwards; they only watch.
+static SafetyHookInline& ExitHook() { static SafetyHookInline h; return h; }
+static SafetyHookInline& TerminateHook() { static SafetyHookInline h; return h; }
+
+static void LogCaller(const char* what, unsigned code, void* caller) {
+    char where[256];
+    DescribeAddress(caller, where, sizeof(where));
+    Log::Write("EXIT: %s(%u) called from %s", what, code, where);
+}
+
+static void WINAPI Hooked_ExitProcess(UINT code) {
+    LogCaller("ExitProcess", (unsigned)code, __builtin_return_address(0));
+    ExitHook().stdcall<void>(code);
+}
+
+static BOOL WINAPI Hooked_TerminateProcess(HANDLE process, UINT code) {
+    if (process == GetCurrentProcess() || GetProcessId(process) == GetCurrentProcessId())
+        LogCaller("TerminateProcess", (unsigned)code, __builtin_return_address(0));
+    return TerminateHook().stdcall<BOOL>(process, code);
+}
+
 namespace CrashLog {
     void Install() {
         AddVectoredExceptionHandler(1, OnException);
+
+        HMODULE k32 = GetModuleHandleA("kernel32.dll");
+        if (!k32) return;
+        if (void* p = (void*)GetProcAddress(k32, "ExitProcess"))
+            ExitHook() = safetyhook::create_inline(p, reinterpret_cast<void*>(&Hooked_ExitProcess));
+        if (void* p = (void*)GetProcAddress(k32, "TerminateProcess"))
+            TerminateHook() = safetyhook::create_inline(p, reinterpret_cast<void*>(&Hooked_TerminateProcess));
     }
 }
