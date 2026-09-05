@@ -1,6 +1,6 @@
-// F8 in-game: log the player's SA position, the equivalent region-local coordinates (used to
-// calibrate WorldOriginX/Y against a known landmark), and which zone the game's own lookups resolve
-// there.
+// F8 in-game (with [World] Debug=1): log the player's SA position, the equivalent region-local
+// coordinates (used to calibrate WorldOriginX/Y against a known landmark), and which zone the game's
+// own lookups resolve there. The per-frame hook here also drives the GXT table check.
 #include <plugin.h>
 #include <CWorld.h>
 #include <CPlayerPed.h>
@@ -23,6 +23,7 @@ static SafetyHookInline& FrameHook() { static SafetyHookInline h; return h; }
 static bool gWasDown = false;
 
 static void OnFrame() {
+    if (!Settings::world.debug) return;
     bool down = (GetAsyncKeyState(VK_F8) & 0x8000) != 0;
     bool justPressed = down && !gWasDown;
     gWasDown = down;
@@ -53,6 +54,6 @@ namespace DebugKeys {
         // plugin-sdk's events never fire under SA-MP, so poll from a function the game itself calls.
         FrameHook() = safetyhook::create_inline(reinterpret_cast<void*>(kTimerUpdate),
                                                 reinterpret_cast<void*>(&Hooked_TimerUpdate));
-        if (!FrameHook()) Log::Write("could not hook CTimer::Update; F8 diagnostics and the per-frame GXT table check are unavailable");
+        if (!FrameHook()) Log::Write("could not hook CTimer::Update; the per-frame GXT table check and F8 diagnostics are unavailable");
     }
 }

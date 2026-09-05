@@ -248,7 +248,7 @@ namespace WaterRender {
         if (Water::OutsideQuads().empty() || Water::Coverage().empty()) return;
 
         BuildIndex();
-        gDebug = Settings::world.waterDebug;
+        gDebug = Settings::world.debug;
         gMode = Settings::world.extendWaterRendering;
         if (gMode != 2 && gMode != 3) gMode = 1;
         gPieces.reserve(16);

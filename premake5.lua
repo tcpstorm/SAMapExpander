@@ -67,12 +67,15 @@ project "MapExpander"
         "PLUGIN_SGV_10US",
         "RW",
         "TARGET_NAME=\"MapExpander\"",
+        "MAPEXPANDER_VERSION=\"" .. (os.getenv("MAPEXPANDER_VERSION") or "0.1.0") .. "\"",
     }
 
     filter "configurations:Release"
         defines { "NDEBUG" }
         optimize "On"
         symbols "Off"
+        buildoptions { "-ffunction-sections", "-fdata-sections" }
+        linkoptions { "-s", "-Wl,--gc-sections" }
         links { "Plugin", "ntdll" }
         targetdir "output/Release"
 

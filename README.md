@@ -39,10 +39,13 @@ compiled plugin-sdk; the plugin is cross-compiled to a 32-bit Windows DLL.
 
 Copy `MapExpander.SA.asi` and `MapExpander.ini` into the game folder (an ASI loader is required, as for
 any `.asi`). Put tiles and data under `MapExpander\` in the game folder as configured. The plugin writes
-`MapExpander.log` next to the `.asi`; read it first when something does not show up.
+`MapExpander.log` next to the `.asi`; read it first when something does not show up. The log names
+the version, what was configured and patched, and any error; a crash is logged with its exception
+address, registers and stack even in a normal build.
 
-`F8` in game prints your SA coordinates and logs them together with the equivalent region-local
-coordinates — handy for placing an origin against a known landmark.
+With `[World] Debug=1` the log becomes verbose and `F8` in game prints your SA coordinates and logs
+them together with the equivalent region-local coordinates and the zone the game resolves there —
+handy for placing an origin against a known landmark. Leave it off for normal play.
 
 ## Configuration
 
@@ -77,8 +80,10 @@ SA x 4171..6963, y −778..2626).
 | `ExtendPauseMap` | 1 | free the pause map's scroll/cursor/blip limits |
 | `PauseMapMargin` | 1500 | extra scrollable world units past the map and all regions |
 | `PauseMapMinX/MaxX/MinY/MaxY` | – | fix the scrollable area explicitly instead (all four) |
-| `ExtendWaterRendering` | 1 | draw region water beyond ±3000 instead of SA's flat ocean (see *Region data*) |
-| `WaterDebug` | 0 | log the number of water rectangles drawn (first frame, then once a second) |
+| `ExtendWaterRendering` | 1 | draw region water beyond ±3000 instead of SA's flat ocean (see *Region data*); 2/3 are bisect modes for diagnosing rendering problems |
+| `Gxt` | – | comma list of GXT files (III/VC/SA format) merged into the game's text table; ours win on a shared key |
+| `GxtLogMisses` | 0 | diagnostic: hook `CText::Get` to log keys nobody provides (conflicts with SA-MP's own hook; keep off) |
+| `Debug` | 0 | verbose log, F8 diagnostics, water render statistics |
 
 ### Region data (feature branches)
 

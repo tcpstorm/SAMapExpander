@@ -282,7 +282,7 @@ bool Readable(uintptr_t address, size_t bytes) {
 }
 
 bool RelocateNaviArray(int capacity) {
-    Log::Write("zones: checking %d reference sites", (int)std::size(kNaviRefs));
+    Log::Debug("zones: checking %d reference sites", (int)std::size(kNaviRefs));
     for (const RefSite& r : kNaviRefs) {
         if (!Readable(r.address, r.dispOffset + 4)) {
             Log::Write("zone array not relocated: 0x%X is not readable memory (packed or unmapped section)",
@@ -297,7 +297,7 @@ bool RelocateNaviArray(int capacity) {
         }
     }
 
-    Log::Write("zones: all sites verified, relocating");
+    Log::Debug("zones: all sites verified, relocating");
     SaZone* moved = (SaZone*)calloc((size_t)capacity, sizeof(SaZone));
     if (!moved) return false;
     memcpy(moved, reinterpret_cast<const void*>(kNaviArray), kVanillaNaviCapacity * sizeof(SaZone));
@@ -310,9 +310,9 @@ bool RelocateNaviArray(int capacity) {
 
     gZones = moved;
     gCapacity = capacity;
-    Log::Write("NavigationZoneArray 0x%X -> %p, capacity %d -> %d, %d/%d references re-pointed",
-               (unsigned)kNaviArray, (void*)moved, kVanillaNaviCapacity, capacity,
-               patched, (int)std::size(kNaviRefs));
+    Log::Write("zones: navigation zone array capacity %d -> %d, %d/%d references re-pointed",
+               kVanillaNaviCapacity, capacity, patched, (int)std::size(kNaviRefs));
+    Log::Debug("zones: array moved from 0x%X to %p", (unsigned)kNaviArray, (void*)moved);
     return patched == (int)std::size(kNaviRefs);
 }
 
@@ -441,7 +441,7 @@ namespace Zones {
             std::string key(d.textLabel, strnlen(d.textLabel, 8));
             if (!NameMap().count(key) && !Gxt::Has(key.c_str())) NameMap()[key] = DeriveName(key.c_str());
         }
-        Log::Write("zones: registering %u fallback name(s)", (unsigned)NameMap().size());
+        Log::Debug("zones: registering %u fallback name(s)", (unsigned)NameMap().size());
         int named = 0;
         for (const auto& kv : NameMap())
             if (Gxt::AddString(kv.first.c_str(), kv.second.c_str(), "zone names")) named++;
@@ -456,7 +456,7 @@ namespace Zones {
             Log::Write("ERROR: the zone array stays at 380 entries, which vanilla SA already fills; "
                        "expect almost none of the region's zones to be created");
 
-        Log::Write("zones: hooking CTheZones::Update at 0x%X", (unsigned)kZonesUpdate);
+        Log::Debug("zones: hooking CTheZones::Update at 0x%X", (unsigned)kZonesUpdate);
         gUpdateHook = safetyhook::create_inline(reinterpret_cast<void*>(kZonesUpdate),
                                                 reinterpret_cast<void*>(&Hooked_ZonesUpdate));
         if (!gUpdateHook) {
@@ -466,8 +466,8 @@ namespace Zones {
 
         gRevealedHook = safetyhook::create_inline(reinterpret_cast<void*>(kZoneRevealed),
                                                   reinterpret_cast<void*>(&Hooked_ZoneRevealed));
-        Log::Write("zones: %u to add, %d display name(s) registered, revealed-cell hook at 0x%X %s",
-                   (unsigned)Defs().size(), named, (unsigned)kZoneRevealed,
+        Log::Write("zones: %u to add, %d display name(s) registered, revealed-cell hook %s",
+                   (unsigned)Defs().size(), named,
                    gRevealedHook ? "installed" : "FAILED (region names may not show on the pause map)");
     }
 

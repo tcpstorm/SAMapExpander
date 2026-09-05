@@ -115,7 +115,7 @@ static void OnOverlayPoint(bool inMenu) {
     static bool logged[2] = { false, false };
     if (!logged[inMenu]) {
         logged[inMenu] = true;
-        Log::Write("overlay hook fired (inMenu=%d) origin=(%.1f, %.1f) range=%.1f",
+        Log::Debug("overlay hook fired (inMenu=%d) origin=(%.1f, %.1f) range=%.1f",
                    inMenu, CRadar::vec2DRadarOrigin.x, CRadar::vec2DRadarOrigin.y, CRadar::m_radarRange);
     }
     DrawCustomTiles(inMenu);
@@ -143,7 +143,7 @@ static void __cdecl MenuThunk(bool inMenu) {
 static bool RetargetCall(uintptr_t site, const char* name, OverlayFn thunk, OverlayFn& original) {
     unsigned char bytes[5];
     patch::GetRaw(site, bytes, sizeof(bytes));
-    Log::Write("%s call site 0x%X: %02X %02X %02X %02X %02X", name, (unsigned)site, bytes[0], bytes[1], bytes[2], bytes[3], bytes[4]);
+    Log::Debug("%s call site 0x%X: %02X %02X %02X %02X %02X", name, (unsigned)site, bytes[0], bytes[1], bytes[2], bytes[3], bytes[4]);
 
     bool allNops = true;
     for (unsigned char b : bytes) allNops &= (b == 0x90);
@@ -155,7 +155,8 @@ static bool RetargetCall(uintptr_t site, const char* name, OverlayFn thunk, Over
     } else if (allNops) {
         original = nullptr;
     } else {
-        Log::Write("%s call site has unexpected code; overlay not installed there", name);
+        Log::Write("%s call site 0x%X has unexpected code (%02X %02X %02X %02X %02X); tiles not drawn there",
+                   name, (unsigned)site, bytes[0], bytes[1], bytes[2], bytes[3], bytes[4]);
         return false;
     }
 
@@ -169,18 +170,19 @@ static bool RetargetCall(uintptr_t site, const char* name, OverlayFn thunk, Over
 static bool gInstalled = false;
 
 static void DumpBytes(const char* label, uintptr_t address, unsigned count) {
+    if (!Log::DebugEnabled()) return;
     unsigned char b[16];
     if (count > sizeof(b)) count = sizeof(b);
     patch::GetRaw(address, b, count);
     char text[64] = { 0 };
     for (unsigned i = 0; i < count; i++) snprintf(text + i * 3, sizeof(text) - i * 3, "%02X ", b[i]);
-    Log::Write("%s @0x%X: %s", label, (unsigned)address, text);
+    Log::Debug("%s @0x%X: %s", label, (unsigned)address, text);
 }
 
 static void InstallCallSites() {
     if (gInstalled) return;
     gInstalled = true;
-    Log::Write("installing overlay call sites");
+    Log::Debug("installing overlay call sites");
     DumpBytes("  DrawRadarGangOverlay", 0x586650, 8);
     // DrawRadarMap: `push 0` at 0x5869BD, `call` at 0x5869BF. If the site was NOPed, restore the push too.
     unsigned char push[2];

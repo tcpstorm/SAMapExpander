@@ -29,33 +29,33 @@ static std::string TilePath(const MapRegion& region, int col, int row) {
 
 static RwTexture* LoadPng(const std::string& path) {
     if (GetFileAttributesA(path.c_str()) == INVALID_FILE_ATTRIBUTES) {
-        Log::Write("  file not found");
+        Log::Write("tile missing: %s", path.c_str());
         return nullptr;
     }
 
     RwImage* image = RtPNGImageRead(path.c_str());
     if (!image) {
-        Log::Write("  RtPNGImageRead failed");
+        Log::Write("tile unreadable (RtPNGImageRead failed): %s", path.c_str());
         return nullptr;
     }
-    Log::Write("  image %dx%d depth %d", image->width, image->height, image->depth);
+    Log::Debug("  image %dx%d depth %d", image->width, image->height, image->depth);
 
     RwInt32 width = 0, height = 0, depth = 0, format = 0;
     if (!RwImageFindRasterFormat(image, rwRASTERTYPETEXTURE, &width, &height, &depth, &format)) {
-        Log::Write("  RwImageFindRasterFormat failed");
+        Log::Write("tile rejected (RwImageFindRasterFormat failed): %s", path.c_str());
         RwImageDestroy(image);
         return nullptr;
     }
-    Log::Write("  raster %dx%d depth %d format 0x%X", width, height, depth, format);
+    Log::Debug("  raster %dx%d depth %d format 0x%X", width, height, depth, format);
 
     RwRaster* raster = RwRasterCreate(width, height, depth, format);
     if (!raster) {
-        Log::Write("  RwRasterCreate failed");
+        Log::Write("tile rejected (RwRasterCreate failed, %dx%d): %s", width, height, path.c_str());
         RwImageDestroy(image);
         return nullptr;
     }
     if (!RwRasterSetFromImage(raster, image)) {
-        Log::Write("  RwRasterSetFromImage failed");
+        Log::Write("tile rejected (RwRasterSetFromImage failed): %s", path.c_str());
         RwRasterDestroy(raster);
         RwImageDestroy(image);
         return nullptr;
@@ -64,13 +64,13 @@ static RwTexture* LoadPng(const std::string& path) {
 
     RwTexture* texture = RwTextureCreate(raster);
     if (!texture) {
-        Log::Write("  RwTextureCreate failed");
+        Log::Write("tile rejected (RwTextureCreate failed): %s", path.c_str());
         RwRasterDestroy(raster);
         return nullptr;
     }
     RwTextureSetFilterMode(texture, rwFILTERLINEAR);
     RwTextureSetAddressing(texture, rwTEXTUREADDRESSCLAMP);
-    Log::Write("  ok");
+    Log::Debug("  ok");
     return texture;
 }
 
@@ -81,7 +81,7 @@ namespace TileCache {
         if (it != gTiles.end()) return it->second;
 
         std::string path = TilePath(region, col, row);
-        Log::Write("[%s] loading tile (%d,%d): %s", region.name.c_str(), col, row, path.c_str());
+        Log::Debug("[%s] loading tile (%d,%d): %s", region.name.c_str(), col, row, path.c_str());
         RwTexture* tex = LoadPng(path);
         gTiles[key] = tex;
         return tex;

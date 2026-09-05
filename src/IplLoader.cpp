@@ -409,7 +409,7 @@ void LoadAll(unsigned mask) {
     if (anyFile && (mask & (1u << SEC_ENEX)))
         Call<0x43F0A0>();   // CEntryExitManager::PostEntryExitsCreation
 
-    Log::Write("ipl pools now: cull %d/%d (tunnel %d/%d, mirror %d/%d), tcyc %u/%d, grge %d/%d, "
+    Log::Debug("ipl pools now: cull %d/%d (tunnel %d/%d, mirror %d/%d), tcyc %u/%d, grge %d/%d, "
                "auzo %u/%d boxes %u/%d spheres, cars %u, enex %d free, jump %d free",
                NumAttributeZones, MAX_ATTRIBUTE_ZONES, NumTunnelAttributeZones, MAX_TUNNEL_ZONES,
                NumMirrorAttributeZones, MAX_MIRROR_ZONES, NumTimeCycleBoxes, MAX_TCYC_BOXES,
@@ -430,7 +430,7 @@ void __cdecl LoadLevelHook(const char* datFile) {
 
 bool __cdecl Init3Hook(const char* datFile) {
     bool result = Init3Original().ccall<bool>(datFile);
-    Log::Write("ipl: loading region IPLs after CGame::Init3");
+    Log::Debug("ipl: loading region IPLs after CGame::Init3");
     LoadAll(gPermanentLoaded ? MASK_RESTART : MASK_ALL);
     gPermanentLoaded = true;
     return result;
@@ -439,7 +439,7 @@ bool __cdecl Init3Hook(const char* datFile) {
 void __cdecl InitialiseWhenRestartingHook() {
     RestartOriginal().ccall<void>();
     if (!gPermanentLoaded) return;   // no game has been started yet; nothing was wiped
-    Log::Write("ipl: re-adding jump/pick/cars after CGame::InitialiseWhenRestarting");
+    Log::Debug("ipl: re-adding jump/pick/cars after CGame::InitialiseWhenRestarting");
     LoadAll(MASK_RESTART);
 }
 
@@ -455,7 +455,10 @@ namespace IplLoader {
         Init3Original() = safetyhook::create_inline(reinterpret_cast<void*>(0x5BA400), reinterpret_cast<void*>(&Init3Hook));
         RestartOriginal() = safetyhook::create_inline(reinterpret_cast<void*>(0x53C680), reinterpret_cast<void*>(&InitialiseWhenRestartingHook));
 
-        Log::Write("ipl loader installed (LoadLevel %d, Init3 %d, InitialiseWhenRestarting %d)",
-                   (int)(bool)LoadLevelOriginal(), (int)(bool)Init3Original(), (int)(bool)RestartOriginal());
+        if (LoadLevelOriginal() && Init3Original() && RestartOriginal())
+            Log::Debug("ipl loader installed");
+        else
+            Log::Write("ipl loader: hooks failed (LoadLevel %d, Init3 %d, InitialiseWhenRestarting %d); region IPLs may not load",
+                       (int)(bool)LoadLevelOriginal(), (int)(bool)Init3Original(), (int)(bool)RestartOriginal());
     }
 }

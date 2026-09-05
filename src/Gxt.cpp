@@ -181,7 +181,7 @@ void EnsureHook() {
     if (gHookTried) return;
     gHookTried = true;
     AddHashed(HashKey(kSentinelKey), kSentinelKey, "MapExpander", "sentinel");
-    Log::Write("GXT: hooking CText::Load at 0x%X%s", (unsigned)kTextLoad,
+    Log::Debug("GXT: hooking CText::Load at 0x%X%s", (unsigned)kTextLoad,
                gLogMisses ? " and CText::Get at 0x6A0050 for missing-key logging" : "");
     TextLoadHook() = safetyhook::create_inline(reinterpret_cast<void*>(kTextLoad),
                                               reinterpret_cast<void*>(&Hooked_TextLoad));
@@ -307,7 +307,7 @@ void SyncTable() {
         // A fresh block from CText::Load: snapshot it, report overrides against it, then merge.
         GameOriginal().assign(live.entries, live.entries + live.count);
         static bool auditedOnce = false;
-        Audit(!auditedOnce);
+        Audit(!auditedOnce && Log::DebugEnabled());   // the per-key override list is Debug=1 only
         auditedOnce = true;
         InstallMergedTable();
         gMissingText = CallGameGet("\x01ZZZZZZ");
