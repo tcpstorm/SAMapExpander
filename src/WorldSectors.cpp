@@ -17,14 +17,22 @@
 // of 100, and the world reaches +/-6000. CENTRE stays as it is, because index 60 is still the
 // middle of a 120-entry grid.
 //
+// How far to go is decided by the region rather than fixed. The grid has to reach past the furthest
+// thing in it: a coordinate beyond the end indexes off the array and the game walks whatever floats
+// lie past it, which surfaces as a wild call out of the renderer rather than as a hole. Because
+// CENTRE is left alone the grid stays centred on 0 and so has to cover +/-reach in every direction,
+// and because the clamps are rescaled by stepping the float exponent the factor has to be a whole
+// power of two. Vice City at its real offset reaches x 6963, so one halving (+/-6000) is not enough
+// and it takes two (+/-12000, sectors of 200 units).
+//
 // The constants cannot simply be edited in place - the compiler pooled one 0.02 and one 60.0 for
 // the whole game, and 516 of those references have nothing to do with sectors - so each conversion
 // is repointed at our own copy, and the +/-3000 clamps in CEntity::Add and CEntity::Remove (the
 // only two places that clamp a coordinate before converting it) are widened to match.
 //
-// The cost is that a sector is four times the area, so every scan walks more entities. That is the
-// trade for leaving the arrays the size they are; growing them instead means re-pointing every
-// instruction that indexes them, which is a far larger job.
+// The cost is that a sector covers 4^steps times the area, so every scan walks more entities. That
+// is the trade for leaving the arrays the size they are; growing them instead means re-pointing
+// every instruction that indexes them, which is a far larger job.
 #include <plugin.h>
 #include <cstdint>
 #include <cstring>
@@ -38,11 +46,18 @@ using namespace plugin;
 
 namespace {
 
-// Read by the game once the sites below point at them, so they have to outlive Install().
-const float kOurFineScale = 0.01f;      // 1/100 - 120 sectors of 100 units
-const float kOurCoarseScale = 0.0025f;  // 1/400 -  30 sectors of 400 units
-const float kOurLowBound = -6000.0f;
-const float kOurHighBound = 6000.0f;
+// Read by the game once the sites below point at them, so they have to outlive Install(). Install
+// sets them from the region's extent; the values here are the vanilla ones.
+float gFineScale = 0.02f;      // 1/50  - 120 sectors of 50 units
+float gCoarseScale = 0.005f;   // 1/200 -  30 sectors of 200 units
+float gLowBound = -3000.0f;
+float gHighBound = 3000.0f;
+int gShrinkSteps = 0;
+
+// Three halvings take the fine grid to 400-unit sectors and +/-24000. Past that a sector holds
+// enough entities that every scan walking it is a problem of its own, so refuse rather than
+// quietly making the game crawl.
+const int kMaxShrinkSteps = 3;
 
 // The sector grids are not the only thing that stops at +/-3000. CColStore and CIplStore each build
 // a quad tree over a CRect(-3000, 3000, 3000, -3000) assembled from immediates in their Initialise,
@@ -99,18 +114,31 @@ void WidenStoreQuadTrees() {
                minX, minY, maxX, maxY);
 }
 
-// Doubling a float is one step of the exponent, and the sign and mantissa are left alone: -3000
-// becomes -6000, and the 2999.5 the high clamp writes becomes 5999.
-uint32_t Doubled(uint32_t bits) { return bits + (1u << 23); }
+// How far from the origin the grids have to reach. The grid stays centred on 0, so what has to fit
+// is the furthest corner of the region in any direction.
+float RequiredReach() {
+    float minX, maxX, minY, maxY;
+    Settings::WorldExtent(minX, maxX, minY, maxY);
+    float reach = 0.0f;
+    const float corners[] = { -minX, maxX, -minY, maxY };
+    for (float v : corners)
+        if (v > reach) reach = v;
+    return reach;
+}
+
+// Scaling a float by a power of two is one step of the exponent per doubling, sign and mantissa
+// left alone: -3000 with two steps becomes -12000, and the 2999.5 the high clamp writes becomes
+// 11998.
+uint32_t ScaledBits(uint32_t bits, int steps) { return bits + ((uint32_t)steps << 23); }
 
 uint32_t NewValue(const WorldSectors::Site& s) {
     switch (s.kind) {
-        case WorldSectors::kFineScale:     return (uint32_t)(uintptr_t)&kOurFineScale;
-        case WorldSectors::kCoarseScale:   return (uint32_t)(uintptr_t)&kOurCoarseScale;
-        case WorldSectors::kLowBound:      return (uint32_t)(uintptr_t)&kOurLowBound;
-        case WorldSectors::kHighBound:     return (uint32_t)(uintptr_t)&kOurHighBound;
+        case WorldSectors::kFineScale:     return (uint32_t)(uintptr_t)&gFineScale;
+        case WorldSectors::kCoarseScale:   return (uint32_t)(uintptr_t)&gCoarseScale;
+        case WorldSectors::kLowBound:      return (uint32_t)(uintptr_t)&gLowBound;
+        case WorldSectors::kHighBound:     return (uint32_t)(uintptr_t)&gHighBound;
         case WorldSectors::kLowImmediate:
-        case WorldSectors::kHighImmediate: return Doubled(s.oldValue);
+        case WorldSectors::kHighImmediate: return ScaledBits(s.oldValue, gShrinkSteps);
     }
     return s.oldValue;
 }
@@ -120,6 +148,24 @@ uint32_t NewValue(const WorldSectors::Site& s) {
 namespace WorldSectors {
 
 void Install() {
+    const float reach = RequiredReach();
+    int steps = 0;
+    while (steps < kMaxShrinkSteps && 3000.0f * (float)(1 << steps) < reach) steps++;
+
+    if (steps == 0) {
+        Log::Write("world sectors left as they are: the region reaches %.0f, which the vanilla "
+                   "+/-3000 grids already address", reach);
+        WidenStoreQuadTrees();
+        return;
+    }
+    if (3000.0f * (float)(1 << steps) < reach) {
+        Log::Write("ERROR: world sectors left at +/-3000: the region reaches %.0f, and covering it "
+                   "would need sectors larger than %d units, at which point every entity scan is a "
+                   "problem of its own; move the region nearer the middle of the map instead",
+                   reach, 50 << kMaxShrinkSteps);
+        return;
+    }
+
     // Check the whole table before touching any of it: a half-rescaled world would file entities
     // in sectors nothing looks in, which is worse than leaving the grid alone.
     int wrong = 0;
@@ -132,20 +178,28 @@ void Install() {
         return;
     }
 
+    const float factor = (float)(1 << steps);
+    gShrinkSteps = steps;
+    gFineScale = 0.02f / factor;
+    gCoarseScale = 0.005f / factor;
+    gLowBound = -3000.0f * factor;
+    gHighBound = 3000.0f * factor;
+
     int patched[kSiteKindCount] = {};
     for (const Site& s : kSites) {
         patch::SetUInt(s.operand, NewValue(s));
         patched[s.kind]++;
     }
 
-    Log::Write("world sectors: 120x120 of 50 units -> 100, 30x30 of 200 -> 400; the static world "
-               "now reaches +/-6000 instead of +/-3000 (%d conversion(s) repointed, %d clamp(s) "
-               "widened)",
+    Log::Write("world sectors: 120x120 of 50 units -> %d, 30x30 of 200 -> %d; the static world now "
+               "reaches +/-%.0f instead of +/-3000, for a region reaching %.0f (%d conversion(s) "
+               "repointed, %d clamp(s) widened)",
+               50 << steps, 200 << steps, 3000.0f * factor, reach,
                patched[kFineScale] + patched[kCoarseScale],
                patched[kLowBound] + patched[kHighBound] +
                    patched[kLowImmediate] + patched[kHighImmediate]);
-    Log::Write("note: a sector now covers four times the ground, so entity scans walk longer "
-               "lists; savegames are unaffected, the grids are the same size as before");
+    Log::Write("note: a sector now covers %d times the ground, so entity scans walk longer lists; "
+               "savegames are unaffected, the grids are the same size as before", 1 << (2 * steps));
 
     WidenStoreQuadTrees();
 }
