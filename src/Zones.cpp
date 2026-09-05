@@ -8,6 +8,8 @@
 // american.gxt, so the display names are registered with Gxt, which answers CText::Get for them.
 #include <plugin.h>
 #include <windows.h>
+#include <CWorld.h>
+#include <CPlayerPed.h>
 #include <safetyhook.hpp>
 #include <algorithm>
 #include <cctype>
@@ -205,10 +207,10 @@ int LoadZoneFile(const MapRegion& region, const std::string& path) {
         MakeKey(t.size() >= 10 ? t[9].c_str() : t[0].c_str(), d.textLabel);
         d.x1 = strtof(t[2].c_str(), nullptr) + region.originX;
         d.y1 = strtof(t[3].c_str(), nullptr) + region.originY;
-        d.z1 = strtof(t[4].c_str(), nullptr);
+        d.z1 = strtof(t[4].c_str(), nullptr) + region.originZ;
         d.x2 = strtof(t[5].c_str(), nullptr) + region.originX;
         d.y2 = strtof(t[6].c_str(), nullptr) + region.originY;
-        d.z2 = strtof(t[7].c_str(), nullptr);
+        d.z2 = strtof(t[7].c_str(), nullptr) + region.originZ;
         d.level = atoi(t[8].c_str());
         if (d.level < 0 || d.level > 3) d.level = 0;
 
@@ -350,8 +352,19 @@ void EnsureZones() {
                    dropped);
 }
 
+// CTheZones::Update marks ZonesVisited[10][10] with an unclamped (pos + 3000) / 600 index, so a
+// player beyond the vanilla map writes past the array into the zone globals behind it. The only
+// other thing it does is refresh m_CurrLevel from the map zones, which do not exist out there.
+bool PlayerOutsideVanillaMap() {
+    CPlayerPed* player = FindPlayerPed();
+    if (!player) return false;
+    CVector pos = player->GetPosition();
+    return pos.x <= -kVanillaMapEdge || pos.x >= kVanillaMapEdge ||
+           pos.y <= -kVanillaMapEdge || pos.y >= kVanillaMapEdge;
+}
+
 void __cdecl Hooked_ZonesUpdate() {
-    gUpdateHook.ccall<void>();
+    if (!PlayerOutsideVanillaMap()) gUpdateHook.ccall<void>();
     EnsureZones();
 }
 
@@ -359,10 +372,27 @@ void __cdecl Hooked_ZonesUpdate() {
 
 namespace Zones {
     void Install() {
+        int regionIndex = 0;
         for (const MapRegion& r : Settings::regions) {
-            if (r.zoneFiles.empty()) continue;
             if (!r.zoneNamesFile.empty()) LoadNameFile(r, r.zoneNamesFile);
             for (const std::string& f : r.zoneFiles) LoadZoneFile(r, f);
+
+            // One zone over the whole tile grid so the region has a name where no district applies.
+            // SA picks the smallest zone containing the player, so districts still win inside it.
+            if (!r.regionName.empty()) {
+                char key[8];
+                snprintf(key, sizeof(key), "MXREG%d", regionIndex);
+                ZoneDef d{};
+                MakeKey(r.zoneInfoLabel.c_str(), d.infoLabel);
+                MakeKey(key, d.textLabel);
+                d.x1 = r.TileWest(0);        d.x2 = r.TileWest(r.tilesX);
+                d.y1 = r.TileNorth(r.tilesY); d.y2 = r.TileNorth(0);
+                d.z1 = -3000.0f;             d.z2 = 3000.0f;
+                d.level = 0;
+                Defs().push_back(d);
+                NameMap()[std::string(d.textLabel, strnlen(d.textLabel, 8))] = r.regionName;
+            }
+            regionIndex++;
         }
         if (Defs().empty()) return;
 

@@ -83,6 +83,7 @@ namespace Settings {
             r.zoneFiles = SplitPaths(s.GetString("Zones", ""));
             if (s.Has("ZoneNames")) r.zoneNamesFile = ResolveGamePath(s.GetString("ZoneNames", ""));
             r.zoneInfoLabel = s.GetString("ZoneInfoLabel", "SAN_AND");
+            r.regionName = s.GetString("RegionName", "");
 
             bool hasOrigin = s.Has("WorldOriginX") && s.Has("WorldOriginY");
             bool hasExtent = s.Has("WorldMinX") && s.Has("WorldMaxX") && s.Has("WorldMinY") && s.Has("WorldMaxY");
@@ -96,6 +97,8 @@ namespace Settings {
                 Log::Write("[%s] needs WorldOriginX/Y or WorldMinX/MaxX/MinY/MaxY; skipped", s.name.c_str());
                 continue;
             }
+
+            r.originZ = s.GetFloat("WorldOriginZ", 0.0f);
 
             // Default grid: centred on the local origin, like SA's own radar (-3000..3000 for 12 tiles).
             r.gridMinX = s.GetFloat("GridMinX", -0.5f * r.tilesX * r.tileSize);

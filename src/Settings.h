@@ -13,8 +13,10 @@ struct MapRegion {
 
     std::vector<std::string> iplFiles;  // IPL files to load with the origin added to every coordinate
     std::string zoneInfoLabel;          // existing zone whose CZoneInfo slot region zones share
+    std::string regionName;             // area name over the whole tile grid, empty for none
 
     float originX, originY;   // SA world coords of the region's local (0,0)
+    float originZ;            // added to every region height (water levels, zone boxes)
     float tileSize;           // world units per tile
     float gridMinX;           // local X of the west edge of column 0
     float gridMaxY;           // local Y of the north edge of row 0

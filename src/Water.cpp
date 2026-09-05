@@ -174,7 +174,7 @@ int LoadSaWaterDat(const MapRegion& region, const std::vector<char>& data, std::
         Vert in[4];
         for (int i = 0; i < 4; i++) {
             const float* f = num + i * 7;
-            in[i] = { f[0] + region.originX, f[1] + region.originY, f[2], f[5], f[6], f[3], f[4] };
+            in[i] = { f[0] + region.originX, f[1] + region.originY, f[2] + region.originZ, f[5], f[6], f[3], f[4] };
         }
         unsigned flags = count > 28 ? (unsigned)num[28] : 0u;
 
@@ -243,7 +243,7 @@ int LoadWaterPro(const MapRegion& region, const std::vector<char>& data, std::ve
             Quad q;
             MakeFlatQuad(baseX + ix * kFineCellSize, baseY + iy * kFineCellSize,
                          baseX + (ix + w) * kFineCellSize, baseY + (iy + h) * kFineCellSize,
-                         levels[idx], q);
+                         levels[idx] + region.originZ, q);
             out.push_back(q);
             added++;
         }
