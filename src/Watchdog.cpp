@@ -162,6 +162,32 @@ typedef void(__cdecl* RetryLoadFileFn)(int channel);
 static SafetyHookInline& RetryHook() { static SafetyHookInline h; return h; }
 int gRetryReports = 0;
 
+// Guessing at the channel struct's layout gave nonsense - the field eight bytes in held a pointer
+// into this very module, not a disc position, so the offsets are wrong and the archive index
+// derived from them (114) is meaningless. The arguments to CdStreamRead are not a guess: the
+// retry loop passes the position and size straight to it at 0x40774F, so read them there.
+//
+//   CdStreamRead(int streamId, void* buffer, unsigned position, unsigned sectors)
+//
+// with the archive index in the position's top byte. Logged only while a channel error is
+// outstanding, which is exactly when the read is one that keeps failing.
+typedef int(__cdecl* CdStreamReadFn)(int, void*, unsigned, unsigned);
+static SafetyHookInline& ReadHook() { static SafetyHookInline h; return h; }
+int gReadReports = 0;
+
+int __cdecl Hooked_CdStreamRead(int streamId, void* buffer, unsigned position, unsigned sectors) {
+    const bool failing = !IsBadReadPtr((void*)kChannelError, 4) && *(const int*)kChannelError != -1;
+    if (failing && gReadReports < 16) {
+        gReadReports++;
+        Log::Write("stream: CdStreamRead(stream %d, %u sector(s) at sector %u of ARCHIVE %u) "
+                   "while channel %d is in error - position %08X",
+                   streamId, sectors, position & 0x00FFFFFFu, position >> 24,
+                   *(const int*)kChannelError, position);
+        if (gReadReports == 16) Log::Write("stream: (no more CdStreamRead reports)");
+    }
+    return ReadHook().ccall<int>(streamId, buffer, position, sectors);
+}
+
 void __cdecl Hooked_RetryLoadFile(int channel) {
     if (gRetryReports < 24) {
         gRetryReports++;
@@ -263,6 +289,11 @@ void Install() {
         return;
     }
     CloseHandle(thread);
+    ReadHook() = safetyhook::create_inline(reinterpret_cast<void*>(0x406A20),
+                                           reinterpret_cast<void*>(&Hooked_CdStreamRead));
+    if (!ReadHook())
+        Log::Write("watchdog: could not hook CdStreamRead");
+
     RetryHook() = safetyhook::create_inline(reinterpret_cast<void*>(0x4076C0),
                                             reinterpret_cast<void*>(&Hooked_RetryLoadFile));
     if (!RetryHook())
