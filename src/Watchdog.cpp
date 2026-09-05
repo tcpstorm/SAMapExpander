@@ -25,6 +25,7 @@
 #include <windows.h>
 #include <cstdio>
 #include <cstring>
+#include <safetyhook.hpp>
 #include "Watchdog.h"
 #include "Settings.h"
 #include "Log.h"
@@ -146,6 +147,44 @@ void ReportStreaming() {
     }
 }
 
+// Reading these globals from the watchdog thread gives an incoherent answer: the game is resumed
+// before the report is written, so the values move under it - the first attempt read
+// ms_channelError as -1 while the game was demonstrably inside the loop that only runs when it is
+// not. Read them on the game's own thread instead, at the one moment they are guaranteed to mean
+// something: the entry to CStreaming::RetryLoadFile, which is only ever reached once a read has
+// already failed.
+//
+// The channel's position packs the archive index in its top byte and the sector in the rest, so
+// this says outright whether the failing read is aimed at one of San Andreas' own archives or at
+// ours - registered as archive 5 - and at which sector, which the region's IMG directory turns
+// back into a file name.
+typedef void(__cdecl* RetryLoadFileFn)(int channel);
+static SafetyHookInline& RetryHook() { static SafetyHookInline h; return h; }
+int gRetryReports = 0;
+
+void __cdecl Hooked_RetryLoadFile(int channel) {
+    if (gRetryReports < 24) {
+        gRetryReports++;
+        const int error = IsBadReadPtr((void*)kChannelError, 4) ? -1 : *(const int*)kChannelError;
+        const uintptr_t base = kChannelBase + (uintptr_t)channel * kChannelStride;
+        if (!IsBadReadPtr((void*)base, kChannelStride)) {
+            const unsigned position = *(const unsigned*)(base + 8);
+            Log::Write("stream: RetryLoadFile(channel %d) - ms_channelError %d, state %d, reading "
+                       "%u sector(s) at sector %u of archive %u (position %08X)",
+                       channel, error, *(const int*)base, *(const unsigned*)(base + 0xC),
+                       position & 0x00FFFFFFu, position >> 24, position);
+            char line[420];
+            int n = snprintf(line, sizeof(line), "stream:   channel %d:", channel);
+            for (unsigned o = 0; o + 4 <= kChannelStride && n < (int)sizeof(line) - 12; o += 4)
+                n += snprintf(line + n, sizeof(line) - n, " %08X", *(const unsigned*)(base + o));
+            Log::Write("%s", line);
+        }
+        if (gRetryReports == 24)
+            Log::Write("stream: (further RetryLoadFile calls not logged)");
+    }
+    RetryHook().ccall<void>(channel);
+}
+
 DWORD WINAPI WatchdogProc(void*) {
     LONG last = -1;
     int stalledFor = 0, reports = 0, sample = 0;
@@ -224,6 +263,12 @@ void Install() {
         return;
     }
     CloseHandle(thread);
+    RetryHook() = safetyhook::create_inline(reinterpret_cast<void*>(0x4076C0),
+                                            reinterpret_cast<void*>(&Hooked_RetryLoadFile));
+    if (!RetryHook())
+        Log::Write("watchdog: could not hook CStreaming::RetryLoadFile; a stalled streaming read "
+                   "will not say which archive it is aimed at");
+
     Log::Write("watchdog: watching for frames that take more than %d seconds; anything it catches "
                "goes to MapExpander.stall.txt", kStallSeconds);
 }
