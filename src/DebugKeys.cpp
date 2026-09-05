@@ -1,7 +1,9 @@
-// One key in-game, with [World] Debug=1. F8 logs the player's SA position, the equivalent
-// region-local coordinates (used to calibrate WorldOriginX/Y against a known landmark), and which
-// zone the game's own lookups resolve there. The per-frame hook here also drives the GXT table
-// check.
+// F8, with [World] Debug=1: logs the player's SA position, the equivalent region-local
+// coordinates (used to calibrate WorldOriginX/Y against a known landmark), and which zone the
+// game's own lookups resolve there. The per-frame hook here also drives the GXT table check.
+//
+// The other debug key, F7, lives in Teleport.cpp: it has to run from a different point in the
+// frame, so it carries its own hook rather than riding on this one.
 #include <plugin.h>
 #include <CWorld.h>
 #include <CPlayerPed.h>

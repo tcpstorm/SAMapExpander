@@ -12,6 +12,7 @@
 #include "CityLoader.h"
 #include "WorldSectors.h"
 #include "DebugKeys.h"
+#include "Teleport.h"
 #include "Gxt.h"
 #include "Zones.h"
 #include "ModelLimits.h"
@@ -43,6 +44,7 @@ public:
         if (Settings::world.fixMeleeBeyondMap) MeleeFix::Install();
         IplLoader::Install();
         DebugKeys::Install();
+        Teleport::Install();
 
         Log::Write("MapExpander initialised: %u region(s)", (unsigned)Settings::regions.size());
     }
