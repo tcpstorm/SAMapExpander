@@ -1,5 +1,8 @@
 #include <plugin.h>
+#include <windows.h>
+#include <algorithm>
 #include <cctype>
+#include <cstring>
 #include "Settings.h"
 #include "Ini.h"
 #include "Log.h"
@@ -16,6 +19,19 @@ namespace Settings {
         return GAME_PATH(relative.c_str());
     }
 
+    static bool SameFile(const std::string& a, const std::string& b) {
+        return _stricmp(a.c_str(), b.c_str()) == 0;
+    }
+
+    static void AddPath(std::vector<std::string>& out, const std::string& path) {
+        for (const std::string& have : out)
+            if (SameFile(have, path)) return;   // listed twice, or by name and again by a wildcard
+        out.push_back(path);
+    }
+
+    // A comma separated list of game-relative paths. An entry whose file name holds * or ? is
+    // expanded to every match in that folder, in name order, so a city's thirty IDEs can be
+    // "maps\*.ide"; list the ones whose order matters first, they are not repeated.
     static std::vector<std::string> SplitPaths(const std::string& list) {
         std::vector<std::string> out;
         size_t i = 0;
@@ -24,9 +40,27 @@ namespace Settings {
             if (end == std::string::npos) end = list.size();
             size_t a = list.find_first_not_of(" \t", i);
             size_t b = list.find_last_not_of(" \t", end ? end - 1 : 0);
-            if (a != std::string::npos && a < end && b != std::string::npos && b >= a)
-                out.push_back(ResolveGamePath(list.substr(a, b - a + 1)));
             i = end + 1;
+            if (a == std::string::npos || a >= end || b == std::string::npos || b < a) continue;
+
+            std::string path = ResolveGamePath(list.substr(a, b - a + 1));
+            if (path.find_first_of("*?") == std::string::npos) { AddPath(out, path); continue; }
+
+            size_t slash = path.find_last_of("\\/");
+            std::string folder = slash == std::string::npos ? std::string() : path.substr(0, slash + 1);
+            std::vector<std::string> matches;
+            WIN32_FIND_DATAA fd;
+            HANDLE h = FindFirstFileA(path.c_str(), &fd);
+            if (h != INVALID_HANDLE_VALUE) {
+                do {
+                    if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) matches.push_back(folder + fd.cFileName);
+                } while (FindNextFileA(h, &fd));
+                FindClose(h);
+            }
+            std::sort(matches.begin(), matches.end(),
+                      [](const std::string& x, const std::string& y) { return _stricmp(x.c_str(), y.c_str()) < 0; });
+            if (matches.empty()) Log::Write("%s matches no file", path.c_str());
+            for (const std::string& m : matches) AddPath(out, m);
         }
         return out;
     }

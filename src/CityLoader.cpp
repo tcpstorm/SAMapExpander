@@ -721,6 +721,13 @@ namespace CityLoader {
                 Regions().push_back({ &r });
         if (Regions().empty()) return;
 
+        // A server places its own objects and owns the model id space; the same INI serves both.
+        if (GetModuleHandleA("samp.dll")) {
+            Log::Write("SA-MP loaded: region Img/Ide/Col are left alone, the server places the city");
+            Regions().clear();
+            return;
+        }
+
         CacheDir() = GAME_PATH("MapExpander\\cache");
         CreateDirectoryA(std::string(GAME_PATH("MapExpander")).c_str(), nullptr);
         if (!CreateDirectoryA(CacheDir().c_str(), nullptr) && GetLastError() != ERROR_ALREADY_EXISTS) {

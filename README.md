@@ -140,12 +140,19 @@ region looks wrong.
 the one slot San Andreas never streams out, so a region's collision is in memory for the whole
 session and does not depend on the collision quad tree, which cannot address anything past ±3000.
 
-**The ID limit, and why it bites.** Model ids 18631–19999 are free — 1369 for all regions together.
-That is not the real ceiling: SA's *atomic model-info store* holds 14000 entries and vanilla already
-uses almost all of them, so only a few dozen models fit before the store is full. `tobj` and `anim`
-models have no room at all (SA fills those stores exactly). The plugin never overruns a store: it
-stops and writes to `MapExpander.log` how many models were dropped and which limit ran out. Loading a
-whole city therefore needs a limit adjuster or the model-limit work that is still to come.
+**The ID limit.** Vanilla SA leaves model ids 18631–19999 free — 1369 for all regions together — and
+its 14000-entry *atomic model-info store* is almost full, so on its own only a few dozen models fit.
+`ModelIdLimit` (default 25000) adds 5000 ids and grows that store to match, which is enough for a
+Vice City. `tobj` (time-of-day) and `anim` models still have no room: SA fills those stores exactly,
+so a city's night-lit variants are dropped and logged. The plugin never overruns a store: it stops
+and writes to `MapExpander.log` how many models were dropped and which limit ran out.
+
+**Under SA-MP** the region's `Img`/`Ide`/`Col` are ignored (the server places the city and owns the
+id space), so one INI serves single-player and multiplayer.
+
+**Listing files.** `Ide`, `Ipl`, `Col` (and `Zones`, `Gxt`) take comma lists; an entry like
+`MapExpander\vicecity\ide\*.ide` expands to every match in name order. Put files whose order matters
+first — `generic.ide, *.ide` loads `generic.ide` once, first.
 
 IPL in one paragraph: "item placement" is the map's placement data — `inst` are the building/prop
 objects themselves, `cull` invisible behaviour boxes (interior lighting, no-rain, mirrors, tunnels),
