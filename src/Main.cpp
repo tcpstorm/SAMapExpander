@@ -1,5 +1,6 @@
 #include <plugin.h>
 #include "Log.h"
+#include "CrashLog.h"
 #include "Settings.h"
 #include "RadarOverlay.h"
 #include "MenuMapFix.h"
@@ -18,6 +19,7 @@ class MapExpander {
 public:
     MapExpander() {
         Log::Open();
+        CrashLog::Install();
         Settings::Load();
 
         Gxt::Install();

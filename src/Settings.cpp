@@ -40,7 +40,7 @@ namespace Settings {
         world.fixMeleeBeyondMap = true;
         world.extendPauseMap = true;
         world.pauseMapMargin = 1500.0f;
-        world.extendWaterRendering = true;
+        world.extendWaterRendering = 1;
 
         IniFile ini;
         if (!ini.Load(PLUGIN_PATH("MapExpander.ini"))) {
@@ -61,7 +61,7 @@ namespace Settings {
             world.pauseMapMaxX = w->GetFloat("PauseMapMaxX", 0.0f);
             world.pauseMapMinY = w->GetFloat("PauseMapMinY", 0.0f);
             world.pauseMapMaxY = w->GetFloat("PauseMapMaxY", 0.0f);
-            world.extendWaterRendering = w->GetBool("ExtendWaterRendering", true);
+            world.extendWaterRendering = w->GetInt("ExtendWaterRendering", 1);
             world.waterDebug = w->GetBool("WaterDebug", false);
             if (world.compressedPositionScale <= 0.0f) world.compressedPositionScale = 4.0f;
             world.gxtFiles = SplitPaths(w->GetString("Gxt", ""));

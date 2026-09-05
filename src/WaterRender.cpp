@@ -54,6 +54,9 @@ constexpr int kWorldEdge = 3000;
 // One block can never legitimately need more than this; a water map pathological enough to try is a
 // bug in the map, not something to spend a frame on.
 constexpr int kMaxRectsPerBlock = 512;
+// RenderWaterRectangle's detailed path divides by (width / cell) with no guard, so a rectangle
+// thinner than one water cell in either direction is an integer divide by zero inside the game.
+constexpr int kMinRect = 32;
 
 typedef void(__cdecl* RectFn)(int, int, int, int, RenPar, RenPar, RenPar, RenPar);
 const RectFn CallRenderWaterRectangle = reinterpret_cast<RectFn>(kRenderWaterRectangle);
@@ -65,10 +68,14 @@ struct IRect {
 std::vector<IRect> gCoverage;
 // gOutside indices per 500-unit water block, so drawing a block only ever touches its own quads.
 std::map<std::pair<int, int>, std::vector<uint32_t>> gByBlock;
+// Per quad: the origin of the 32-unit grid its water map is laid out on (its coverage rect's
+// corner), so block windows can be snapped onto the same grid.
+std::vector<std::pair<int, int>> gQuadPhase;
 
 std::vector<IRect> gPieces, gNextPieces;   // scratch for the coverage subtraction, reused per call
 
 bool gDebug = false;
+int gMode = 1;   // 1 full, 2 ocean suppression only, 3 region quads only
 unsigned gFrame = 0xFFFFFFFF;
 unsigned gLastReportMs = 0;
 bool gReportedFirst = false;
@@ -112,8 +119,16 @@ void ClipParams(float sx0, float sy0, float sx1, float sy1, const RenPar src[4],
 
 void Draw(int minX, int minY, int maxX, int maxY, const RenPar p[4], int& counter) {
     if (minX >= maxX || minY >= maxY) return;
+    if (maxX - minX < kMinRect) maxX = minX + kMinRect;
+    if (maxY - minY < kMinRect) maxY = minY + kMinRect;
     CallRenderWaterRectangle(minX, maxX, minY, maxY, p[0], p[1], p[2], p[3]);
     counter++;
+}
+
+// Largest grid line at or below v, on the 32-unit grid anchored at `phase`. Adjacent blocks snap
+// their shared edge to the same line, so the windows tile without gaps or overlaps.
+int SnapDown(int v, int phase) {
+    return phase + FloorDiv(v - phase, kMinRect) * kMinRect;
 }
 
 // Cuts every coverage rectangle out of `gPieces`, leaving the parts of the block where SA's flat
@@ -162,13 +177,14 @@ void __cdecl RenderOutsideWorldBlock(int minX, int maxX, int y1, int y2,
 
     gPieces.clear();
     gPieces.push_back({ minX, y1, maxX, y2 });
-    SubtractCoverage();
+    if (gMode != 3) SubtractCoverage();
     for (const IRect& r : gPieces) {
         RenPar p[4];
         ClipParams((float)minX, (float)y1, (float)maxX, (float)y2, flat,
                    r.minX, r.minY, r.maxX, r.maxY, p);
         Draw(r.minX, r.minY, r.maxX, r.maxY, p, gOceanRects);
     }
+    if (gMode == 2) return;
 
     auto bucket = gByBlock.find(BlockOf(minX, y1));
     if (bucket == gByBlock.end()) return;
@@ -177,10 +193,13 @@ void __cdecl RenderOutsideWorldBlock(int minX, int maxX, int y1, int y2,
     int drawn = 0;
     for (uint32_t index : bucket->second) {
         const Quad& q = quads[index];
-        const int cx0 = std::max(minX, (int)floorf(q.v[0].x));
-        const int cy0 = std::max(y1, (int)floorf(q.v[0].y));
-        const int cx1 = std::min(maxX, (int)ceilf(q.v[3].x));
-        const int cy1 = std::min(y2, (int)ceilf(q.v[3].y));
+        const auto [phaseX, phaseY] = gQuadPhase[index];
+        // Clip to the block window snapped onto the quad's own cell grid, so a quad edge can never
+        // leave a sliver thinner than a cell next to a block edge.
+        const int cx0 = std::max(SnapDown(minX, phaseX), (int)floorf(q.v[0].x));
+        const int cy0 = std::max(SnapDown(y1, phaseY), (int)floorf(q.v[0].y));
+        const int cx1 = std::min(SnapDown(maxX, phaseX), (int)ceilf(q.v[3].x));
+        const int cy1 = std::min(SnapDown(y2, phaseY), (int)ceilf(q.v[3].y));
         if (cx0 >= cx1 || cy0 >= cy1) continue;
         if (++drawn > kMaxRectsPerBlock) { gClamped++; break; }
 
@@ -197,10 +216,19 @@ void BuildIndex() {
                               (int)lrintf(r.maxX), (int)lrintf(r.maxY) });
 
     const std::vector<Quad>& quads = Water::OutsideQuads();
+    gQuadPhase.assign(quads.size(), { 0, 0 });
     for (uint32_t i = 0; i < quads.size(); i++) {
         const Quad& q = quads[i];
-        auto lo = BlockOf((int)floorf(q.v[0].x), (int)floorf(q.v[0].y));
-        auto hi = BlockOf((int)ceilf(q.v[3].x) - 1, (int)ceilf(q.v[3].y) - 1);
+        for (const IRect& c : gCoverage) {
+            if (q.v[0].x >= c.minX && q.v[3].x <= c.maxX && q.v[0].y >= c.minY && q.v[3].y <= c.maxY) {
+                gQuadPhase[i] = { c.minX, c.minY };
+                break;
+            }
+        }
+        // Snapped windows reach up to a cell past the block edge, so register the quad with the
+        // neighbouring blocks as well.
+        auto lo = BlockOf((int)floorf(q.v[0].x) - kMinRect, (int)floorf(q.v[0].y) - kMinRect);
+        auto hi = BlockOf((int)ceilf(q.v[3].x) - 1 + kMinRect, (int)ceilf(q.v[3].y) - 1 + kMinRect);
         for (int bx = lo.first; bx <= hi.first; bx++)
             for (int by = lo.second; by <= hi.second; by++)
                 gByBlock[{ bx, by }].push_back(i);
@@ -211,11 +239,13 @@ void BuildIndex() {
 
 namespace WaterRender {
     void Install() {
-        if (!Settings::world.extendWaterRendering) return;
+        if (Settings::world.extendWaterRendering <= 0) return;
         if (Water::OutsideQuads().empty() || Water::Coverage().empty()) return;
 
         BuildIndex();
         gDebug = Settings::world.waterDebug;
+        gMode = Settings::world.extendWaterRendering;
+        if (gMode != 2 && gMode != 3) gMode = 1;
         gPieces.reserve(16);
         gNextPieces.reserve(16);
 

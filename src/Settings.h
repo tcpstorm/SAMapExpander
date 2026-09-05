@@ -40,7 +40,7 @@ struct WorldSettings {
     float pauseMapMinX, pauseMapMaxX, pauseMapMinY, pauseMapMaxY;
     std::vector<std::string> gxtFiles;  // GXT files patched into the game's text lookup
     bool gxtLogMisses;                  // log keys neither the game nor we can answer
-    bool extendWaterRendering;       // draw region water beyond +/-3000 instead of SA's flat ocean
+    int extendWaterRendering;        // 0 off, 1 full, 2 only hide SA's ocean in coverage, 3 only draw region quads
     bool waterDebug;                 // log how much of it gets drawn
 };
 
