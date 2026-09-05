@@ -488,11 +488,15 @@ namespace Zones {
             return;
         }
         long index = (long)(zone - gZones);
+        char label[9] = { 0 };
+        memcpy(label, zone->textLabel, 8);
+        const char* ours = Gxt::Find(label);
         Log::Write("F8 zones: here -> #%ld text \"%.8s\" info \"%.8s\" (info #%d) type %d level %d "
-                   "box x %d..%d y %d..%d z %d..%d, shows as \"%s\"",
+                   "box x %d..%d y %d..%d z %d..%d, shows as \"%s\", our table: %s%s%s",
                    index, zone->textLabel, zone->infoLabel, (int)zone->infoIndex, (int)zone->type,
                    (int)zone->level, (int)zone->x1, (int)zone->x2, (int)zone->y1, (int)zone->y2,
-                   (int)zone->z1, (int)zone->z2, Translate(zone->textLabel));
+                   (int)zone->z1, (int)zone->z2, Translate(zone->textLabel),
+                   ours ? "\"" : "", ours ? ours : "no entry", ours ? "\"" : "");
         Log::Write("F8 zones: pause map hover here -> \"%s\", cell %s the 10x10 visited grid",
                    reinterpret_cast<GetForMapFn>(kGetForMap)(x, y),
                    (x < -kVanillaMapEdge || x > kVanillaMapEdge ||

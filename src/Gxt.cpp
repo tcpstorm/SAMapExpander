@@ -429,6 +429,43 @@ namespace Gxt {
         return Entries().count(HashKey(key)) != 0;
     }
 
+    const char* Find(const char* key) {
+        if (!key || !key[0]) return nullptr;
+        auto it = Entries().find(HashKey(key));
+        return it == Entries().end() ? nullptr : it->second.text.c_str();
+    }
+
+    void EnsureHookIntact() {
+        static bool checked = false;
+        if (checked || Entries().empty()) return;
+        checked = true;
+
+        static const char* probeKey = "MXPROBE";
+        AddString(probeKey, "MapExpander", "probe");
+        const char* expected = Find(probeKey);
+        const char* answer = reinterpret_cast<const char*(__thiscall*)(void*, const char*)>(kTextGet)(
+            reinterpret_cast<void*>(kTheText), probeKey);
+        if (answer == expected) return;
+
+        unsigned char bytes[8];
+        for (unsigned i = 0; i < sizeof(bytes); i++) bytes[i] = *reinterpret_cast<unsigned char*>(kTextGet + i);
+        Log::Write("GXT: CText::Get no longer reaches our hook (bytes now %02X %02X %02X %02X %02X %02X %02X %02X); "
+                   "another mod re-hooked it after us - hooking again on top",
+                   bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7]);
+        // The earlier hook object must never be destroyed: its destructor would restore the
+        // prologue it saved, over the other mod's jump.
+        static SafetyHookInline* rehook = nullptr;
+        if (rehook) return;
+        rehook = new SafetyHookInline(safetyhook::create_inline(reinterpret_cast<void*>(kTextGet),
+                                                                reinterpret_cast<void*>(&Hooked_TextGet)));
+        if (!*rehook) {
+            Log::Write("GXT: re-hook failed; region strings will not show");
+            return;
+        }
+        TextGetHook() = std::move(*rehook);
+        Log::Write("GXT: re-hooked CText::Get, chaining the other mod's hook");
+    }
+
     void Install() {
         gLogMisses = Settings::world.gxtLogMisses;
         if (Settings::world.gxtFiles.empty()) return;

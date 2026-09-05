@@ -10,6 +10,7 @@
 #include "Settings.h"
 #include "TileCache.h"
 #include "Log.h"
+#include "Gxt.h"
 
 using namespace plugin;
 
@@ -199,6 +200,9 @@ namespace RadarOverlay {
     }
 
     void EnsureInstalled() {
-        if (!gInstalled) InstallCallSites();
+        if (!gInstalled) {
+            InstallCallSites();
+            Gxt::EnsureHookIntact();
+        }
     }
 }

@@ -11,4 +11,11 @@ namespace Gxt {
 
     // True if one of our loaded files or an earlier AddString already provides this key.
     bool Has(const char* key);
+
+    // Our text for the key, or nullptr if we have none (does not consult the game's GXT).
+    const char* Find(const char* key);
+
+    // Call once other mods (SA-MP) have finished patching: probes CText::Get with a key only we
+    // provide and re-hooks on top of whatever is there now if our hook no longer answers.
+    void EnsureHookIntact();
 }

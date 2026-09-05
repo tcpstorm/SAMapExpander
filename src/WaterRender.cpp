@@ -85,6 +85,11 @@ int gClamped = 0;
 
 int FloorDiv(int a, int b) { return a >= 0 ? a / b : -(((-a) + b - 1) / b); }
 
+// The renderer splits rectangles at the camera-range lines, which are even integers, and then
+// subdivides the inner piece in 2-unit steps (width / 2 -> a 1-unit piece divides by zero). Even
+// edges can never leave a 1-unit piece; adjacent cells round identically, so no seams appear.
+int EvenRound(float v) { return (int)lrintf(v * 0.5f) * 2; }
+
 std::pair<int, int> BlockOf(int worldX, int worldY) {
     return { FloorDiv(worldX + kWorldEdge, kBlockSize), FloorDiv(worldY + kWorldEdge, kBlockSize) };
 }
@@ -118,6 +123,7 @@ void ClipParams(float sx0, float sy0, float sx1, float sy1, const RenPar src[4],
 }
 
 void Draw(int minX, int minY, int maxX, int maxY, const RenPar p[4], int& counter) {
+    minX &= ~1; minY &= ~1; maxX = (maxX + 1) & ~1; maxY = (maxY + 1) & ~1;
     if (minX >= maxX || minY >= maxY) return;
     if (maxX - minX < kMinRect) maxX = minX + kMinRect;
     if (maxY - minY < kMinRect) maxY = minY + kMinRect;
@@ -196,10 +202,10 @@ void __cdecl RenderOutsideWorldBlock(int minX, int maxX, int y1, int y2,
         const auto [phaseX, phaseY] = gQuadPhase[index];
         // Clip to the block window snapped onto the quad's own cell grid, so a quad edge can never
         // leave a sliver thinner than a cell next to a block edge.
-        const int cx0 = std::max(SnapDown(minX, phaseX), (int)floorf(q.v[0].x));
-        const int cy0 = std::max(SnapDown(y1, phaseY), (int)floorf(q.v[0].y));
-        const int cx1 = std::min(SnapDown(maxX, phaseX), (int)ceilf(q.v[3].x));
-        const int cy1 = std::min(SnapDown(y2, phaseY), (int)ceilf(q.v[3].y));
+        const int cx0 = std::max(SnapDown(minX, phaseX), EvenRound(q.v[0].x));
+        const int cy0 = std::max(SnapDown(y1, phaseY), EvenRound(q.v[0].y));
+        const int cx1 = std::min(SnapDown(maxX, phaseX), EvenRound(q.v[3].x));
+        const int cy1 = std::min(SnapDown(y2, phaseY), EvenRound(q.v[3].y));
         if (cx0 >= cx1 || cy0 >= cy1) continue;
         if (++drawn > kMaxRectsPerBlock) { gClamped++; break; }
 
@@ -212,8 +218,7 @@ void __cdecl RenderOutsideWorldBlock(int minX, int maxX, int y1, int y2,
 
 void BuildIndex() {
     for (const Water::Rect& r : Water::Coverage())
-        gCoverage.push_back({ (int)lrintf(r.minX), (int)lrintf(r.minY),
-                              (int)lrintf(r.maxX), (int)lrintf(r.maxY) });
+        gCoverage.push_back({ EvenRound(r.minX), EvenRound(r.minY), EvenRound(r.maxX), EvenRound(r.maxY) });
 
     const std::vector<Quad>& quads = Water::OutsideQuads();
     gQuadPhase.assign(quads.size(), { 0, 0 });
@@ -227,8 +232,8 @@ void BuildIndex() {
         }
         // Snapped windows reach up to a cell past the block edge, so register the quad with the
         // neighbouring blocks as well.
-        auto lo = BlockOf((int)floorf(q.v[0].x) - kMinRect, (int)floorf(q.v[0].y) - kMinRect);
-        auto hi = BlockOf((int)ceilf(q.v[3].x) - 1 + kMinRect, (int)ceilf(q.v[3].y) - 1 + kMinRect);
+        auto lo = BlockOf(EvenRound(q.v[0].x) - kMinRect, EvenRound(q.v[0].y) - kMinRect);
+        auto hi = BlockOf(EvenRound(q.v[3].x) - 1 + kMinRect, EvenRound(q.v[3].y) - 1 + kMinRect);
         for (int bx = lo.first; bx <= hi.first; bx++)
             for (int by = lo.second; by <= hi.second; by++)
                 gByBlock[{ bx, by }].push_back(i);
