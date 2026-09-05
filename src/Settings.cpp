@@ -118,7 +118,7 @@ namespace Settings {
 
             MapRegion r;
             r.name = s.name;
-            r.tileFolder = ResolveGamePath(s.GetString("TileFolder", "MapExpander\\tiles\\" + s.name));
+            r.tileFolder = ResolveGamePath(s.GetString("TileFolder", "MapExpander\\" + s.name + "\\tiles"));
             r.filePattern = s.GetString("FilePattern", "tile_%d_%d.png");
             std::string water = s.GetString("Water", "");
             r.waterFile = water.empty() ? std::string() : ResolveGamePath(water);

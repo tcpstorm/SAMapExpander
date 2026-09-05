@@ -282,13 +282,15 @@ void ExpandEnexQuadTree() {
         Log::Write("ipl: entry/exit quad tree not built yet; enex outside +/-3000 will be dropped");
         return;
     }
-    if (rect[0] != -3000.0f || rect[1] != -3000.0f || rect[2] != 3000.0f || rect[3] != 3000.0f) {
+    // CEntryExitManager::Init builds the tree over CRect(-3000, 3000, 3000, -3000): the game's
+    // CRect is (left, bottom, right, top) with bottom holding the larger y for world rects.
+    if (rect[0] != -3000.0f || rect[1] != 3000.0f || rect[2] != 3000.0f || rect[3] != -3000.0f) {
         Log::Write("ipl: entry/exit quad tree bounds are (%.1f, %.1f)-(%.1f, %.1f), not the vanilla "
                    "-3000..3000; left alone, enex outside them will be dropped",
-                   rect[0], rect[1], rect[2], rect[3]);
+                   rect[0], rect[3], rect[2], rect[1]);
         return;
     }
-    rect[0] = minX; rect[1] = minY; rect[2] = maxX; rect[3] = maxY;
+    rect[0] = minX; rect[1] = maxY; rect[2] = maxX; rect[3] = minY;
     gEnexMinX = minX; gEnexMinY = minY; gEnexMaxX = maxX; gEnexMaxY = maxY;
     Log::Write("ipl: entry/exit quad tree widened to (%.0f, %.0f)-(%.0f, %.0f)", minX, minY, maxX, maxY);
 }

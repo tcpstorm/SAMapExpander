@@ -541,8 +541,10 @@ void LoadModelDefinitions() {
                        "FreeModelIdEnd if it was lowered)", rs.region->name.c_str(),
                        Settings::world.freeModelIdStart, FreeIdEnd());
         if (rs.droppedNoStore)
-            Log::Write("[%s] models: SA's model-info stores ran out (atomic limit %d) - this is the "
-                       "hard wall, not the id range", rs.region->name.c_str(), AtomicLimit());
+            Log::Write("[%s] models: a model-info store ran out (atomic %d, damage %d, time %d, clump %d "
+                       "in total; tobj lines need the time store, which vanilla SA already fills) - "
+                       "this is the hard wall, not the id range", rs.region->name.c_str(),
+                       AtomicLimit(), kDamageStoreMax, kTimeStoreMax, kClumpStoreMax);
     }
 }
 
@@ -560,7 +562,8 @@ std::string PrepareColFile(const RegionState& rs, const std::string& path, int& 
     long good = 0;
     unsigned char header[32];
     while (fread(header, 1, sizeof(header), f) == sizeof(header)) {
-        if (memcmp(header, "COL", 3) != 0 || header[3] < '1' || header[3] > '4') break;
+        // Version 1 (III/VC and SA's own generic.col) is "COLL"; later ones "COL2".."COL4".
+        if (memcmp(header, "COL", 3) != 0 || !(header[3] == 'L' || (header[3] >= '2' && header[3] <= '4'))) break;
         unsigned size = *reinterpret_cast<unsigned*>(header + 4);
         if (size < 24) break;
         if (size - 24 > 0x8000) {

@@ -7,7 +7,7 @@
 // shifts every base above the DFF range by N, grows CStreaming::ms_aInfoForModel and
 // CModelInfo::ms_modelInfoPtrs, and -- because CModelInfo::AddAtomicModel never checks its
 // bounds -- has to grow the atomic model info store too. All three arrays are fixed globals, so
-// they are reallocated and the 1380 instructions that name them or a shifted base are rewritten;
+// they are reallocated and the 1407 instructions that name them or a shifted base are rewritten;
 // tools/model_limit_sites.txt is that inventory and tools/scan_model_limit_sites.py rebuilds it.
 //
 // The ceiling is 26400 models: the streaming lists link entries through int16 indices, so the

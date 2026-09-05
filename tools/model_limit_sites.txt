@@ -33,10 +33,18 @@
 0x404514 | res        | +1 | 4 | 0x000062A7 | 1 | Core::IsPointInside+0x244 | IPL
 0x404537 | info       | +4 | 4 | 0x009601D2 | 1 | Core::IsPointInside+0x267 | ms_aInfoForModel[25255]+0x6
 0x404C95 | info       | +2 | 4 | 0x008E4CD0 | 1 | CIplStore::IncludeEntity+0x5 | ms_aInfoForModel[0]+0x10
+0x4050BA | res        | +2 | 4 | 0x000062A7 | 1 | CIplStore::SetupRelatedIpls+0x2DA | IPL as displacement
+0x405147 | res        | +2 | 4 | 0x000062A7 | 1 | CIplStore::RemoveRelatedIpls+0x37 | IPL as displacement
+0x40538C | res        | +2 | 4 | 0x000062A7 | 1 | CIplStore::LoadIpls+0x21C | IPL as displacement
+0x4053A7 | res        | +2 | 4 | 0x000062A7 | 1 | CIplStore::LoadIpls+0x237 | IPL as displacement
 0x405451 | info       | +1 | 4 | 0x009601F0 | 1 | CIplStore::EnsureIplsAreInMemory+0x61 | ms_aInfoForModel[25256]+0x10
+0x4054B5 | res        | +2 | 4 | 0x000062A7 | 1 | CIplStore::EnsureIplsAreInMemory+0xC5 | IPL as displacement
 0x405509 | info       | +2 | 4 | 0x009615DC | 1 | CIplStore::EnsureIplsAreInMemory+0x119 | ms_aInfoForModel[25511]+0x10
+0x4055C2 | res        | +2 | 4 | 0x000062A7 | 1 | CIplStore::RequestIpls+0xA2 | IPL as displacement
 0x405733 | info       | +1 | 4 | 0x009601E6 | 1 | CIplStore::RemoveAllIpls+0x13 | ms_aInfoForModel[25256]+0x6
+0x405758 | res        | +2 | 4 | 0x000062A7 | 1 | CIplStore::RemoveAllIpls+0x38 | IPL as displacement
 0x405773 | info       | +2 | 4 | 0x009615D2 | 1 | CIplStore::RemoveAllIpls+0x53 | ms_aInfoForModel[25511]+0x6
+0x405807 | res        | +2 | 4 | 0x000062A7 | 1 | CIplStore::LoadAllRemainingIpls+0x87 | IPL as displacement
 0x405CDF | ptr        | +3 | 4 | 0x00A9B0C8 | 1 | CIplStore::LoadIplBoundingBox+0xDF | ms_modelInfoPtrs[0]
 0x405E50 | ptr        | +3 | 4 | 0x00A9B0C8 | 1 | CIplStore::LoadIplBoundingBox+0x250 | ms_modelInfoPtrs[0]
 0x4063F1 | ptr        | +3 | 4 | 0x00A9B0C8 | 1 | CdStreamGetStatus+0x11 | ms_modelInfoPtrs[0]
@@ -375,6 +383,7 @@
 0x40D0FA | res        | +2 | 4 | 0x00006676 | 1 | CStreaming::RemoveLeastUsedModel+0x12A | SCM
 0x40D102 | res        | +2 | 4 | 0x00006676 | 1 | CStreaming::RemoveLeastUsedModel+0x132 | SCM
 0x40D25A | res        | +2 | 4 | 0x00006676 | 1 | CStreaming::RemoveLeastUsedModel+0x28A | SCM
+0x40D2B2 | res        | +2 | 4 | 0x00004E20 | 1 | CStreaming::RemoveLeastUsedModel+0x2E2 | TXD as displacement (call CTxdStore::GetNumRefs)
 0x40D332 | info       | +2 | 4 | 0x008E4CC0 | 1 | CStreaming::RemoveReferencedTxds+0x42 | ms_aInfoForModel[0]+0x0
 0x40D368 | res        | +2 | 4 | 0x00004E20 | 1 | CStreaming::RemoveReferencedTxds+0x78 | TXD (call CStreaming::RemoveReferencedTxds+0x78)
 0x40D370 | res        | +2 | 4 | 0x000061A8 | 1 | CStreaming::RemoveReferencedTxds+0x80 | COL (call CStreaming::RemoveReferencedTxds+0x78)
@@ -396,10 +405,16 @@
 0x410344 | res        | +2 | 4 | 0x000061A8 | 1 | Collision::IntersectEdge+0x264 | COL (call CStreaming::RequestModel)
 0x410364 | res        | +1 | 4 | 0x000061A8 | 1 | Collision::IntersectEdge+0x284 | COL (call CStreaming::RemoveModel)
 0x410387 | info       | +4 | 4 | 0x0095EDE6 | 1 | Collision::IntersectEdge+0x2A7 | ms_aInfoForModel[25000]+0x6
+0x410A73 | res        | +2 | 4 | 0x000061A8 | 1 | CColStore::LoadCollision+0x213 | COL as displacement (call CStreaming::RemoveModel)
+0x410A8B | res        | +2 | 4 | 0x000061A8 | 1 | CColStore::LoadCollision+0x22B | COL as displacement (call CStreaming::RemoveModel)
 0x410B31 | info       | +1 | 4 | 0x0095EE04 | 1 | CColStore::EnsureCollisionIsInMemory+0x61 | ms_aInfoForModel[25001]+0x10
+0x410B8A | res        | +2 | 4 | 0x000061A8 | 1 | CColStore::EnsureCollisionIsInMemory+0xBA | COL as displacement (call CStreaming::RequestModel)
 0x410BDE | info       | +2 | 4 | 0x009601DC | 1 | CColStore::EnsureCollisionIsInMemory+0x10E | ms_aInfoForModel[25255]+0x10
+0x410CA2 | res        | +2 | 4 | 0x000061A8 | 1 | CColStore::RequestCollision+0xA2 | COL as displacement (call CStreaming::RequestModel)
 0x410E13 | info       | +1 | 4 | 0x0095EDFA | 1 | CColStore::RemoveAllCollision+0x13 | ms_aInfoForModel[25001]+0x6
+0x410E38 | res        | +2 | 4 | 0x000061A8 | 1 | CColStore::RemoveAllCollision+0x38 | COL as displacement (array reference at 0x410E13)
 0x410E53 | info       | +2 | 4 | 0x009601D2 | 1 | CColStore::RemoveAllCollision+0x53 | ms_aInfoForModel[25255]+0x6
+0x410E86 | res        | +2 | 4 | 0x000061A8 | 1 | CColStore::LoadAllCollision+0x26 | COL as displacement (call CStreaming::RequestModel)
 0x41A8DE | ptr        | +3 | 4 | 0x00A9B0C8 | 1 | CCollision::CheckCameraCollisionBuildings+0xBE | ms_modelInfoPtrs[0]
 0x41AA49 | ptr        | +3 | 4 | 0x00A9B0C8 | 1 | CCollision::CheckCameraCollisionVehicles+0xB9 | ms_modelInfoPtrs[0]
 0x41AA79 | ptr        | +3 | 4 | 0x00A9B0C8 | 1 | CCollision::CheckCameraCollisionVehicles+0xE9 | ms_modelInfoPtrs[0]
@@ -492,6 +507,7 @@
 0x44B5DD | info       | +2 | 4 | 0x008E6940 | 1 | CGarage::Update+0xB8D | ms_aInfoForModel[364]+0x10
 0x44D064 | res        | +2 | 4 | 0x000063A7 | 1 | COnscreenTimer::SetCounterColourID+0x154 | DAT
 0x44E4C4 | res        | +1 | 4 | 0x000063A7 | 1 | Core::Normalise+0x44 | DAT
+0x450CF2 | res        | +2 | 4 | 0x000063A7 | 1 | CPathFind::UpdateStreaming+0x292 | DAT as displacement
 0x453173 | ptr        | +3 | 4 | 0x00A9B0C8 | 1 | CPathFind::LoadPathFindData+0x233 | ms_modelInfoPtrs[0]
 0x4531AE | ptr        | +3 | 4 | 0x00A9B0C8 | 1 | CPathFind::LoadPathFindData+0x26E | ms_modelInfoPtrs[0]
 0x4531E4 | ptr        | +3 | 4 | 0x00A9B0C8 | 1 | CPathFind::LoadPathFindData+0x2A4 | ms_modelInfoPtrs[0]
@@ -558,6 +574,7 @@
 0x486B1D | ptr        | +3 | 4 | 0x00A9B0C8 | 1 | Scripts::ClearSpaceForMissionEntity+0x1D | ms_modelInfoPtrs[0]
 0x48ACA2 | ptr        | +3 | 4 | 0x00A9B0C8 | 1 | Scripts::ThisIsAValidRandomPed+0x1812 | ms_modelInfoPtrs[0]
 0x48B574 | res        | +1 | 4 | 0x000063E7 | 1 | CStreaming::SetMissionDoesntRequireAnim+0x4 | IFP
+0x48C36B | res        | +2 | 4 | 0x000063E7 | 1 | CStreaming::SetMissionDoesntRequireAnim+0xDFB | IFP as displacement
 0x494EDC | ptr        | +3 | 4 | 0x00A9B0C8 | 1 | Scripts::RenderAllSearchLights+0x10AC | ms_modelInfoPtrs[0]
 0x49835E | ptr        | +3 | 4 | 0x00A9B0C8 | 1 | Tasks/TaskTypes/SeekEntity::ControlSubTask+0x1BFE | ms_modelInfoPtrs[0]
 0x4983A6 | ptr        | +3 | 4 | 0x00A9B0C8 | 1 | Tasks/TaskTypes/SeekEntity::ControlSubTask+0x1C46 | ms_modelInfoPtrs[0]
@@ -673,6 +690,7 @@
 0x4CDF37 | ptr        | +2 | 4 | 0x00AAE948 | 1 | Animation::Constructor+0xC7 | ms_modelInfoPtrs[20000]
 0x4CE4E2 | ptr        | +2 | 4 | 0x00AAE948 | 1 | Animation::CreateAssociations+0x132 | ms_modelInfoPtrs[20000]
 0x4D3D52 | ptr        | +3 | 4 | 0x00A9B0C8 | 1 | Animation::CreateAnimAssocGroups+0x92 | ms_modelInfoPtrs[0]
+0x4D4133 | res        | +2 | 4 | 0x000063E7 | 1 | Animation::Shutdown+0x3 | IFP as displacement
 0x4D5C57 | info       | +4 | 4 | 0x008E4CC6 | 1 | CCutsceneMgr::LoadEverythingBecauseCutsceneDeletedAllOfIt+0x47 | ms_aInfoForModel[0]+0x6
 0x4DACAE | ptr        | +3 | 4 | 0x00A9B0C8 | 1 | Audio/Entities::ReportObjectDestruction+0x14E | ms_modelInfoPtrs[0]
 0x4E4204 | ptr        | +3 | 4 | 0x00A9B0C8 | 1 | Audio/Entities::GetSexFromModel+0x4 | ms_modelInfoPtrs[0]
@@ -831,6 +849,7 @@
 0x5A332F | ptr        | +3 | 4 | 0x00A9B0C8 | 1 | Plant::AddObject+0x5F | ms_modelInfoPtrs[0]
 0x5A3525 | ptr        | +3 | 4 | 0x00A9B0C8 | 1 | Plant::AddObject+0x255 | ms_modelInfoPtrs[0]
 0x5A41C6 | ptr        | +3 | 4 | 0x00A9B0C8 | 1 | CClothesBuilder::RequestGeometry+0x6 | ms_modelInfoPtrs[0]
+0x5A4295 | res        | +2 | 4 | 0x00004E20 | 1 | CClothesBuilder::RequestTexture+0x75 | TXD as displacement (call CStreaming::RequestFile)
 0x5A55B2 | ptr        | +1 | 4 | 0x00A9B6C4 | 1 | CClothesBuilder::ConstructGeometryArray+0x12 | ms_modelInfoPtrs[383]
 0x5A5FF4 | res        | +2 | 4 | 0x00004E20 | 1 | GetTextureFromTxdAndLoadNextTxd+0x84 | TXD (call CStreaming::RemoveModel)
 0x5A6184 | res        | +2 | 4 | 0x00004E20 | 1 | CClothesBuilder::ConstructTextures+0x144 | TXD (call CStreaming::RemoveModel)
@@ -1077,6 +1096,8 @@
 0x64D04D | ptr        | +3 | 4 | 0x00A9B0C8 | 1 | Tasks/TaskTypes::ProcessPed+0x10D | ms_modelInfoPtrs[0]
 0x64D0D8 | info       | +3 | 4 | 0x008E4CD0 | 1 | Tasks/TaskTypes::ProcessPed+0x198 | ms_aInfoForModel[0]+0x10
 0x64E74F | ptr        | +3 | 4 | 0x00A9B0C8 | 1 | CCarEnterExit::GetPositionToOpenCarDoor+0xF | ms_modelInfoPtrs[0]
+0x64F88B | res        | +2 | 4 | 0x000063E7 | 1 | CCarEnterExit::SetAnimOffsetForEnterOrExitVehicle+0x2B | IFP as displacement
+0x64F899 | res        | +2 | 4 | 0x000063E7 | 1 | CCarEnterExit::SetAnimOffsetForEnterOrExitVehicle+0x39 | IFP as displacement
 0x64FC21 | ptr        | +3 | 4 | 0x00A9B0C8 | 1 | Tasks/TaskTypes::GetLocalPositionToOpenCarDoor+0x11 | ms_modelInfoPtrs[0]
 0x6504DE | ptr        | +3 | 4 | 0x00A9B0C8 | 1 | CCarEnterExit::IsRoomForPedToLeaveCar+0x1E | ms_modelInfoPtrs[0]
 0x6509BC | ptr        | +3 | 4 | 0x00A9B0C8 | 1 | CCarEnterExit::IsClearToDriveAway+0xC | ms_modelInfoPtrs[0]
@@ -1301,6 +1322,7 @@
 0x1560FE0 | info       | +3 | 4 | 0x008E4CD0 | 1 | ? | ms_aInfoForModel[0]+0x10
 0x1561671 | info       | +3 | 4 | 0x00964E08 | 1 | ? | ms_aInfoForModel[26230]+0x10
 0x15624F1 | res        | +1 | 4 | 0x000063E7 | 1 | ? | IFP
+0x1562761 | res        | +2 | 4 | 0x000063A7 | 1 | ? | DAT as displacement
 0x15629EC | info       | +2 | 4 | 0x008E4CC6 | 1 | ? | ms_aInfoForModel[0]+0x6
 0x15629F2 | info       | +2 | 4 | 0x008E4CC0 | 1 | ? | ms_aInfoForModel[0]+0x0
 0x15629FE | info       | +2 | 4 | 0x008E4CC6 | 1 | ? | ms_aInfoForModel[0]+0x6
@@ -1323,6 +1345,7 @@
 0x1562BC8 | info       | +2 | 4 | 0x008E4CD0 | 1 | ? | ms_aInfoForModel[0]+0x10
 0x1563C12 | info       | +2 | 4 | 0x008E6DA0 | 1 | ? | ms_aInfoForModel[420]+0x10
 0x1563C22 | info       | +2 | 4 | 0x008E6F08 | 1 | ? | ms_aInfoForModel[438]+0x10
+0x1564118 | res        | +2 | 4 | 0x0000649B | 1 | ? | RRR as displacement
 0x15642C7 | info       | +3 | 4 | 0x008E6378 | 1 | ? | ms_aInfoForModel[290]+0x10
 0x1564604 | info       | +1 | 4 | 0x008E9AE6 | 1 | ? | ms_aInfoForModel[1000]+0x6
 0x1564612 | ptr        | +3 | 4 | 0x00A9B0C8 | 1 | ? | ms_modelInfoPtrs[0]
@@ -1331,6 +1354,7 @@
 0x1565177 | info       | +3 | 4 | 0x008E4CCC | 1 | ? | ms_aInfoForModel[0]+0xC
 0x15651B1 | res        | +1 | 4 | 0x000062A7 | 1 | ? | IPL
 0x156526C | ptr        | +3 | 4 | 0x00A9B0C8 | 1 | ? | ms_modelInfoPtrs[0]
+0x15656D2 | res        | +2 | 4 | 0x000063A7 | 1 | ? | DAT as displacement
 0x15663C9 | info       | +2 | 4 | 0x008E4CCC | 1 | ? | ms_aInfoForModel[0]+0xC
 0x15663D8 | info       | +3 | 4 | 0x008E4CC7 | 1 | ? | ms_aInfoForModel[0]+0x7
 0x15663EB | info       | +2 | 4 | 0x008E4CC8 | 1 | ? | ms_aInfoForModel[0]+0x8
@@ -1357,6 +1381,7 @@
 0x1567B6A | info       | +2 | 4 | 0x008E4CD0 | 1 | ? | ms_aInfoForModel[0]+0x10
 0x1567B73 | info       | +3 | 4 | 0x008E4CC0 | 1 | ? | ms_aInfoForModel[0]+0x0
 0x1567B7D | info       | +3 | 4 | 0x008E4CC2 | 1 | ? | ms_aInfoForModel[0]+0x2
+0x156890F | res        | +2 | 4 | 0x0000649B | 1 | ? | RRR as displacement
 0x15691DE | ptr        | +3 | 4 | 0x00A9B0C8 | 1 | ? | ms_modelInfoPtrs[0]
 0x15691E5 | ptr        | +3 | 4 | 0x00A9B0C8 | 1 | ? | ms_modelInfoPtrs[0]
 0x156A107 | info       | +3 | 4 | 0x008E4CD0 | 1 | ? | ms_aInfoForModel[0]+0x10
@@ -1378,12 +1403,14 @@
 0x156CAAD | res        | +1 | 4 | 0x00004E20 | 1 | ? | TXD (call CStreaming::SetModelIsDeletable)
 0x156D020 | info       | +1 | 4 | 0x008E4CC6 | 1 | ? | ms_aInfoForModel[0]+0x6
 0x156D037 | info       | +2 | 4 | 0x009654B6 | 1 | ? | ms_aInfoForModel[26316]+0x6
+0x156D041 | res        | +2 | 4 | 0x00006676 | 1 | ? | SCM as displacement
 0x156D089 | ptr        | +3 | 4 | 0x00A9B0C8 | 1 | ? | ms_modelInfoPtrs[0]
 0x156D0B6 | ptr        | +3 | 4 | 0x00A9B0C8 | 1 | ? | ms_modelInfoPtrs[0]
 0x156D0E6 | ptr        | +3 | 4 | 0x00A9B0C8 | 1 | ? | ms_modelInfoPtrs[0]
 0x156D134 | res        | +1 | 4 | 0x0000649B | 1 | ? | RRR
 0x156D9A4 | info       | +3 | 4 | 0x00964E08 | 1 | ? | ms_aInfoForModel[26230]+0x10
 0x156D9AE | res        | +1 | 4 | 0x00006676 | 1 | ? | SCM
+0x156E788 | res        | +2 | 4 | 0x0000649B | 1 | ? | RRR as displacement
 0x156EDFA | info       | +3 | 4 | 0x008E4CD0 | 1 | ? | ms_aInfoForModel[0]+0x10
 0x1570109 | info       | +3 | 4 | 0x008E4CD0 | 1 | ? | ms_aInfoForModel[0]+0x10
 0x1570248 | ptr        | +3 | 4 | 0x00A9B0C8 | 1 | ? | ms_modelInfoPtrs[0]
@@ -1444,6 +1471,7 @@
 # 0x6CAB95 | fed by a CTimer read | add eax, 0xffffb1e0 | -TXD
 # 0x6D3C33 | pushed as a call argument | push 0x4e20 | TXD
 # 0x6F2406 | fed by a CTimer read | add eax, 0x4e20 | TXD
+# 0x720626 | no id evidence nearby | lea ecx, [edx + 0x4e20] | TXD as displacement
 # 0x720AF8 | fed by a CTimer read | add eax, 0x4e20 | TXD
 # 0x720CAA | no id evidence nearby | add eax, 0x4e20 | TXD
 # 0x737D00 | fed by a CTimer read | add ecx, 0x4e20 | TXD
@@ -1476,4 +1504,4 @@
 # 0x15665DA | bound of the special-model array at 0x8E4AF8, not of ms_aInfoForModel | cmp esi, 0x8f8378 | ms_aInfoForModel[3977]+0x4
 # 0x15665E2 | bound of the special-model array at 0x8E4AF8, not of ms_aInfoForModel | cmp esi, 0x8fd198 | ms_aInfoForModel[4977]+0x4
 #
-# 1380 sites: atomic=37, count4=1, info=363, ptr=743, res=202, resneg=30, sentinel16=4
+# 1407 sites: atomic=37, count4=1, info=363, ptr=743, res=229, resneg=30, sentinel16=4

@@ -181,6 +181,12 @@ def classify(ins):
                 yield (hit[0], enc.disp_offset, 4, hit[1], hit[2], hit[3])
             for hit in match_negative(op.mem.disp):
                 yield (hit[0], enc.disp_offset, 4, hit[1], hit[2], hit[3])
+            # `lea esi, [edi + 25000]` folds a base into a displacement (CColStore::LoadAllCollision
+            # builds its col ids that way); only register-relative forms, an absolute address
+            # this small cannot be data.
+            v = op.mem.disp & 0xFFFFFFFF
+            if (op.mem.base or op.mem.index) and v in RESOURCE_IMMS and v >= MODEL_COUNT - 1:
+                yield ("res", enc.disp_offset, 4, v, 1, RESOURCE_IMMS[v] + " as displacement")
         if op.type == X86_OP_IMM and enc.imm_size == 4:
             for hit in match_address(op.imm, True):
                 yield (hit[0], enc.imm_offset, 4, hit[1], hit[2], hit[3])

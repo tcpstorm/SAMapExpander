@@ -42,7 +42,21 @@ compiled plugin-sdk; the plugin is cross-compiled to a 32-bit Windows DLL.
 ## Install
 
 Copy `MapExpander.SA.asi` and `MapExpander.ini` into the game folder (an ASI loader is required, as for
-any `.asi`). Put tiles and data under `MapExpander\` in the game folder as configured. The plugin writes
+any `.asi`). Everything a region owns lives in one folder, `MapExpander\<region>\`, under the source
+game's own file names:
+
+```
+MapExpander\vicecity\tiles\radar00.png ..   radar tiles
+MapExpander\vicecity\american.gxt           text
+MapExpander\vicecity\waterpro.dat           water
+MapExpander\vicecity\navig.zon, info.zon    zones
+MapExpander\vicecity\vicecity.img           models + textures      (city loader)
+MapExpander\vicecity\ide\, ipl\, col\       definitions, placements, collision
+```
+
+`tools\import-city.ps1 "<Vice City dir>" "<San Andreas dir>"` fills that folder from a III/VC
+install in one go (see *Importing a city*); `-Lite` produces just the tiles, text, water and zones for
+when a server or map mod already places the buildings. The plugin writes
 `MapExpander.log` next to the `.asi`; read it first when something does not show up. The log names
 the version, what was configured and patched, and any error; a crash is logged with its exception
 address, registers and stack even in a normal build.
@@ -106,6 +120,29 @@ be hand-translated. Copy the files straight from the source game's `data\` folde
 | `Img=`, `Ide=`, `Ipl=`, `Col=` | `feature/city-loader` | `models\gta3.img`, `data\maps\*.ide`, `data\maps\*.ipl` | the region's own buildings; the `inst` section of an IPL is used here, the other sections by the IPL loader above. See *Loading a city's own assets*. |
 | `Zones=`, `ZoneNames=` | `feature/zones` | `data\navig.zon`, `data\info.zon`, names from `text\american.gxt` | area names on VC through the vanilla zone system; their display names are merged into the game's own GXT key table. |
 
+## Importing a city
+
+```powershell
+.\tools\import-city.ps1 "D:\Games\GTA Vice City" "D:\Games\GTA San Andreas"          # everything
+.\tools\import-city.ps1 "D:\Games\GTA Vice City" "D:\Games\GTA San Andreas" -Lite    # tiles, text, water, zones
+```
+
+Runs in a throwaway container (`tools/import_city.py`; `import-city.sh` on Linux/macOS). It reads the
+source game's `gta_vc.dat`/`gta3.dat` for the file order and writes `MapExpander\<region>\`:
+
+- `<region>.img` — every `.dff`/`.txd` from the source `gta3.img`, repacked as an SA *VER2* archive
+  (SA cannot read the III/VC *v1* `.img`+`.dir` pair, so never point `Img=` at the original).
+- `col\` — every `.col` from the archive plus the `.dat`'s `COLFILE` entries, as loose files.
+- `ide\`, `ipl\` — the files the `.dat` lists, copied in its order.
+- `tiles\radarNN.png` — decoded from the radar TXDs (DXT1/3, paletted and raw rasters).
+- `american.gxt`, `waterpro.dat`, `navig.zon`, `info.zon`.
+- `region.ini` — the `[region]` keys to paste, with `Ide`/`Ipl` in `.dat` order.
+
+**Name clashes.** San Andreas resolves archive contents purely by name, so a model or texture whose
+name also exists in SA's `gta3.img`/`gta_int.img` would lose to SA's copy and stay invisible. The
+importer prefixes such names (`vc_`, `iii_`) consistently across the archive, the IDE model/txd
+columns, the IPL `inst` lines and the collision entry names; `-NoRename` turns that off.
+
 ## Loading a city's own assets
 
 With `Img`, `Ide`, `Ipl` and `Col` a region brings its own buildings instead of relying on a server to
@@ -114,18 +151,14 @@ place them. Everything stays in the region's coordinates; the plugin adds the or
 ```ini
 [ViceCity]
 Img = MapExpander\vicecity\vicecity.img
-Ide = MapExpander\vicecity\ide\generic.ide, MapExpander\vicecity\ide\downtown.ide
-Ipl = MapExpander\vicecity\ipl\downtown.ipl, MapExpander\vicecity\ipl\docks.ipl
-Col = MapExpander\vicecity\vicecity.col
+Ide = MapExpander\vicecity\ide\generic.ide, MapExpander\vicecity\ide\*.ide
+Ipl = MapExpander\vicecity\ipl\*.ipl
+Col = MapExpander\vicecity\col\*.col
 ```
 
-**What goes in the IMG.** One `.dff` per model and one `.txd` per texture dictionary named by your
-IDE lines — a plain SA *IMG version 2* archive, built with any IMG tool from the source game's
-`gta3.img`. San Andreas resolves archive contents purely by name, so a model whose name also exists
-in `gta3.img` loses: SA's file wins and the region's model stays invisible. Rename such models in
-both the IDE and the archive. The models themselves must be RenderWare clumps San Andreas can read;
-Vice City geometry generally loads, but anything the game refuses shows up as a missing model, not as
-a crash. There are 8 archive slots in total and SA uses 3, so up to 5 region archives can be added.
+The models themselves must be RenderWare clumps San Andreas can read; Vice City geometry generally
+loads, and anything the game refuses shows up as a missing model, not as a crash. There are 8 archive
+slots in total and SA uses 3, so up to 5 region archives can be added.
 
 **What the plugin does with them.** Region archives are registered just before SA scans archive
 directories; the IDE files are then fed through the game's own parser with every model id rewritten
@@ -163,12 +196,13 @@ objects themselves, `cull` invisible behaviour boxes (interior lighting, no-rain
 
 All run in throwaway containers; nothing is installed on the host.
 
+- `tools/import-city.ps1` / `tools/import_city.py` — build a region folder from a III/VC install (see *Importing a city*).
 - `tools/sftp.ps1` — serve the project folder over SFTP (port 2222) to test on another machine.
 - `tools/scan.ps1 <gamedir>` / `tools/scan_exe.py` — find every code site using the int16/8 compression constants and the pickup accessors.
 - `tools/xref.py`, `tools/fieldref.py`, `tools/check_fn.py`, `tools/readfloat.py`, `tools/dumpb.py` — capstone helpers for cross-referencing addresses, struct-field accesses, disassembly, constants and raw bytes/branch targets in `gta_sa.exe`.
 - `tools/gen_functions.py` → `tools/sa_functions.txt` — 9.6k named addresses merged from gta-reversed and plugin-sdk, used to label scanner output.
 - `tools/montage.py`, `tools/montage_orders.py`, `tools/tile_order_score.py` — stitch tiles and score the eight possible grid orderings to verify a tile set's numbering.
-- `tools/scan_model_limit_sites.py` → `tools/model_limit_sites.txt` → `tools/gen_model_limit_sites.py` → `src/ModelLimitSites.h` — the 1380 instructions `ModelIdLimit` rewrites, with the candidates it deliberately leaves alone and why. `tools/verify_model_limit_sites.py` re-reads every one of them out of `gta_sa.exe` and must pass 100% before the table ships.
+- `tools/scan_model_limit_sites.py` → `tools/model_limit_sites.txt` → `tools/gen_model_limit_sites.py` → `src/ModelLimitSites.h` — the 1407 instructions `ModelIdLimit` rewrites, with the candidates it deliberately leaves alone and why. `tools/verify_model_limit_sites.py` re-reads every one of them out of `gta_sa.exe` and must pass 100% before the table ships.
 
 ## Engine facts worth knowing
 
