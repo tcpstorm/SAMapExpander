@@ -4,6 +4,7 @@
 #include "RadarOverlay.h"
 #include "MenuMapFix.h"
 #include "PickupFix.h"
+#include "MeleeFix.h"
 #include "Water.h"
 #include "IplLoader.h"
 #include "WaterRender.h"
@@ -28,6 +29,7 @@ public:
             WaterRender::Install();
         }
         if (Settings::world.fixPickupPositions || Settings::world.fixCarGeneratorPositions) PickupFix::Install();
+        if (Settings::world.fixMeleeBeyondMap) MeleeFix::Install();
         IplLoader::Install();
         DebugKeys::Install();
 

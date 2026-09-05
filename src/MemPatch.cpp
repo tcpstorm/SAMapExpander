@@ -1,4 +1,5 @@
 #include <plugin.h>
+#include <cstring>
 #include "MemPatch.h"
 #include "Log.h"
 
@@ -31,6 +32,23 @@ namespace MemPatch {
             return false;
         }
         patch::SetInt(callSite + 1, (uintptr_t)((intptr_t)newTarget - (intptr_t)(callSite + 5)));
+        return true;
+    }
+
+    bool ReplaceBytes(uintptr_t address, const uint8_t* expected, const uint8_t* replacement, size_t length) {
+        uint8_t current[16] = {};
+        if (length > sizeof(current)) {
+            Log::Write("patch skipped at 0x%X: %u bytes exceeds the verify buffer", (unsigned)address, (unsigned)length);
+            return false;
+        }
+        patch::GetRaw(address, current, length);
+        if (std::memcmp(current, expected, length) != 0) {
+            Log::Write("patch skipped at 0x%X: bytes are %02X %02X..., expected %02X %02X... "
+                       "(already patched by another mod?)",
+                       (unsigned)address, current[0], current[1], expected[0], expected[1]);
+            return false;
+        }
+        patch::SetRaw(address, (void*)replacement, length);
         return true;
     }
 }

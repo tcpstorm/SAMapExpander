@@ -37,6 +37,7 @@ namespace Settings {
         world.fixPickupPositions = true;
         world.fixCarGeneratorPositions = true;
         world.compressedPositionScale = 4.0f;
+        world.fixMeleeBeyondMap = true;
         world.extendPauseMap = true;
         world.pauseMapMargin = 1500.0f;
         world.extendWaterRendering = true;
@@ -51,6 +52,7 @@ namespace Settings {
             world.fixPickupPositions = w->GetBool("FixPickupPositions", true);
             world.fixCarGeneratorPositions = w->GetBool("FixCarGeneratorPositions", true);
             world.compressedPositionScale = w->GetFloat("CompressedPositionScale", 4.0f);
+            world.fixMeleeBeyondMap = w->GetBool("FixMeleeBeyondMap", true);
             world.extendPauseMap = w->GetBool("ExtendPauseMap", true);
             world.pauseMapMargin = w->GetFloat("PauseMapMargin", 1500.0f);
             world.pauseMapCustomBounds = w->Has("PauseMapMinX") && w->Has("PauseMapMaxX") &&

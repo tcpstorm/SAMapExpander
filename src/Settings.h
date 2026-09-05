@@ -33,6 +33,7 @@ struct WorldSettings {
     bool fixPickupPositions;
     bool fixCarGeneratorPositions;
     float compressedPositionScale;   // int16 units per world unit; vanilla 8 => +/-4096
+    bool fixMeleeBeyondMap;          // let CEntityScanner see peds and vehicles outside +/-3000
     bool extendPauseMap;
     float pauseMapMargin;            // world units of free scrolling past the map/regions on every side
     bool pauseMapCustomBounds;       // if set, PauseMapMin/Max override the computed extent

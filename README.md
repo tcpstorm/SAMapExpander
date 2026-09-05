@@ -15,6 +15,10 @@ What it does today:
 - **Pickups and parked cars beyond ±4096.** SA stores those positions as `int16 / 8`; the plugin
   retargets every compression site (41 pickup, 23 car-generator) to a configurable scale, default
   ±8192 at 0.25-unit precision.
+- **Melee and ped awareness beyond ±3000.** `CEntityScanner` clamped its sector search into the vanilla
+  grid before wrapping it into the repeat-sector array, so outside the map a ped's ped and vehicle
+  scanners came back empty: punches animated but never connected, and ped AI ignored everyone around
+  it. Four two-byte patches drop the clamps.
 - **Feature branches (pull requests open):** offset loading of original IPL sections (`feature/ipl-sections`),
   original water maps (`feature/water`), and original zone names (`feature/zones`). See *Region data*.
 
@@ -69,6 +73,7 @@ SA x 4171..6963, y −778..2626).
 | `FixPickupPositions` | 1 | retarget the pickup position-compression sites |
 | `FixCarGeneratorPositions` | 1 | same for car generators |
 | `CompressedPositionScale` | 4 | int16 units per world unit: 8 = vanilla (±4096), 4 = ±8192 at 0.25, 2 = ±16384 at 0.5. Saves store positions with the scale active when saved. |
+| `FixMeleeBeyondMap` | 1 | let `CEntityScanner` find peds and vehicles outside ±3000, so melee lands and ped AI sees its neighbours |
 | `ExtendPauseMap` | 1 | free the pause map's scroll/cursor/blip limits |
 | `PauseMapMargin` | 1500 | extra scrollable world units past the map and all regions |
 | `PauseMapMinX/MaxX/MinY/MaxY` | – | fix the scrollable area explicitly instead (all four) |
@@ -104,6 +109,10 @@ All run in throwaway containers; nothing is installed on the host.
 ## Engine facts worth knowing
 
 - SA's static world is 120×120 sectors of 50 units = ±3000; beyond that, sector lookups clamp into the edge sector (works, degrades). Fully enlarging the sector grid is fastman92 Limit Adjuster territory (~700 patch sites) and is not attempted here.
+- Moving entities (peds, vehicles, objects) live in `ms_aRepeatSectors`, a 16×16 grid the game indexes by
+  masking the 0..119 static sector index with 15 — so it wraps every 800 units and keeps working outside
+  ±3000, as long as a caller masks the *raw* index instead of clamping it first. `CPhysical::Add`, `CWorld::FindObjectsInRange`
+  and `CWorld::ProcessLineOfSight` mask the raw index; `CEntityScanner::ScanForEntitiesInRange` did not.
 - The pause map is drawn by `CMenuManager::PrintMap` with `tile = zoom/6` px per 500 units and raw `width/640` scaling — never `CMenuManager::StretchX`, which other mods hook for aspect correction. The overlay replicates the raw arithmetic for that reason.
 - `CWaterLevel::RenderWater` (0x6EF650) draws water outside the 12×12 block grid as one
   `RenderWaterRectangle` call per 500-unit block (0x6F004E), over the ≤70 blocks
