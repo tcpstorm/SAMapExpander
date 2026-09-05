@@ -38,7 +38,7 @@ HANDLE gReport = INVALID_HANDLE_VALUE;
 // Seconds a frame may take before the game is presumed stuck. Loading a region's collision blocks
 // for a while quite legitimately, so this is well past anything normal.
 const int kStallSeconds = 6;
-const int kMaxReports = 6;
+const int kMaxReports = 40;
 
 void Say(const char* fmt, ...) {
     if (gReport == INVALID_HANDLE_VALUE) return;
@@ -103,6 +103,49 @@ void ReportStack(const CONTEXT& c) {
     }
 }
 
+// CStreaming::RetryLoadFile (0x4076C0) loops until ms_channelError goes back to -1, reissuing the
+// channel's read through CdStreamRead each time round. A read that cannot succeed therefore stops
+// the game dead with no crash and no exception - which is the shape of every hang seen so far. When
+// the watchdog catches a stall, write down what the streamer is actually asking for: the error
+// flag, and each channel's state, the position it is reading from and how much of it.
+//
+// The position packs the archive index in its top byte and the sector in the rest, so it says which
+// of the registered IMGs the failing read is aimed at - the game's own, or ours.
+const uintptr_t kChannelError = 0x8E4B90;   // -1 when nothing has failed
+const uintptr_t kChannelBase = 0x8E4AE0;    // state, then the read's position and size
+const uintptr_t kChannelStride = 0x98;
+const int kChannels = 2;
+
+void ReportStreaming() {
+    if (IsBadReadPtr((void*)kChannelError, 4)) return;
+    const int error = *(const int*)kChannelError;
+    Say("  streaming: ms_channelError = %d%s", error,
+        error == -1 ? " (nothing failed)" : "  <- the retry loop only ends when this is -1");
+
+    for (int ch = 0; ch < kChannels; ch++) {
+        const uintptr_t base = kChannelBase + (uintptr_t)ch * kChannelStride;
+        if (IsBadReadPtr((void*)base, 0x18)) continue;
+        const int state = *(const int*)base;
+        const unsigned position = *(const unsigned*)(base + 8);
+        const unsigned sectors = *(const unsigned*)(base + 0xC);
+        const int retries = *(const int*)(base + 0x10);
+        Say("  channel %d: state %d, reading %u sector(s) at %u of archive %u (position %08X), "
+            "%d retr%s", ch, state, sectors, position & 0x00FFFFFF, position >> 24, position,
+            retries, retries == 1 ? "y" : "ies");
+    }
+    // The rest of each channel holds the model ids the read is for; dump it raw rather than guess
+    // at the layout, so the ids can be matched against the log's model table afterwards.
+    for (int ch = 0; ch < kChannels; ch++) {
+        const uintptr_t base = kChannelBase + (uintptr_t)ch * kChannelStride;
+        if (IsBadReadPtr((void*)base, kChannelStride)) continue;
+        char line[420];
+        int n = snprintf(line, sizeof(line), "  channel %d raw:", ch);
+        for (unsigned o = 0; o + 4 <= kChannelStride && n < (int)sizeof(line) - 12; o += 4)
+            n += snprintf(line + n, sizeof(line) - n, " %08X", *(const unsigned*)(base + o));
+        Say("%s", line);
+    }
+}
+
 DWORD WINAPI WatchdogProc(void*) {
     LONG last = -1;
     int stalledFor = 0, reports = 0, sample = 0;
@@ -115,6 +158,18 @@ DWORD WINAPI WatchdogProc(void*) {
             continue;
         }
         if (++stalledFor < kStallSeconds || reports >= kMaxReports) continue;
+
+        // A game that is not the foreground window stops finishing frames on purpose: San Andreas
+        // drops into an input-poll loop inside WinMain, and Present blocks in the driver. Both look
+        // exactly like a stall from here, and both happen every time the player alts away to say
+        // the game has hung - which is when this is most likely to be running. Only report while
+        // the game actually has the screen.
+        DWORD owner = 0;
+        GetWindowThreadProcessId(GetForegroundWindow(), &owner);
+        if (owner != GetCurrentProcessId()) {
+            stalledFor = 0;
+            continue;
+        }
 
         // Sample it several times a second apart: the same eip every time is a spin, a moving one
         // is work that is merely enormous, and the difference decides where to look next.
@@ -130,6 +185,7 @@ DWORD WINAPI WatchdogProc(void*) {
         Say("");
         Say("--- sample %d: no frame finished for %d seconds ---", sample, stalledFor);
         if (ok) ReportStack(c);
+        if (ok) ReportStreaming();
         else Say("  could not read the thread context (error %u)", (unsigned)GetLastError());
         stalledFor = 0;                 // wait out another window before the next sample
     }
