@@ -234,6 +234,13 @@ D3D_FORMATS = {
 }
 
 
+RW_STRING = 0x02
+RW_TEXTURE = 0x06
+# Clump, GeometryList, Geometry, MaterialList, Material, Atomic, Extension, TextureDictionary:
+# the chunks that can hold a material tree, so the walker knows what to descend into.
+RW_CONTAINERS = (0x10, 0x1A, 0x0F, 0x08, 0x07, 0x14, 0x03, 0x16)
+
+
 def rw_chunk(kind, body):
     return struct.pack("<III", kind, len(body), SA_LIB_ID) + body
 
@@ -328,6 +335,39 @@ def txd_texture_chunks(data):
             break
 
     return textures, converted, failed
+
+
+def dff_texture_names(data):
+    """Texture names a model's materials reference.
+
+    Walks the clump for Texture chunks and takes the first String child of each, which is the
+    texture name (the second is the alpha mask). Used to work out which textures a dictionary is
+    actually asked for, so the ones it is missing can be copied in.
+    """
+    found = []
+
+    def sections(off, end):
+        while off + 12 <= end:
+            cid, csz, _ver = struct.unpack_from("<III", data, off)
+            if csz < 0 or off + 12 + csz > end:
+                return
+            yield cid, off + 12, off + 12 + csz
+            off = off + 12 + csz
+
+    def walk(s, e, in_texture):
+        for cid, cs, ce in sections(s, e):
+            if cid == RW_TEXTURE:
+                walk(cs, ce, True)
+            elif cid == RW_STRING and in_texture:
+                name = data[cs:ce].split(bytes([0]))[0].decode("ascii", "replace")
+                if name:
+                    found.append(name)
+                return                       # the first string is the name, the second the mask
+            elif cid in RW_CONTAINERS:
+                walk(cs, ce, in_texture)
+
+    walk(0, len(data), False)
+    return found
 
 
 def build_txd(chunks):
@@ -536,10 +576,38 @@ def main():
         new_base = renames.get(name.lower())
         return new_base + os.path.splitext(name)[1] if new_base else name
 
+    # Which dictionary each model is bound to, in post-rename names. The IDEs are written out
+    # further down; they are read here too because the packing below needs to know which textures
+    # each dictionary is actually asked for.
+    model_txd = {}
+    for rel in ([] if lite else ide_rel):
+        path = find_file(src, rel)
+        if not path:
+            continue
+        with open(path, "r", encoding="latin-1") as f:
+            section = None
+            for line in f:
+                s = line.strip().lower()
+                if section is None:
+                    if s in ("objs", "tobj"):
+                        section = s
+                    continue
+                if s == "end":
+                    section = None
+                    continue
+                if s.startswith("#"):
+                    continue
+                tok = [t.strip() for t in re.split(r"[,\s]+", line.strip()) if t.strip()]
+                if len(tok) >= 3:
+                    model = renames.get(tok[1].lower() + ".dff", tok[1]).lower()
+                    txd = renames.get(tok[2].lower() + ".txd", tok[2]).lower() + ".txd"
+                    model_txd[model] = txd
+
     # Split the archive: models/textures into the new IMG, collision into loose files,
     # radar tiles into PNGs. Everything else (audio, misc) is dropped.
     packed, cols, tiles, skipped = [], 0, 0, 0
     txd_parts = {}
+    dff_refs = {}
     tex_done, tex_failed, txds = 0, 0, 0
     for name, off, size in entries:
         blob = archive[off:off + size]
@@ -572,9 +640,54 @@ def main():
                 part[1].extend(chunks)
                 part[2] += 1
         elif ext == ".dff":
-            packed.append((renamed(name), blob))
+            key = renamed(name)
+            dff_refs[key.lower().rsplit(".", 1)[0]] = dff_texture_names(blob)
+            packed.append((key, blob))
         else:
             skipped += 1
+    # Vice City resolves a texture a model's own dictionary does not hold out of
+    # models/generic.txd, a global dictionary its engine keeps loaded for the whole map. San Andreas
+    # has no equivalent, so any model whose textures live there renders untextured - which is why
+    # the palms came out as white squares even once their own dictionary was correct. 190 models
+    # depend on it. Copy each missing texture into the dictionary that is asked for it, so every
+    # dictionary is self-contained by the time San Andreas sees it, and nothing has to be resolved
+    # at run time.
+    fallback = {}
+    global_txd = find_file(src, "models/generic.txd") if not lite else None
+    if global_txd:
+        with open(global_txd, "rb") as f:
+            gchunks, gdone, gbad = txd_texture_chunks(f.read())
+        tex_done += gdone
+        tex_failed += gbad
+        for texname, chunk in (gchunks or []):
+            fallback.setdefault(texname.lower(), (texname, chunk))
+    for _key, chunks, _sources in txd_parts.values():
+        for texname, chunk in chunks:
+            fallback.setdefault(texname.lower(), (texname, chunk))
+
+    borrowed, unresolved = 0, set()
+    for model, refs in dff_refs.items():
+        part = txd_parts.get(model_txd.get(model, ""))
+        if not part:
+            continue
+        have = {n.lower() for n, _c in part[1]}
+        for ref in refs:
+            if ref.lower() in have:
+                continue
+            found = fallback.get(ref.lower())
+            if found:
+                part[1].append(found)
+                have.add(ref.lower())
+                borrowed += 1
+            else:
+                unresolved.add(ref)
+    if borrowed:
+        print("copied %d texture(s) into the dictionaries that reference them but did not hold "
+              "them; Vice City resolves those through its global models/generic.txd" % borrowed)
+    if unresolved:
+        print("warning: %d texture name(s) a model references exist nowhere in the source: %s"
+              % (len(unresolved), ", ".join(sorted(unresolved)[:8])))
+
     # Vice City's own gta3.dir carries the same TXD name more than once: generic.txd is in there
     # both as the dictionary holding the tree leaf textures and as a second one holding ivy and road
     # surfaces. A name is one streaming slot, so packing both means the second silently replaces the
