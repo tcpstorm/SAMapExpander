@@ -431,6 +431,7 @@ std::vector<Inst> CollectInsts(const RegionState& rs, const std::string& source,
         inst.model = mapped->second;
         inst.x += rs.region->originX;
         inst.y += rs.region->originY;
+        inst.z += rs.region->originZ;
         newIndex.push_back((int)kept.size());
         kept.push_back(inst);
     }
