@@ -14,6 +14,7 @@
 #include "Settings.h"
 #include "Zones.h"
 #include "Gxt.h"
+#include "Watchdog.h"
 #include "Log.h"
 
 using namespace plugin;
@@ -49,6 +50,7 @@ static void OnFrame() {
 
 static void __cdecl Hooked_TimerUpdate() {
     FrameHook().ccall<void>();
+    Watchdog::Tick();
     Gxt::EnsureInjected();   // the one per-frame hook we have that fires under SA-MP too
     OnFrame();
 }

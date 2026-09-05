@@ -13,6 +13,7 @@
 #include "WorldSectors.h"
 #include "DebugKeys.h"
 #include "Teleport.h"
+#include "Watchdog.h"
 #include "Gxt.h"
 #include "Zones.h"
 #include "ModelLimits.h"
@@ -45,6 +46,7 @@ public:
         IplLoader::Install();
         DebugKeys::Install();
         Teleport::Install();
+        Watchdog::Install();
 
         Log::Write("MapExpander initialised: %u region(s)", (unsigned)Settings::regions.size());
     }
