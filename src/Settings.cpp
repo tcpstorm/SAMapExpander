@@ -67,6 +67,7 @@ namespace Settings {
             if (world.compressedPositionScale <= 0.0f) world.compressedPositionScale = 4.0f;
             world.gxtFiles = SplitPaths(w->GetString("Gxt", ""));
             world.gxtLogMisses = w->GetBool("GxtLogMisses", false);
+            world.modelIdLimit = w->GetInt("ModelIdLimit", 25000);
         }
 
         for (auto& s : ini.Sections()) {

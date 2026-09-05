@@ -41,6 +41,7 @@ struct WorldSettings {
     std::vector<std::string> gxtFiles;  // GXT files patched into the game's text lookup
     bool gxtLogMisses;                  // log keys neither the game nor we can answer
     int extendWaterRendering;        // 0 off, 1 full, 2 only hide SA's ocean in coverage, 3 only draw region quads
+    int modelIdLimit;                // number of DFF ids; 20000 leaves the game alone
     bool debug;                      // verbose log, F8 diagnostics, water render statistics
 };
 

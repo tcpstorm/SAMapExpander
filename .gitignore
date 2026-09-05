@@ -3,4 +3,5 @@ output/
 game/
 *.log
 *.exe
+__pycache__/
 .claude/
