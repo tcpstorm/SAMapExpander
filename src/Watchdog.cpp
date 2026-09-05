@@ -117,33 +117,41 @@ const uintptr_t kChannelBase = 0x8E4AE0;    // state, then the read's position a
 const uintptr_t kChannelStride = 0x98;
 const int kChannels = 2;
 
-void ReportStreaming() {
-    if (IsBadReadPtr((void*)kChannelError, 4)) return;
-    const int error = *(const int*)kChannelError;
-    Say("  streaming: ms_channelError = %d%s", error,
-        error == -1 ? " (nothing failed)" : "  <- the retry loop only ends when this is -1");
+struct ReadRecord {
+    int streamId;
+    unsigned position;
+    unsigned sectors;
+};
+const int kRing = 24;
+ReadRecord gRing[kRing];
+volatile LONG gRingHead = 0;      // total reads ever; index is head % kRing
+volatile LONG gRetryCalls = 0;    // RetryLoadFile entries, to show whether it is spinning
 
-    for (int ch = 0; ch < kChannels; ch++) {
-        const uintptr_t base = kChannelBase + (uintptr_t)ch * kChannelStride;
-        if (IsBadReadPtr((void*)base, 0x18)) continue;
-        const int state = *(const int*)base;
-        const unsigned position = *(const unsigned*)(base + 8);
-        const unsigned sectors = *(const unsigned*)(base + 0xC);
-        const int retries = *(const int*)(base + 0x10);
-        Say("  channel %d: state %d, reading %u sector(s) at %u of archive %u (position %08X), "
-            "%d retr%s", ch, state, sectors, position & 0x00FFFFFF, position >> 24, position,
-            retries, retries == 1 ? "y" : "ies");
-    }
-    // The rest of each channel holds the model ids the read is for; dump it raw rather than guess
-    // at the layout, so the ids can be matched against the log's model table afterwards.
-    for (int ch = 0; ch < kChannels; ch++) {
-        const uintptr_t base = kChannelBase + (uintptr_t)ch * kChannelStride;
-        if (IsBadReadPtr((void*)base, kChannelStride)) continue;
-        char line[420];
-        int n = snprintf(line, sizeof(line), "  channel %d raw:", ch);
-        for (unsigned o = 0; o + 4 <= kChannelStride && n < (int)sizeof(line) - 12; o += 4)
-            n += snprintf(line + n, sizeof(line) - n, " %08X", *(const unsigned*)(base + o));
-        Say("%s", line);
+// Everything worth knowing about the streamer, taken in one go while the game thread is stopped.
+struct StreamSnapshot {
+    int error;
+    LONG retries;
+    LONG head;
+    ReadRecord ring[kRing];
+};
+
+void TakeStreamSnapshot(StreamSnapshot& s) {
+    s.error = IsBadReadPtr((void*)kChannelError, 4) ? -2 : *(const int*)kChannelError;
+    s.retries = gRetryCalls;
+    s.head = gRingHead;
+    memcpy(s.ring, gRing, sizeof(s.ring));
+}
+
+void ReportStreaming(const StreamSnapshot& s) {
+    Say("  streaming: ms_channelError = %d%s, RetryLoadFile entered %ld time(s)", s.error,
+        s.error == -1 ? " (nothing failed)" : "  <- the retry loop only ends when this is -1",
+        s.retries);
+    Say("  last read(s) issued, most recent first (archive 5 is the region's):");
+    const int have = s.head < kRing ? (int)s.head : kRing;
+    for (int i = 0; i < have; i++) {
+        const ReadRecord& r = s.ring[(s.head - 1 - i) % kRing];
+        Say("    stream %d: %u sector(s) at sector %u of ARCHIVE %u  (position %08X)",
+            r.streamId, r.sectors, r.position & 0x00FFFFFFu, r.position >> 24, r.position);
     }
 }
 
@@ -160,7 +168,6 @@ void ReportStreaming() {
 // back into a file name.
 typedef void(__cdecl* RetryLoadFileFn)(int channel);
 static SafetyHookInline& RetryHook() { static SafetyHookInline h; return h; }
-int gRetryReports = 0;
 
 // Guessing at the channel struct's layout gave nonsense - the field eight bytes in held a pointer
 // into this very module, not a disc position, so the offsets are wrong and the archive index
@@ -171,43 +178,30 @@ int gRetryReports = 0;
 //
 // with the archive index in the position's top byte. Logged only while a channel error is
 // outstanding, which is exactly when the read is one that keeps failing.
+// Logging a read the moment a channel error is outstanding does not work: an error outstanding is
+// ordinary during loading, and the whole budget was spent on start-up reads of San Andreas' own
+// archives before the game had even been played. What distinguishes the hang is not that a read
+// failed, it is that the same read keeps being reissued and the frame never ends.
+//
+// So record every read into a ring - four words, no logging, nothing that can block - and let the
+// watchdog print the ring when it decides the game has stopped. The last few reads before a stall
+// are the ones being retried, and the ring is snapshotted while the game thread is suspended, so
+// unlike the first attempt at this the values cannot move while they are being written out.
 typedef int(__cdecl* CdStreamReadFn)(int, void*, unsigned, unsigned);
 static SafetyHookInline& ReadHook() { static SafetyHookInline h; return h; }
-int gReadReports = 0;
+
 
 int __cdecl Hooked_CdStreamRead(int streamId, void* buffer, unsigned position, unsigned sectors) {
-    const bool failing = !IsBadReadPtr((void*)kChannelError, 4) && *(const int*)kChannelError != -1;
-    if (failing && gReadReports < 16) {
-        gReadReports++;
-        Log::Write("stream: CdStreamRead(stream %d, %u sector(s) at sector %u of ARCHIVE %u) "
-                   "while channel %d is in error - position %08X",
-                   streamId, sectors, position & 0x00FFFFFFu, position >> 24,
-                   *(const int*)kChannelError, position);
-        if (gReadReports == 16) Log::Write("stream: (no more CdStreamRead reports)");
-    }
+    const LONG slot = InterlockedIncrement(&gRingHead) - 1;
+    ReadRecord& r = gRing[slot % kRing];
+    r.streamId = streamId;
+    r.position = position;
+    r.sectors = sectors;
     return ReadHook().ccall<int>(streamId, buffer, position, sectors);
 }
 
 void __cdecl Hooked_RetryLoadFile(int channel) {
-    if (gRetryReports < 24) {
-        gRetryReports++;
-        const int error = IsBadReadPtr((void*)kChannelError, 4) ? -1 : *(const int*)kChannelError;
-        const uintptr_t base = kChannelBase + (uintptr_t)channel * kChannelStride;
-        if (!IsBadReadPtr((void*)base, kChannelStride)) {
-            const unsigned position = *(const unsigned*)(base + 8);
-            Log::Write("stream: RetryLoadFile(channel %d) - ms_channelError %d, state %d, reading "
-                       "%u sector(s) at sector %u of archive %u (position %08X)",
-                       channel, error, *(const int*)base, *(const unsigned*)(base + 0xC),
-                       position & 0x00FFFFFFu, position >> 24, position);
-            char line[420];
-            int n = snprintf(line, sizeof(line), "stream:   channel %d:", channel);
-            for (unsigned o = 0; o + 4 <= kChannelStride && n < (int)sizeof(line) - 12; o += 4)
-                n += snprintf(line + n, sizeof(line) - n, " %08X", *(const unsigned*)(base + o));
-            Log::Write("%s", line);
-        }
-        if (gRetryReports == 24)
-            Log::Write("stream: (further RetryLoadFile calls not logged)");
-    }
+    InterlockedIncrement(&gRetryCalls);
     RetryHook().ccall<void>(channel);
 }
 
@@ -245,13 +239,15 @@ DWORD WINAPI WatchdogProc(void*) {
         memset(&c, 0, sizeof(c));
         c.ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER;
         BOOL ok = GetThreadContext(gMainThread, &c);
+        StreamSnapshot snap;
+        TakeStreamSnapshot(snap);
         ResumeThread(gMainThread);      // resume before writing anything, so the report cannot hold it
 
         Say("");
         Say("--- sample %d: no frame finished for %d seconds ---", sample, stalledFor);
         if (ok) ReportStack(c);
-        if (ok) ReportStreaming();
         else Say("  could not read the thread context (error %u)", (unsigned)GetLastError());
+        ReportStreaming(snap);
         stalledFor = 0;                 // wait out another window before the next sample
     }
 }
