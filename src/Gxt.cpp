@@ -6,6 +6,7 @@
 // SA-format GXT stores: its TKEY entries carry the hash, not the name.
 #include <plugin.h>
 #include <safetyhook.hpp>
+#include <algorithm>
 #include <array>
 #include <cctype>
 #include <cstdint>
@@ -70,27 +71,54 @@ std::unordered_set<uint32_t>& MissesSeen() { static std::unordered_set<uint32_t>
 // allocator handle, and assigning into a never-constructed one crashes inside create_inline.
 SafetyHookInline& TextGetHook() { static SafetyHookInline h; return h; }
 SafetyHookInline& TextLoadHook() { static SafetyHookInline h; return h; }
-bool gAudited = false;
 bool gLogMisses = false;
 int gMissesLogged = 0;
 int gConflicts = 0;
 int gReplacements = 0;
+bool gTableDirty = false;         // AddString after the merge: rebuild on the next sync
 
 const char* gMissingText = nullptr;   // what CText::Get answers for a key nobody has
 
-const char* CallOriginal(const char* key) {
-    return TextGetHook().thiscall<const char*>(reinterpret_cast<void*>(kTheText), key);
+const char* CallGameGet(const char* key) {
+    return reinterpret_cast<const char*(__thiscall*)(void*, const char*)>(kTextGet)(
+        reinterpret_cast<void*>(kTheText), key);
 }
 
 // ---------------------------------------------------------------- the game's own table
+//
+// TheText starts with CKeyArray m_MainKeyArray = { CKeyEntry* entries; int count; }. CText::Get
+// hashes the key and binary-searches that block (CKeyArray::BinarySearch, int16 indices), so a
+// string we merge into the block is found by every caller, whatever else has been done to
+// CText::Get itself. We used to hook CText::Get instead; SA-MP and at least one other mod hook it
+// after us without relocating our jump properly, which lost our strings or crashed the game.
+//
+// CKeyArray::Load allocates the block with the exe's malloc (0x821195) and CText::Unload frees it
+// with its free (0x8213AE), so our replacement block comes from the same allocator.
 
-const GameKeyEntry* GameEntries() { return *reinterpret_cast<GameKeyEntry**>(kTheText); }
-uint32_t GameEntryCount() { return *reinterpret_cast<uint32_t*>(kTheText + 4); }
+struct KeyArray {
+    GameKeyEntry* entries;
+    uint32_t      count;
+};
+KeyArray& MainKeyArray() { return *reinterpret_cast<KeyArray*>(kTheText); }
+
+constexpr uintptr_t kGameMalloc = 0x821195;
+constexpr uintptr_t kGameFree = 0x8213AE;
+constexpr uint32_t kMaxEntries = 32767;   // CKeyArray::BinarySearch walks the block with int16 indices
+
+void* GameMalloc(size_t bytes) { return reinterpret_cast<void*(__cdecl*)(size_t)>(kGameMalloc)(bytes); }
+void GameFree(void* p) { reinterpret_cast<void(__cdecl*)(void*)>(kGameFree)(p); }
+
+// The block CText::Load produced, before our entries went in: the audit compares against it and
+// every rebuild merges from it.
+std::vector<GameKeyEntry>& GameOriginal() { static std::vector<GameKeyEntry> v; return v; }
+GameKeyEntry* gInjectedBlock = nullptr;
+int gSyncsLogged = 0;
+
+// A key only we define; its presence (pointing at our text) proves the live block is ours.
+constexpr const char* kSentinelKey = "MXTABLE";
 
 // CKeyArray::BinarySearch relies on the block being sorted by hash, so we can do the same.
-const GameKeyEntry* FindGameEntry(uint32_t hash) {
-    const GameKeyEntry* entries = GameEntries();
-    uint32_t count = GameEntryCount();
+const GameKeyEntry* FindIn(const GameKeyEntry* entries, uint32_t count, uint32_t hash) {
     if (!entries || !count) return nullptr;
     uint32_t lo = 0, hi = count;
     while (lo < hi) {
@@ -99,6 +127,18 @@ const GameKeyEntry* FindGameEntry(uint32_t hash) {
         if (entries[mid].hash < hash) lo = mid + 1; else hi = mid;
     }
     return nullptr;
+}
+
+const GameKeyEntry* FindGameEntry(uint32_t hash) {
+    return FindIn(GameOriginal().data(), (uint32_t)GameOriginal().size(), hash);
+}
+
+bool LiveTableIsOurs() {
+    const KeyArray& live = MainKeyArray();
+    auto ours = Entries().find(HashKey(kSentinelKey));
+    if (ours == Entries().end()) return false;
+    const GameKeyEntry* e = FindIn(live.entries, live.count, ours->first);
+    return e && e->text == ours->second.text.c_str();
 }
 
 // ---------------------------------------------------------------- table
@@ -119,9 +159,11 @@ bool AddHashed(uint32_t hash, const std::string& name, const std::string& text, 
             }
         }
         it->second = Entry{ text, name.empty() ? it->second.name : name, source };
+        gTableDirty = true;
         return true;
     }
     Entries().emplace(hash, Entry{ text, name, source });
+    gTableDirty = true;
     return true;
 }
 
@@ -130,23 +172,26 @@ bool AddHashed(uint32_t hash, const std::string& name, const std::string& text, 
 const char* __fastcall Hooked_TextGet(void* self, void* /*edx*/, const char* key);
 void __fastcall Hooked_TextLoad(void* self, void* /*edx*/, bool keepMissionPack);
 
-void Audit();
-
 bool gHookTried = false;
 constexpr uintptr_t kTextLoad = 0x6A01A0;   // CText::Load(bool keepMissionPack), __thiscall
+
+void SyncTable();
 
 void EnsureHook() {
     if (gHookTried) return;
     gHookTried = true;
-    Log::Write("GXT: hooking CText::Get at 0x%X and CText::Load at 0x%X", (unsigned)kTextGet, (unsigned)kTextLoad);
-    TextGetHook() = safetyhook::create_inline(reinterpret_cast<void*>(kTextGet),
-                                             reinterpret_cast<void*>(&Hooked_TextGet));
-    if (!TextGetHook())
-        Log::Write("GXT: could not hook CText::Get; no string of ours will reach the game");
+    AddHashed(HashKey(kSentinelKey), kSentinelKey, "MapExpander", "sentinel");
+    Log::Write("GXT: hooking CText::Load at 0x%X%s", (unsigned)kTextLoad,
+               gLogMisses ? " and CText::Get at 0x6A0050 for missing-key logging" : "");
     TextLoadHook() = safetyhook::create_inline(reinterpret_cast<void*>(kTextLoad),
                                               reinterpret_cast<void*>(&Hooked_TextLoad));
     if (!TextLoadHook())
-        Log::Write("GXT: could not hook CText::Load; override report and miss logging are off");
+        Log::Write("GXT: could not hook CText::Load; our strings go in on the first frame instead");
+    if (gLogMisses) {
+        TextGetHook() = safetyhook::create_inline(reinterpret_cast<void*>(kTextGet),
+                                                 reinterpret_cast<void*>(&Hooked_TextGet));
+        if (!TextGetHook()) Log::Write("GXT: could not hook CText::Get; missing-key logging is off");
+    }
 }
 
 void NoteMiss(const char* key) {
@@ -160,50 +205,115 @@ void NoteMiss(const char* key) {
     if (gMissesLogged == 50) Log::Write("GXT: 50 missing keys logged, no more will be reported");
 }
 
-// CText::Load itself calls Get while its key table still holds file offsets rather than pointers,
-// so nothing here may look inside the game's table; the audit waits for Load to finish.
+// Only installed for GxtLogMisses: our strings reach the game through its table, not through here.
 const char* __fastcall Hooked_TextGet(void* self, void* /*edx*/, const char* key) {
-    if (key && key[0] && key[0] != ' ') {
-        auto it = Entries().find(HashKey(key));
-        if (it != Entries().end()) return it->second.text.c_str();
-    }
     // unsafe_ skips safetyhook's per-call mutex; this runs many times per frame and the hook lives
     // until the process ends, so there is nothing to guard against.
     const char* result = TextGetHook().unsafe_thiscall<const char*>(self, key);
-    if (gLogMisses && gAudited && key && result == gMissingText) NoteMiss(key);
+    if (gMissingText && key && key[0] && key[0] != ' ' && result == gMissingText) NoteMiss(key);
     return result;
 }
 
 void __fastcall Hooked_TextLoad(void* self, void* /*edx*/, bool keepMissionPack) {
     TextLoadHook().thiscall<void>(self, keepMissionPack);
-    gAudited = false;
-    Audit();
+    SyncTable();
 }
 
-// Runs after CText::Load, once the game's key table holds real pointers: only then can we say which
-// of our keys the game also has (and what a miss looks like).
-void Audit() {
-    if (GameEntryCount() == 0) return;
-    gAudited = true;
-
-    gMissingText = CallOriginal("\x01ZZZZZZ");
-
+// Compares our keys against the block CText::Load just produced (real pointers by now): which of
+// ours the game also has, and what it answers for a key nobody has.
+void Audit(bool verbose) {
     int overrides = 0, same = 0;
     for (const auto& kv : Entries()) {
         const GameKeyEntry* theirs = FindGameEntry(kv.first);
         if (!theirs || !theirs->text) continue;
         if (kv.second.text == theirs->text) { same++; continue; }
         overrides++;
-        if (overrides <= 20) {
+        if (verbose && overrides <= 20) {
             char label[24];
             if (kv.second.name.empty()) snprintf(label, sizeof(label), "#%08X", kv.first);
             else snprintf(label, sizeof(label), "%s", kv.second.name.c_str());
             Log::Write("GXT: %s overrides \"%s\" with \"%s\"", label, theirs->text, kv.second.text.c_str());
         }
     }
-    if (overrides > 20) Log::Write("GXT: ... and %d more overridden key(s)", overrides - 20);
+    if (verbose && overrides > 20) Log::Write("GXT: ... and %d more overridden key(s)", overrides - 20);
     Log::Write("GXT: %d of our %u key(s) override the game's text, %d repeat it unchanged",
                overrides, (unsigned)Entries().size(), same);
+}
+
+// Builds game-original + ours (ours wins on a shared hash) and hands the block to TheText.
+void InstallMergedTable() {
+    std::vector<GameKeyEntry> ours;
+    ours.reserve(Entries().size());
+    for (const auto& kv : Entries()) ours.push_back(GameKeyEntry{ kv.second.text.c_str(), kv.first });
+    std::sort(ours.begin(), ours.end(),
+              [](const GameKeyEntry& a, const GameKeyEntry& b) { return a.hash < b.hash; });
+
+    const std::vector<GameKeyEntry>& game = GameOriginal();
+    std::vector<GameKeyEntry> merged;
+    merged.reserve(game.size() + ours.size());
+    size_t g = 0, o = 0;
+    int replaced = 0;
+    while (g < game.size() || o < ours.size()) {
+        if (o == ours.size() || (g < game.size() && game[g].hash < ours[o].hash)) {
+            merged.push_back(game[g++]);
+        } else {
+            if (g < game.size() && game[g].hash == ours[o].hash) { g++; replaced++; }
+            merged.push_back(ours[o++]);
+        }
+    }
+
+    int dropped = 0;
+    if (merged.size() > kMaxEntries) {
+        dropped = (int)(merged.size() - kMaxEntries);
+        merged.resize(kMaxEntries);
+    }
+
+    GameKeyEntry* block = static_cast<GameKeyEntry*>(GameMalloc(merged.size() * sizeof(GameKeyEntry)));
+    if (!block) {
+        Log::Write("GXT: the game's allocator refused %u bytes; our strings are not in its table",
+                   (unsigned)(merged.size() * sizeof(GameKeyEntry)));
+        return;
+    }
+    memcpy(block, merged.data(), merged.size() * sizeof(GameKeyEntry));
+
+    KeyArray& live = MainKeyArray();
+    GameKeyEntry* previous = live.entries;
+    live.entries = block;
+    live.count = (uint32_t)merged.size();
+    // Our own earlier block can go; the game's original stays allocated (something else may still
+    // point at it, and it is a few dozen KB at most).
+    if (previous && previous == gInjectedBlock) GameFree(previous);
+    gInjectedBlock = block;
+    gTableDirty = false;
+
+    if (gSyncsLogged < 5) {
+        gSyncsLogged++;
+        Log::Write("GXT: game table rebuilt: %u of the game's keys + %u of ours (%d replaced) = %u entries%s",
+                   (unsigned)game.size(), (unsigned)ours.size(), replaced, (unsigned)merged.size(),
+                   dropped ? " (TRUNCATED: the table cannot hold more than 32767 keys)" : "");
+        if (dropped) Log::Write("GXT: %d key(s) with the highest hashes were dropped", dropped);
+    }
+}
+
+// Makes sure the live MAIN table carries our strings. Called after every CText::Load and once per
+// frame (cheap when nothing changed): a text reload we did not see, or a mod that replaced the
+// block, is caught on the next frame.
+void SyncTable() {
+    if (Entries().empty()) return;
+    const KeyArray& live = MainKeyArray();
+    if (!live.entries || live.count == 0) return;   // nothing loaded yet
+
+    if (!LiveTableIsOurs()) {
+        // A fresh block from CText::Load: snapshot it, report overrides against it, then merge.
+        GameOriginal().assign(live.entries, live.entries + live.count);
+        static bool auditedOnce = false;
+        Audit(!auditedOnce);
+        auditedOnce = true;
+        InstallMergedTable();
+        gMissingText = CallGameGet("\x01ZZZZZZ");
+    } else if (gTableDirty) {
+        InstallMergedTable();
+    }
 }
 
 // ---------------------------------------------------------------- file parsing
@@ -435,35 +545,8 @@ namespace Gxt {
         return it == Entries().end() ? nullptr : it->second.text.c_str();
     }
 
-    void EnsureHookIntact() {
-        static bool checked = false;
-        if (checked || Entries().empty()) return;
-        checked = true;
-
-        static const char* probeKey = "MXPROBE";
-        AddString(probeKey, "MapExpander", "probe");
-        const char* expected = Find(probeKey);
-        const char* answer = reinterpret_cast<const char*(__thiscall*)(void*, const char*)>(kTextGet)(
-            reinterpret_cast<void*>(kTheText), probeKey);
-        if (answer == expected) return;
-
-        unsigned char bytes[8];
-        for (unsigned i = 0; i < sizeof(bytes); i++) bytes[i] = *reinterpret_cast<unsigned char*>(kTextGet + i);
-        Log::Write("GXT: CText::Get no longer reaches our hook (bytes now %02X %02X %02X %02X %02X %02X %02X %02X); "
-                   "another mod re-hooked it after us - hooking again on top",
-                   bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7]);
-        // The earlier hook object must never be destroyed: its destructor would restore the
-        // prologue it saved, over the other mod's jump.
-        static SafetyHookInline* rehook = nullptr;
-        if (rehook) return;
-        rehook = new SafetyHookInline(safetyhook::create_inline(reinterpret_cast<void*>(kTextGet),
-                                                                reinterpret_cast<void*>(&Hooked_TextGet)));
-        if (!*rehook) {
-            Log::Write("GXT: re-hook failed; region strings will not show");
-            return;
-        }
-        TextGetHook() = std::move(*rehook);
-        Log::Write("GXT: re-hooked CText::Get, chaining the other mod's hook");
+    void EnsureInjected() {
+        SyncTable();
     }
 
     void Install() {

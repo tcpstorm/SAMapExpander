@@ -10,6 +10,7 @@
 #include "DebugKeys.h"
 #include "Settings.h"
 #include "Zones.h"
+#include "Gxt.h"
 #include "Log.h"
 
 using namespace plugin;
@@ -43,6 +44,7 @@ static void OnFrame() {
 
 static void __cdecl Hooked_TimerUpdate() {
     FrameHook().ccall<void>();
+    Gxt::EnsureInjected();   // the one per-frame hook we have that fires under SA-MP too
     OnFrame();
 }
 
@@ -51,6 +53,6 @@ namespace DebugKeys {
         // plugin-sdk's events never fire under SA-MP, so poll from a function the game itself calls.
         FrameHook() = safetyhook::create_inline(reinterpret_cast<void*>(kTimerUpdate),
                                                 reinterpret_cast<void*>(&Hooked_TimerUpdate));
-        if (!FrameHook()) Log::Write("could not hook CTimer::Update; F8 diagnostics are unavailable");
+        if (!FrameHook()) Log::Write("could not hook CTimer::Update; F8 diagnostics and the per-frame GXT table check are unavailable");
     }
 }

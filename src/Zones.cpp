@@ -5,7 +5,7 @@
 // 379 of them (378 lines in info.zon plus SAN_AND from CTheZones::Init), so every added zone has to
 // go into a bigger array -- the array is a fixed global, so all 62 code sites that name it are
 // re-pointed at load. And the zone labels are GXT keys that only exist in the other game's
-// american.gxt, so the display names are registered with Gxt, which answers CText::Get for them.
+// american.gxt, so the display names are registered with Gxt, which merges them into the game's text table.
 #include <plugin.h>
 #include <windows.h>
 #include <CWorld.h>
