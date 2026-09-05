@@ -64,9 +64,13 @@ static void WriteMiniDump(EXCEPTION_POINTERS* info) {
 
 static LONG CALLBACK OnException(EXCEPTION_POINTERS* info) {
     const DWORD code = info->ExceptionRecord->ExceptionCode;
-    if (code != EXCEPTION_ACCESS_VIOLATION && code != EXCEPTION_ILLEGAL_INSTRUCTION &&
-        code != EXCEPTION_PRIV_INSTRUCTION && code != EXCEPTION_INT_DIVIDE_BY_ZERO &&
-        code != EXCEPTION_STACK_OVERFLOW && code != EXCEPTION_ARRAY_BOUNDS_EXCEEDED)
+    // Anything with NTSTATUS' error severity (0xCxxxxxxx) is fatal. Listing the codes by hand
+    // missed the ones that matter most here: heap corruption (0xC0000374), raised by the allocator
+    // long after whatever overwrote the block, and stack buffer overrun (0xC0000409). A run that
+    // died with neither a log line nor a dump is what found this. Codes outside that severity are
+    // left alone - 0xE06D7363 is an ordinary C++ throw and 0x406D1388 is a debugger naming a
+    // thread, and catching the first of those would use up the one report we get.
+    if ((code & 0xF0000000u) != 0xC0000000u)
         return EXCEPTION_CONTINUE_SEARCH;
     if (InterlockedCompareExchange(&gLogged, 1, 0) != 0) return EXCEPTION_CONTINUE_SEARCH;
 
