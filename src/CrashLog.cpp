@@ -1,8 +1,10 @@
 // Logs the first fatal exception (address, owning module and offset, registers, raw stack) to
-// MapExpander.log, then lets the game's own handler continue. Single player has no crash dump
-// of its own; with the plugin's symbols the module offset resolves straight to a function.
+// MapExpander.log and writes MapExpander.dmp beside it, then lets the game's own handler continue.
+// Single player has no crash dump of its own; with the plugin's symbols the module offset resolves
+// straight to a function, and the dump carries the stacks the log has no room for.
 #include <windows.h>
 #include <cstdio>
+#include <cstring>
 #include "CrashLog.h"
 #include "Log.h"
 
@@ -21,6 +23,43 @@ static void DescribeAddress(const void* address, char* out, size_t size) {
     } else {
         snprintf(out, size, "%p (no module)", address);
     }
+}
+
+// A minidump next to the log. The raw stack below is 0x180 bytes and names only return addresses
+// that happen to still be on it - useless when a wild indirect call lands somewhere with no module,
+// which leaves nothing to walk back from. A dump carries every thread's stack and the module list,
+// so the call chain can be recovered afterwards without a debugger attached: San Andreas takes the
+// screen exclusively, and breaking in a debugger while it holds it is its own fight.
+//
+// dbghelp is loaded on demand so the plugin never depends on it, and MiniDumpNormal is enough -
+// thread stacks and modules, a few MB, not the hundreds a full-memory dump of the streamer costs.
+static void WriteMiniDump(EXCEPTION_POINTERS* info) {
+    HMODULE dbghelp = LoadLibraryA("dbghelp.dll");
+    if (!dbghelp) return;
+    struct DumpExceptionInfo {
+        DWORD threadId;
+        EXCEPTION_POINTERS* pointers;
+        BOOL clientPointers;
+    };
+    typedef BOOL(WINAPI* WriteDumpFn)(HANDLE, DWORD, HANDLE, DWORD, DumpExceptionInfo*, void*, void*);
+    WriteDumpFn writeDump = reinterpret_cast<WriteDumpFn>(GetProcAddress(dbghelp, "MiniDumpWriteDump"));
+    if (!writeDump) return;
+
+    char path[MAX_PATH] = { 0 };
+    GetModuleFileNameA(nullptr, path, sizeof(path));      // the game exe, so the dump lands beside it
+    char* slash = strrchr(path, '\\');
+    strcpy(slash ? slash + 1 : path, "MapExpander.dmp");
+
+    HANDLE file = CreateFileA(path, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                              FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+        Log::Write("CRASH: cannot write %s (error %u)", path, (unsigned)GetLastError());
+        return;
+    }
+    DumpExceptionInfo dumpInfo = { GetCurrentThreadId(), info, FALSE };
+    BOOL ok = writeDump(GetCurrentProcess(), GetCurrentProcessId(), file, 0, &dumpInfo, nullptr, nullptr);
+    CloseHandle(file);
+    Log::Write(ok ? "CRASH: minidump written to %s" : "CRASH: minidump failed (%s)", path);
 }
 
 static LONG CALLBACK OnException(EXCEPTION_POINTERS* info) {
@@ -66,6 +105,7 @@ static LONG CALLBACK OnException(EXCEPTION_POINTERS* info) {
             Log::Write("CRASH: stack[%d] -> %s", i, text);
         }
     }
+    WriteMiniDump(info);
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
