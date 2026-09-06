@@ -9,8 +9,14 @@ Writes <SA game dir>/MapExpander/<region>/ with
     col/           every .col from the archive plus the COLFILE entries of the source .dat
     ide/, ipl/     the IDE and IPL files the source .dat lists, in its order
     tiles/         radar00.png .. radarNN.png decoded from the radar TXDs
-    american.gxt, waterpro.dat, navig.zon, info.zon (whatever the source has)
-    region.ini     the [region] keys to paste into MapExpander.ini, lists in .dat order
+    american.gxt, waterpro.dat, and the source's zone file (navig.zon/info.zon, or III's gta3.zon)
+    region.ini     the [region] keys to paste into MapExpander.ini, lists in .dat order, with the
+                   origin the conversion this project follows places that city at
+
+The dictionaries a source .dat loads from disk rather than out of the archive - III's
+models/generic.txd and models/misc.txd, named by TEXDICTION in data/default.dat - travel with the
+region too: 608 of III's models are bound to `generic`, which is also the name of a San Andreas
+dictionary, so it has to be packed and renamed like everything else.
 
 --lite writes only the last three groups (tiles, text/water/zones, region.ini): what a region
 needs when something else - a server, a map mod - already places the buildings.
@@ -430,15 +436,36 @@ def find_file(root, rel):
     return cur
 
 
+def dat_base(rel):
+    """The file name of a path out of a .dat, which writes them with backslashes and in capitals."""
+    return re.split(r"[\\/]+", rel.strip())[-1].lower()
+
+
 def read_dat(root):
-    """IDE / IPL / COLFILE lines of gta_vc.dat or gta3.dat, in order."""
+    """The file lists of gta_vc.dat or gta3.dat, in order, and of data/default.dat with them.
+
+    Returns (dat name, ides, ipls, cols, texdicts, zones).
+
+    The level .dat is the map. Beside it sits data/default.dat, which describes what the engine
+    keeps for the whole session, and exactly one kind of line is taken from there: TEXDICTION.
+    GTA III keeps its two in that file - models/generic.txd and models/misc.txd, loaded from disk
+    rather than out of gta3.img - and 608 of III's models name `generic` in their IDE txd column,
+    so without it they have no dictionary at all. default.dat's IDE, IPL and COLFILE lines are
+    deliberately left behind: they are the vehicles and weapons, numbered 0..199, none of which is
+    in gta3.img and none of which a region loads.
+
+    A .zon in the IPL list is a zone file rather than a scene: GTA III loads data/gta3.zon with an
+    IPL line, and it belongs on a region's Zones key, not its Ipl key. MAPZONE lines are dropped -
+    III's data/map.zon holds the island-loading zones, which mean nothing outside III's own
+    streaming - and so are MODELFILE lines, for the same reason as default.ide.
+    """
     for name in ("data/gta_vc.dat", "data/gta3.dat"):
         path = find_file(root, name)
         if path:
             break
     else:
         sys.exit("no data/gta_vc.dat or data/gta3.dat under %s" % root)
-    ides, ipls, cols = [], [], []
+    ides, ipls, cols, texdicts, zones = [], [], [], [], []
     with open(path, "r", encoding="latin-1") as f:
         for line in f:
             line = line.strip()
@@ -449,15 +476,54 @@ def read_dat(root):
             if key == "IDE" and len(tok) > 1:
                 ides.append(tok[1])
             elif key == "IPL" and len(tok) > 1:
-                ipls.append(tok[1])
+                (zones if tok[1].lower().endswith(".zon") else ipls).append(tok[1])
             elif key == "COLFILE" and len(tok) > 2:
                 cols.append(tok[2])
-    return os.path.basename(path), ides, ipls, cols
+            elif key == "TEXDICTION" and len(tok) > 1:
+                texdicts.append(tok[1])
+    default = find_file(root, "data/default.dat")
+    if default and default != path:
+        with open(default, "r", encoding="latin-1") as f:
+            for line in f:
+                tok = line.strip().split()
+                if len(tok) > 1 and tok[0].upper() == "TEXDICTION":
+                    texdicts.append(tok[1])
+    return os.path.basename(path), ides, ipls, cols, texdicts, zones
 
 
 # ---------------------------------------------------------------- renaming clashes
 
-def rename_ide(text, renames):
+# GTA III and San Andreas read the same IDE flag word but disagree about its lowest bit. In III
+# 0x1 is CSimpleModelInfo::m_normalCull - "cull this when it is not being looked at" - while in San
+# Andreas the same bit is IS_ROAD, which puts a wet-road reflection on the model whenever it rains.
+# Everything above it means the same in both: 0x2 do not fade in, 0x4 draw last, 0x8 additive,
+# 0x10 subway, 0x20 ignore lighting, 0x40 no z-buffer write. So clearing the one bit is the whole
+# remap. Only three of III's 2909 objects set it, but a puddle reflection on a subway wall is a
+# strange thing to ship, and Vice City agrees with San Andreas here and needs no remap at all.
+III_DROP_FLAGS = 0x1
+
+
+def remap_flags(tok, section, drop):
+    """An objs/tobj line's flag column with `drop` cleared, or the line unchanged.
+
+    III and Vice City both write `id, model, txd, meshCount, drawDist * meshCount, flags`, and
+    tobj puts timeOn/timeOff after that, so the column is at 4 + meshCount either way.
+    """
+    if not drop or section not in ("objs", "tobj") or len(tok) < 6:
+        return tok
+    try:
+        at = 4 + int(tok[3])
+        flags = int(tok[at])
+    except (ValueError, IndexError):
+        return tok
+    if not flags & drop:
+        return tok
+    tok = list(tok)
+    tok[at] = str(flags & ~drop)
+    return tok
+
+
+def rename_ide(text, renames, drop_flags=0):
     out = []
     section = None
     for line in text.splitlines():
@@ -474,9 +540,12 @@ def rename_ide(text, renames):
         if section in ("objs", "tobj", "anim", "peds", "cars", "weap", "hier") and not s.startswith("#"):
             tok = [t.strip() for t in re.split(r"[,\s]+", line.strip()) if t.strip()]
             if len(tok) >= 3:
-                tok[1] = renames.get(tok[1].lower() + ".dff", tok[1])
-                tok[2] = renames.get(tok[2].lower() + ".txd", tok[2])
-                line = ", ".join(tok)
+                new = list(tok)
+                new[1] = renames.get(new[1].lower() + ".dff", new[1])
+                new[2] = renames.get(new[2].lower() + ".txd", new[2])
+                new = remap_flags(new, section, drop_flags)
+                if new != tok:
+                    line = ", ".join(new)
         elif section == "txdp" and not s.startswith("#"):
             tok = [t.strip() for t in re.split(r"[,\s]+", line.strip()) if t.strip()]
             if len(tok) >= 2:
@@ -722,11 +791,20 @@ def main():
     lite = "--lite" in opts
     do_rename = "--no-rename" not in opts and not lite
 
-    dat_name, ide_rel, ipl_rel, col_rel = read_dat(src)
+    dat_name, ide_rel, ipl_rel, col_rel, texdict_rel, zon_rel = read_dat(src)
     prefix = "iii_" if dat_name.lower() == "gta3.dat" else "vc_"
     out = os.path.join(sa, "MapExpander", region)
+    # Empty the folders this writes before filling them again. A region's Ide/Ipl/Col keys are
+    # wildcards, so a file left behind by an earlier run of a different source - or of an earlier
+    # version of this script - is loaded as if it belonged, and an IDE that names models the
+    # archive no longer carries is the one thing the streamer does not survive.
     for sub in (("tiles",) if lite else ("col", "ide", "ipl", "tiles")):
-        os.makedirs(os.path.join(out, sub), exist_ok=True)
+        folder = os.path.join(out, sub)
+        os.makedirs(folder, exist_ok=True)
+        for name in os.listdir(folder):
+            path = os.path.join(folder, name)
+            if os.path.isfile(path):
+                os.remove(path)
     print("source: %s (%s)%s" % (src, dat_name, " - lite: tiles, text, water and zones only" if lite else ""))
     print("output: %s" % out)
 
@@ -737,7 +815,37 @@ def main():
     entries = read_img_v1(img, dirf)
     with open(img, "rb") as f:
         archive = f.read()
-    print("archive: %d entries" % len(entries))
+    # GTA III's gta3.dir has four entries of zero length (plaster, g, stu_man, stu_wom - no IDE
+    # declares any of them). An entry like that is worse than an absent one: San Andreas registers
+    # the model, then builds a read of size zero the first time something asks for it and retries
+    # that read for ever, with no crash and nothing in the log. Leave them out of the archive so
+    # the model has no data behind it at all, which the loader already knows to skip.
+    empty = [name for name, _off, size in entries if size == 0]
+    entries = [e for e in entries if e[2] > 0]
+
+    # The dictionaries the .dat loads from disk rather than from the archive. GTA III's
+    # models/generic.txd is one of them and 608 of its models name it in their txd column, so it
+    # has to travel with the region under a name of its own - `generic` is San Andreas' too, which
+    # is why RESERVED forbids it. They double as the pool a model borrows a missing texture from,
+    # below, exactly as the source game resolves through them at run time.
+    loose = []
+    for rel in ([] if lite else texdict_rel):
+        path = find_file(src, rel)
+        if not path:
+            print("  TEXDICTION %s not found" % rel)
+            continue
+        with open(path, "rb") as f:
+            loose.append((os.path.basename(path).lower(), f.read()))
+    print("archive: %d entries%s%s"
+          % (len(entries),
+             "" if not empty else ", %d empty one(s) left out (%s)" % (len(empty), ", ".join(empty)),
+             "" if not loose else ", plus %d dictionar%s the .dat loads from disk (%s)"
+             % (len(loose), "y" if len(loose) == 1 else "ies", ", ".join(n for n, _b in loose))))
+
+    # Everything that ends up in the archive, archive entries first, so an index means the same
+    # thing to make_renames and to the packing loop below.
+    sources = list(entries)
+    sources += [(name, None, None) for name, _blob in loose]
 
     tag = TAG.get(dat_name.lower(), prefix[:1] + "_")
     renames, dropped, reasons = {}, set(), {}
@@ -745,7 +853,7 @@ def main():
         sa_keys = sa_name_keys(sa)
         if not sa_keys[".dff"]:
             print("warning: no San Andreas names found under %s; key clashes with the game not checked" % sa)
-        renames, dropped, reasons = make_renames(entries, sa_keys, tag)
+        renames, dropped, reasons = make_renames(sources, sa_keys, tag)
         assert_namespaces(renames, sa_keys)
 
     def renamed(name):
@@ -785,12 +893,20 @@ def main():
     txd_parts = {}
     dff_refs = {}
     tex_done, tex_failed, txds = 0, 0, 0
+    failed_txds = []
     dropped_dups = []
-    for index, (name, off, size) in enumerate(entries):
+
+    def blobs():
+        """(index, name, bytes) for every source entry, in the order `sources` names them."""
+        for i, (name, off, size) in enumerate(entries):
+            yield i, name, archive[off:off + size]
+        for i, (name, data) in enumerate(loose):
+            yield len(entries) + i, name, data
+
+    for index, name, blob in blobs():
         if index in dropped:
             dropped_dups.append(name)
             continue
-        blob = archive[off:off + size]
         ext = os.path.splitext(name)[1].lower()
         low = name.lower()
         if ext == ".txd" and re.fullmatch(r"radar\d+\.txd", low):
@@ -812,6 +928,8 @@ def main():
             chunks, done, bad = txd_texture_chunks(blob)
             tex_done += done
             tex_failed += bad
+            if bad:
+                failed_txds.append(name)
             key = renamed(name)
             if chunks is None:
                 packed.append((key, blob))          # not a dictionary; pass it through untouched
@@ -825,45 +943,73 @@ def main():
             packed.append((key, blob))
         else:
             skipped += 1
-    # Vice City resolves a texture a model's own dictionary does not hold out of
-    # models/generic.txd, a global dictionary its engine keeps loaded for the whole map. San Andreas
-    # has no equivalent, so any model whose textures live there renders untextured - which is why
-    # the palms came out as white squares even once their own dictionary was correct. 190 models
-    # depend on it. Copy each missing texture into the dictionary that is asked for it, so every
-    # dictionary is self-contained by the time San Andreas sees it, and nothing has to be resolved
-    # at run time.
+    # A texture a model's own dictionary does not hold is resolved by III and Vice City out of a
+    # dictionary their engines keep loaded for the whole map - the files the .dat names with
+    # TEXDICTION, models/generic.txd above all. San Andreas has no equivalent: RenderWare only ever
+    # looks in the dictionary the model is bound to, so those models render untextured, which is why
+    # Vice City's palms came out as white squares even once their own dictionary was correct.
+    # 190 of Vice City's models depend on it. Copy each missing texture into the dictionary that is
+    # asked for it, so every dictionary is self-contained by the time San Andreas sees it and
+    # nothing has to be resolved at run time. GTA III needs far less of this than Vice City,
+    # because its models name generic.txd in their IDE txd column and it is packed above as their
+    # own dictionary rather than borrowed from.
+    #
+    # The pool is the .dat's global dictionaries first, because that is where the source game looks,
+    # then every dictionary of the archive itself. GTA III ships a second archive as well,
+    # models/txd.img, which CStreaming::Init prefers over gta3.img when it is there; it is generated
+    # from gta3.img by CreateTxdImageForVideoCard and holds the same 717 dictionary names in
+    # whatever formats the card that generated it wanted, so it is only worth opening if a name is
+    # still unaccounted for after the two pools above.
+    def borrow(pool):
+        """Copy into each dictionary the textures its models ask for and it does not hold."""
+        taken, missing = 0, set()
+        for model, refs in dff_refs.items():
+            part = txd_parts.get(model_txd.get(model, ""))
+            if not part:
+                continue
+            have = {n.lower() for n, _c in part[1]}
+            for ref in refs:
+                if ref.lower() in have:
+                    continue
+                found = pool.get(ref.lower())
+                if found:
+                    part[1].append(found)
+                    have.add(ref.lower())
+                    taken += 1
+                else:
+                    missing.add(ref)
+        return taken, missing
+
     fallback = {}
-    global_txd = find_file(src, "models/generic.txd") if not lite else None
-    if global_txd:
-        with open(global_txd, "rb") as f:
-            gchunks, gdone, gbad = txd_texture_chunks(f.read())
-        tex_done += gdone
-        tex_failed += gbad
-        for texname, chunk in (gchunks or []):
+    for globalname, _blob in ([] if lite else loose):
+        for texname, chunk in (txd_parts.get(renamed(globalname).lower(), [None, []])[1]):
             fallback.setdefault(texname.lower(), (texname, chunk))
     for _key, chunks, _sources in txd_parts.values():
         for texname, chunk in chunks:
             fallback.setdefault(texname.lower(), (texname, chunk))
 
-    borrowed, unresolved = 0, set()
-    for model, refs in dff_refs.items():
-        part = txd_parts.get(model_txd.get(model, ""))
-        if not part:
-            continue
-        have = {n.lower() for n, _c in part[1]}
-        for ref in refs:
-            if ref.lower() in have:
+    borrowed, unresolved = borrow(fallback)
+    second_img = find_file(src, "models/txd.img") if unresolved and not lite else None
+    second_dir = find_file(src, "models/txd.dir") if second_img else None
+    if second_dir:
+        with open(second_img, "rb") as f:
+            second = f.read()
+        extra = {}
+        for name, off, size in read_img_v1(second_img, second_dir):
+            if not name.lower().endswith(".txd") or size == 0:
                 continue
-            found = fallback.get(ref.lower())
-            if found:
-                part[1].append(found)
-                have.add(ref.lower())
-                borrowed += 1
-            else:
-                unresolved.add(ref)
+            chunks, _done, _bad = txd_texture_chunks(second[off:off + size])
+            for texname, chunk in (chunks or []):
+                extra.setdefault(texname.lower(), (texname, chunk))
+        again, unresolved = borrow(extra)
+        if again:
+            print("copied %d further texture(s) out of the source's second archive, models/txd.img"
+                  % again)
+        borrowed += again
     if borrowed:
         print("copied %d texture(s) into the dictionaries that reference them but did not hold "
-              "them; Vice City resolves those through its global models/generic.txd" % borrowed)
+              "them; the source game resolves those through the dictionaries its .dat loads "
+              "globally" % borrowed)
     if unresolved:
         print("warning: %d texture name(s) a model references exist nowhere in the source: %s"
               % (len(unresolved), ", ".join(sorted(unresolved)[:8])))
@@ -897,7 +1043,9 @@ def main():
               % (region, len(packed), total / 1e6, cols, tiles, skipped))
         print("textures: %d raster(s) in %d TXD(s) rewritten from D3D8 to San Andreas' D3D9%s"
               % (tex_done, txds, "" if not tex_failed else
-                 "; %d left alone and will render white" % tex_failed))
+                 "; %d raster(s) in %d dictionar%s left alone and will render white (%s)"
+                 % (tex_failed, len(failed_txds), "y" if len(failed_txds) == 1 else "ies",
+                    ", ".join(sorted(failed_txds)[:6]))))
     if dropped_dups:
         print("dropped %d later cop%s of a .dff name the archive already carries (the source game "
               "binds only the first): %s" % (len(dropped_dups), "y" if len(dropped_dups) == 1 else "ies",
@@ -926,6 +1074,7 @@ def main():
         cols += 1
 
     ide_out, ipl_out = [], []
+    ide_drop_flags = III_DROP_FLAGS if dat_name.lower() == "gta3.dat" else 0
     if lite:
         ide_rel, ipl_rel = [], []
     for rel in ide_rel:
@@ -937,7 +1086,7 @@ def main():
             text = f.read()
         name = os.path.basename(p).lower()
         with open(os.path.join(out, "ide", name), "w", encoding="latin-1") as f:
-            f.write(rename_ide(text, renames) if renames else text)
+            f.write(rename_ide(text, renames, ide_drop_flags))
         ide_out.append(name)
     for rel in ipl_rel:
         p = find_file(src, rel)
@@ -953,15 +1102,39 @@ def main():
     if not lite:
         print("%d IDE, %d IPL, %d collision files" % (len(ide_out), len(ipl_out), cols))
 
-    copied = []
-    for rel, dst in (("text/american.gxt", "american.gxt"), ("data/waterpro.dat", "waterpro.dat"),
-                     ("data/navig.zon", "navig.zon"), ("data/info.zon", "info.zon")):
+    copied, zones_have = [], []
+    # GTA III has neither navig.zon nor info.zon: its zone boxes are in data/gta3.zon, which the
+    # .dat loads with an IPL line of its own. The lines are the same nine fields Zones.cpp already
+    # reads, with the GXT key optional at the end, so a zone file travels unchanged and lands on
+    # the region's Zones key rather than its Ipl key - the IPL loader would only count it and
+    # move on. The two named paths are a safety net for a .dat that does not list them.
+    for rel, dst in ([("text/american.gxt", "american.gxt"), ("data/waterpro.dat", "waterpro.dat"),
+                      ("data/navig.zon", "navig.zon"), ("data/info.zon", "info.zon")] +
+                     [(z, dat_base(z)) for z in zon_rel]):
         p = find_file(src, rel)
-        if p:
-            with open(p, "rb") as f, open(os.path.join(out, dst), "wb") as g:
-                g.write(f.read())
-            copied.append(dst)
+        if not p or dst in copied:
+            continue
+        with open(p, "rb") as f, open(os.path.join(out, dst), "wb") as g:
+            g.write(f.read())
+        copied.append(dst)
+        if dst.endswith(".zon"):
+            zones_have.append(dst)
     print("copied: %s" % ", ".join(copied))
+
+    # Which zone file the Zones key should name. San Andreas has 380 navigation-zone slots and
+    # vanilla fills 379, so a region has room for a handful of zones, not for every file the source
+    # game loads - Vice City's info.zon alone is 378 lines. navig.zon is the one carrying the area
+    # names a player reads off the map, so prefer it where the source has one; GTA III has only
+    # gta3.zon and it is the same nine-field format.
+    zone_out = [z for z in zones_have if z == "navig.zon"] or zones_have[:1]
+
+    # Where the source map's own (0,0) sits in San Andreas. Vice City's comes from the VC2SAMP
+    # placement, Liberty City's from LC2SAMP (spicybung's filterscript, itself a rework of Kye's):
+    # every one of its CreateObject calls is the III IPL position plus a constant, and matching
+    # 1102 model names across the two gives SA = III + (-5350, -200, 0) with no scatter at all.
+    # The two landmasses then sit either side of San Andreas without touching it or each other.
+    ORIGIN = {"vc_": (5998.5, 1052.5, -6.0), "iii_": (-5350.0, -200.0, 0.0)}
+    origin_x, origin_y, origin_z = ORIGIN[prefix]
 
     base = "MapExpander\\%s\\" % region
     lines = ["[%s]" % region,
@@ -972,11 +1145,12 @@ def main():
              "TilesY       = 8",
              "GridMinX     = -2000",
              "GridMaxY     = 2000",
-             "WorldOriginX = 5998.5", "WorldOriginY = 1052.5", "WorldOriginZ = -6"]
+             "WorldOriginX = %g" % origin_x, "WorldOriginY = %g" % origin_y,
+             "WorldOriginZ = %g" % origin_z]
     if "waterpro.dat" in copied:
         lines += ["Water        = %swaterpro.dat" % base, "WaterXOffset = %d" % (400 if prefix == "vc_" else 0)]
-    if "navig.zon" in copied:
-        lines.append("Zones        = %snavig.zon" % base)
+    if zone_out:
+        lines.append("Zones        = " + ", ".join(base + n for n in zone_out))
     lines += ["RegionName   = %s" % ("Vice City" if prefix == "vc_" else "Liberty City")]
     if not lite:
         lines += ["Img          = %s%s.img" % (base, region),
@@ -984,11 +1158,14 @@ def main():
                   "Ipl          = " + ", ".join(base + "ipl\\" + n for n in ipl_out),
                   "Col          = %scol\\*.col" % base,
                   "Names        = %snames.txt" % base]
-    lines += ["", "; [World]", "; Gxt = %samerican.gxt" % base]
+    # [World] Gxt replaces San Andreas' own strings wholesale rather than merging by region, so a
+    # second city's text would take the first one's place. Left commented out for that reason.
+    lines += ["", "; [World] - one GXT at a time; this one replaces San Andreas' strings, not just",
+              "; the region's, so uncomment it only if the source game's text is what you want.",
+              "; Gxt = %samerican.gxt" % base]
     with open(os.path.join(out, "region.ini"), "w") as f:
         f.write("\n".join(lines) + "\n")
-    print("\nwrote %s - paste it into MapExpander.ini (origin values are Vice City's; adjust for another map)"
-          % os.path.join(out, "region.ini"))
+    print("\nwrote %s - paste it into MapExpander.ini" % os.path.join(out, "region.ini"))
 
 
 if __name__ == "__main__":
