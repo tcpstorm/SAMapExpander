@@ -14,6 +14,7 @@
 #include "DebugKeys.h"
 #include "Teleport.h"
 #include "Watchdog.h"
+#include "TxdProbe.h"
 #include "Gxt.h"
 #include "Zones.h"
 #include "ModelLimits.h"
@@ -47,6 +48,7 @@ public:
         DebugKeys::Install();
         Teleport::Install();
         Watchdog::Install();
+        TxdProbe::Install();
 
         Log::Write("MapExpander initialised: %u region(s)", (unsigned)Settings::regions.size());
     }
