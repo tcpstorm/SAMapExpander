@@ -58,15 +58,27 @@ void __cdecl Hooked_RenderFadingEntities() {
     int index = 0;
     while ((uintptr_t)node != kListSentinel) {
         const bool inRange = !IsBadReadPtr(node, sizeof(AlphaNode));
-        if (!inRange || !IsGameCode(node->callback)) {
+        // A node is bad if it is unreadable, its render callback is not code, OR the entity it
+        // holds is not an entity: RenderFadingEntities calls the callback with the entity, and the
+        // callback dereferences the entity's vtable straight away, so a dangling entity - one
+        // streamed out while still on the list - crashes just as surely as a bad callback. The
+        // first crash caught here was exactly that: a valid callback and an entity that read as a
+        // float. Validate both.
+        bool badEntity = false;
+        if (inRange && IsGameCode(node->callback)) {
+            badEntity = IsBadReadPtr(node->entity, 4) ||
+                        !IsGameCode(*reinterpret_cast<void**>(node->entity));  // its vtable
+        }
+        if (!inRange || !IsGameCode(node->callback) || badEntity) {
             if (gReports < 8) {
                 gReports++;
                 const uintptr_t a = (uintptr_t)node;
-                Log::Write("alpha list: node %d at %08X is not a node (%s callback %08X, entity %08X, "
+                Log::Write("alpha list: node %d at %08X is bad (%s%s callback %08X, entity %08X, "
                            "distance bits %08X); nodes seen so far lay in %08X..%08X, so this one is "
                            "%s the pool. Reached from node at %08X fading entity %08X%s. The walk is "
                            "cut here so the frame can render.",
                            index, (unsigned)a, inRange ? "readable," : "UNREADABLE,",
+                           badEntity ? " dangling entity," : "",
                            inRange ? (unsigned)(uintptr_t)node->callback : 0u,
                            inRange ? (unsigned)(uintptr_t)node->entity : 0u,
                            inRange ? *(unsigned*)&node->distance : 0u,
