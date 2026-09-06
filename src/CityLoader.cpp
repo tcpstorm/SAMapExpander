@@ -184,6 +184,8 @@ bool ModelHasArchiveEntry(int id) {
 struct RegionState {
     const MapRegion* region;
     std::map<int, int> ids;   // source model id -> SA model id
+    std::map<int, std::string> names;              // SA model id -> name as the IDE declares it
+    std::map<std::string, std::string> originals;  // lowercase declared name -> name in the source game
     int added = 0;
     int droppedNoId = 0;
     int droppedNoStore = 0;
@@ -356,6 +358,42 @@ StoreBudget CurrentBudget() {
     return b;
 }
 
+// The importer namespaces every model and dictionary name (docs/asset-namespacing.md), and writes
+// names.txt beside the archive saying what each new name was in the source game. Nothing here
+// depends on it; it exists so that a log line can say "v_veg_fern_balcn~D50 (veg_fern_balcny_kb2)"
+// rather than a bare id, which is what made the docks freeze take so long to find.
+void LoadNameMap(RegionState& rs) {
+    if (rs.region->namesFile.empty()) return;
+    for (const std::string& line : ReadLines(rs.region->namesFile)) {
+        if (line.empty() || line[0] == '#') continue;
+        size_t tab = line.find('\t');
+        if (tab == std::string::npos) continue;
+        size_t tab2 = line.find('\t', tab + 1);
+        std::string fresh = line.substr(0, tab);
+        std::string original = line.substr(tab + 1, tab2 == std::string::npos ? std::string::npos : tab2 - tab - 1);
+        size_t dot = fresh.find_last_of('.');
+        if (dot != std::string::npos) fresh = fresh.substr(0, dot);
+        dot = original.find_last_of('.');
+        if (dot != std::string::npos) original = original.substr(0, dot);
+        rs.originals[Lower(fresh)] = original;
+    }
+    if (!rs.originals.empty())
+        Log::Write("[%s] names: %u renamed entr%s known from %s", rs.region->name.c_str(),
+                   (unsigned)rs.originals.size(), rs.originals.size() == 1 ? "y" : "ies",
+                   rs.region->namesFile.c_str());
+}
+
+// "18779 (v_veg_fern_balcn~D50 = veg_fern_balcny_kb2)", or as much of that as is known.
+std::string DescribeModel(const RegionState& rs, int id) {
+    std::string s = std::to_string(id);
+    auto n = rs.names.find(id);
+    if (n == rs.names.end()) return s;
+    s += " (" + n->second;
+    auto o = rs.originals.find(Lower(n->second));
+    if (o != rs.originals.end() && Lower(o->second) != Lower(n->second)) s += " = " + o->second;
+    return s + ")";
+}
+
 std::string TranslateIde(RegionState& rs, const std::string& source) {
     std::vector<std::string> lines = ReadLines(source);
     if (lines.empty()) {
@@ -414,6 +452,12 @@ std::string TranslateIde(RegionState& rs, const std::string& source) {
             if (newId < 0) { rs.droppedNoId++; continue; }
             rs.ids[(int)oldId] = newId;
         }
+        {
+            size_t nameStart = line.find_first_not_of(" \t,", idEnd);
+            size_t nameEnd = nameStart == std::string::npos ? nameStart : line.find_first_of(" \t,", nameStart);
+            if (nameStart != std::string::npos)
+                rs.names[newId] = line.substr(nameStart, nameEnd == std::string::npos ? std::string::npos : nameEnd - nameStart);
+        }
 
         (*pool)--;
         out += std::to_string(newId) + line.substr(idEnd) + "\n";
@@ -436,6 +480,7 @@ struct Inst {
 struct IplStats {
     int unmappedModel = 0;
     int noArchiveEntry = 0;   // defined by an IDE, but bound to nothing in any archive
+    std::string noArchiveNames;   // the first few of those, for the log
     int malformed = 0;
     int lodLost = 0;
     int scaled = 0;
@@ -516,6 +561,8 @@ std::vector<Inst> CollectInsts(const RegionState& rs, const std::string& source,
         // no crash, no exception, nothing in the log. Vice City's veg_fern_balcny_kb2 at the docks
         // did exactly that when the importer cut its name to the same 19 characters as _kb1's.
         if (!ModelHasArchiveEntry(mapped->second)) {
+            if (stats.noArchiveEntry < 8)
+                stats.noArchiveNames += (stats.noArchiveNames.empty() ? "" : ", ") + DescribeModel(rs, mapped->second);
             stats.noArchiveEntry++;
             newIndex.push_back(-1);
             continue;
@@ -610,6 +657,7 @@ void LoadModelDefinitions() {
                budget.atomic, budget.damage, budget.time, budget.clump);
 
     for (RegionState& rs : Regions()) {
+        LoadNameMap(rs);
         for (const std::string& source : rs.region->ideFiles) {
             std::string text = TranslateIde(rs, source);
             if (text.empty()) continue;
@@ -869,14 +917,17 @@ void LoadCollisionArchives() {
 void ReportMissingArchiveEntries() {
     for (RegionState& rs : Regions()) {
         int missing = 0;
-        for (const auto& pair : rs.ids)
-            if (!ModelHasArchiveEntry(pair.second)) missing++;
+        std::string which;
+        for (const auto& pair : rs.ids) {
+            if (ModelHasArchiveEntry(pair.second)) continue;
+            if (missing < 20) which += (which.empty() ? "" : ", ") + DescribeModel(rs, pair.second);
+            missing++;
+        }
         if (missing)
             Log::Write("[%s] models: %d of %d have no .dff in any registered archive - their "
-                       "placements are skipped, because a request for one hangs the streamer (two "
-                       "IDE lines sharing a name after the importer's 19-character cut is the usual "
-                       "cause; check the IMG contents and that no SA model shares the name)",
-                       rs.region->name.c_str(), missing, (int)rs.ids.size());
+                       "placements are skipped, because a request for one hangs the streamer: %s%s",
+                       rs.region->name.c_str(), missing, (int)rs.ids.size(), which.c_str(),
+                       missing > 20 ? ", ..." : "");
     }
 }
 
@@ -951,8 +1002,9 @@ void PlaceInstances() {
         if (stats.noArchiveEntry)
             Log::Write("[%s] inst: %d line(s) NOT placed - their model is defined by an IDE but has "
                        "no .dff in any registered archive, and asking the streamer for such a model "
-                       "freezes the game (see the 'have no .dff' line above for the count)",
-                       rs.region->name.c_str(), stats.noArchiveEntry);
+                       "freezes the game: %s%s",
+                       rs.region->name.c_str(), stats.noArchiveEntry, stats.noArchiveNames.c_str(),
+                       stats.noArchiveEntry > 8 ? ", ..." : "");
         if (stats.scaled)
             Log::Write("[%s] inst: %d line(s) carried a non-unit scale, which San Andreas has no "
                        "field for - placed at scale 1", rs.region->name.c_str(), stats.scaled);

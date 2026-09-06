@@ -15,9 +15,13 @@ Writes <SA game dir>/MapExpander/<region>/ with
 --lite writes only the last three groups (tiles, text/water/zones, region.ini): what a region
 needs when something else - a server, a map mod - already places the buildings.
 
-Model and texture names that already exist in SA's gta3.img / gta_int.img lose to SA's copy at
-run time, so those get a "vc_" (or "iii_") prefix here - in the archive, the IDE model/txd
-columns, the IPL inst lines and the collision entry names, all together. --no-rename skips that.
+Every model and texture dictionary is renamed under a two-character tag for the source game
+("v_" for Vice City, "l_" for III) - in the archive, the IDE model/txd columns, the IPL inst
+lines and the collision entry names, all together - and names.txt records what each was called.
+A name is kept readable when it fits the game's 19-character field and takes a short hashed
+tail when it does not; every name is checked to be unique, and to share no CKeyGen key with
+anything San Andreas has, before the archive is written. See docs/asset-namespacing.md.
+--no-rename skips all of it, which is only safe for a source that clashes with nothing.
 Runs on plain Python; Pillow is used for the PNGs if it is installed, else a built-in writer.
 """
 import os
@@ -467,11 +471,17 @@ def rename_ide(text, renames):
             section = None
             out.append(line)
             continue
-        if section in ("objs", "tobj", "anim") and not s.startswith("#"):
+        if section in ("objs", "tobj", "anim", "peds", "cars", "weap", "hier") and not s.startswith("#"):
             tok = [t.strip() for t in re.split(r"[,\s]+", line.strip()) if t.strip()]
             if len(tok) >= 3:
                 tok[1] = renames.get(tok[1].lower() + ".dff", tok[1])
                 tok[2] = renames.get(tok[2].lower() + ".txd", tok[2])
+                line = ", ".join(tok)
+        elif section == "txdp" and not s.startswith("#"):
+            tok = [t.strip() for t in re.split(r"[,\s]+", line.strip()) if t.strip()]
+            if len(tok) >= 2:
+                tok[0] = renames.get(tok[0].lower() + ".txd", tok[0])
+                tok[1] = renames.get(tok[1].lower() + ".txd", tok[1])
                 line = ", ".join(tok)
         out.append(line)
     return "\n".join(out) + "\n"
@@ -518,44 +528,183 @@ def rename_col(data, renames):
     return bytes(out)
 
 
-def make_renames(names, taken, prefix):
-    """Prefixed names for the entries that clash with San Andreas, each unique within its extension.
+# ---------------------------------------------------------------- namespacing
+#
+# Every model, texture dictionary and collision name the game sees from a region is given a name
+# of its own: a two-character tag for the source game, then the original stem, unique within its
+# namespace and within the 19 characters an IMG entry, an IDE txd column and a COL header all
+# allow. San Andreas keeps no names - CBaseModelInfo stores only CKeyGen::GetUppercaseKey(name),
+# a CRC32, and CTxdStore slots the same - so renaming costs nothing at run time; what it buys is
+# that nothing of ours can share a key with anything of the game's or of another region's.
+#
+# Texture names inside a dictionary are deliberately left alone. RenderWare resolves a material's
+# texture within the model's own dictionary, so they only have to be unique there, and Vice City
+# already is. See docs/asset-namespacing.md for the measurements behind all of this.
 
-    An IMG entry holds 23 characters plus the extension, so a prefixed stem is cut to fit - and two
-    long stems that differ only past the cut become one name. Vice City's veg_fern_balcny_kb1 and
-    _kb2 both came out as vc_veg_fern_balcny_: the IDE then declared two models under one name,
-    the archive's single entry bound to the first, and the second was left with no data behind it.
-    San Andreas does not check for that. Something at the docks placed the second one, the streamer
-    was asked for it, built a read of size zero from a garbage position, and retried it for ever -
-    the game froze with no crash and nothing in the log, and it took a long time to find.
+NAME_BUDGET = 19          # 23-byte IMG name field, less ".dff"/".txd" and the terminator
+TAG = {"gta_vc.dat": "v_", "gta3.dat": "l_"}
 
-    So a stem that would collide after the cut gets a short distinct tail instead, with a trailing
-    _nt/_dy kept in place because CBaseModelInfo::FindOtherTimeModel matches on it literally.
+# Names the game creates or matches by literal, which a region must never produce.
+RESERVED = {"generic", "particle", "vehicle", "hud", "fonts", "ps2btns", "script", "grass_pc",
+            "frontend1", "frontend2", "frontend3", "frontend_pc", "player", "loadscs",
+            "gen_int1", "gen_int2", "gen_int3", "gen_int4", "gen_int5", "gen_intb", "savehous",
+            "stadint", "int_la", "int_sf", "int_veg", "int_cont", "levelmap", "procobj",
+            "proc_int", "props"}
+
+
+def ckey(name):
+    """CKeyGen::GetUppercaseKey: reflected CRC-32 over the uppercased name, no final complement."""
+    return zlib.crc32(name.upper().encode("latin-1")) ^ 0xFFFFFFFF
+
+
+def col_names(data):
+    """Model names in a .col archive (COLL/COL2/COL3/COL4 chunks)."""
+    names, at = [], 0
+    while at + 8 <= len(data):
+        if data[at:at + 4] not in (b"COLL", b"COL2", b"COL3", b"COL4"):
+            break
+        size = struct.unpack_from("<I", data, at + 4)[0]
+        names.append(data[at + 8:at + 30].split(b"\0", 1)[0].decode("latin-1"))
+        at += 8 + size
+    return names
+
+
+def sa_name_keys(sa):
+    """CKeyGen keys of every model and dictionary name San Andreas already has, by namespace.
+
+    Models are keyed with collision names too, because LoadCollisionFileFirstTime matches a col
+    entry against model keys. Sources: all four archives, every IDE under data/, and the loose
+    models/*.dff|txd|col files - generic.txd lives there and nowhere else.
     """
-    renames = {}
-    used = set()                       # (extension, new stem) already handed out
-    for name in names:
-        low = name.lower()
-        if low not in taken:
+    dff, txd = set(), set()
+    for rel in ("models/gta3.img", "models/gta_int.img", "models/player.img", "models/cutscene.img"):
+        path = find_file(sa, rel)
+        if not path:
             continue
-        base, ext = os.path.splitext(name)
+        for name in read_img_v2_names(path):
+            stem, ext = os.path.splitext(name)
+            if ext == ".dff" or ext == ".col":
+                dff.add(ckey(stem))
+            elif ext == ".txd":
+                txd.add(ckey(stem))
+    for root, _dirs, files in os.walk(os.path.join(sa, "data")):
+        for f in files:
+            if not f.lower().endswith(".ide"):
+                continue
+            section = None
+            for line in open(os.path.join(root, f), encoding="latin-1", errors="replace"):
+                s = line.strip().lower()
+                if section is None:
+                    if s in ("objs", "tobj", "anim", "peds", "cars", "weap", "hier", "txdp"):
+                        section = s
+                    continue
+                if s == "end":
+                    section = None
+                    continue
+                if not s or s.startswith("#"):
+                    continue
+                tok = [t for t in re.split(r"[,\s]+", s) if t]
+                if section == "txdp" and len(tok) >= 2:
+                    txd.add(ckey(tok[0])); txd.add(ckey(tok[1]))
+                elif len(tok) >= 3:
+                    dff.add(ckey(tok[1])); txd.add(ckey(tok[2]))
+    models = find_file(sa, "models")
+    if models and os.path.isdir(models):
+        for f in os.listdir(models):
+            stem, ext = os.path.splitext(f.lower())
+            if ext == ".dff":
+                dff.add(ckey(stem))
+            elif ext == ".txd":
+                txd.add(ckey(stem))
+        coll = os.path.join(models, "coll")
+        if os.path.isdir(coll):
+            for f in os.listdir(coll):
+                if f.lower().endswith(".col"):
+                    with open(os.path.join(coll, f), "rb") as h:
+                        for n in col_names(h.read()):
+                            dff.add(ckey(n))
+    for r in RESERVED:
+        dff.add(ckey(r)); txd.add(ckey(r))
+    return {".dff": dff, ".txd": txd}
+
+
+def split_time_suffix(stem):
+    """_nt/_dy stays at the very end: CBaseModelInfo::FindOtherTimeModel matches it literally."""
+    if stem[-3:].lower() in ("_nt", "_dy"):
+        return stem[:-3], stem[-3:]
+    return stem, ""
+
+
+def fallback_name(tag, stem, salt):
+    """tag + as much of the stem as fits + ~ + four hex digits of the name's key + _nt/_dy."""
+    head, suffix = split_time_suffix(stem)
+    tail = "~%04X" % (ckey(tag + stem + ("#%d" % salt if salt else "")) & 0xFFFF)
+    return (tag + head)[:NAME_BUDGET - len(tail) - len(suffix)] + tail + suffix
+
+
+def make_renames(entries, sa_keys, tag):
+    """A new stem for every .dff/.txd entry, and which entries to leave out of the archive.
+
+    Returns (renames, dropped, reasons): renames maps the lowercase source name to its new stem;
+    dropped is the set of entry indices that are later copies of a .dff name the archive already
+    carries - the source game binds only the first, and nothing can refer to the second - and
+    reasons maps each new stem to why it looks the way it does, for names.txt.
+
+    A .txd carried twice is not dropped: the packing loop merges same-named dictionaries into
+    one, which is what fixed Vice City's white leaves, and both copies keep the one new name.
+    """
+    renames, reasons, dropped = {}, {}, set()
+    used_names = {".dff": set(), ".txd": set()}
+    used_keys = {".dff": set(), ".txd": set()}
+    seen = {}
+    for index, (name, _off, _size) in enumerate(entries):
+        low = name.lower()
+        stem, ext = os.path.splitext(name)
         ext = ext.lower()
-        budget = 23 - len(ext)
-        new_base = (prefix + base)[:budget]
-        if (ext, new_base.lower()) in used:
-            suffix = base[-3:] if base[-3:].lower() in ("_nt", "_dy") else ""
-            stem = base[:-3] if suffix else base
-            n = 1
-            while True:
-                tail = "~%X" % n
-                candidate = (prefix + stem)[:budget - len(tail) - len(suffix)] + tail + suffix
-                if (ext, candidate.lower()) not in used:
-                    break
-                n += 1
-            new_base = candidate
-        used.add((ext, new_base.lower()))
-        renames[low] = new_base
-    return renames
+        if ext not in (".dff", ".txd"):
+            continue
+        if low in seen:
+            if ext == ".dff":
+                dropped.add(index)
+            continue
+        seen[low] = index
+
+        plain = tag + stem
+        why = "tag"
+        if stem.lower() in RESERVED:
+            candidate, why = fallback_name(tag, stem, 0), "reserved name"
+        elif len(plain) > NAME_BUDGET:
+            candidate, why = fallback_name(tag, stem, 0), "too long for the 19-character field"
+        else:
+            candidate = plain
+        salt = 0
+        while (candidate.lower() in used_names[ext] or ckey(candidate) in used_keys[ext]
+               or ckey(candidate) in sa_keys[ext] or candidate.lower() in RESERVED):
+            salt += 1
+            candidate = fallback_name(tag, stem, salt)
+            why = "key clash, salted"
+        used_names[ext].add(candidate.lower())
+        used_keys[ext].add(ckey(candidate))
+        renames[low] = candidate
+        reasons[low] = why
+    return renames, dropped, reasons
+
+
+def assert_namespaces(renames, sa_keys):
+    """Refuse to write an archive whose names could collide: this is the guarantee, not the loop."""
+    by_ext = {".dff": {}, ".txd": {}}
+    for low, new in renames.items():
+        ext = os.path.splitext(low)[1]
+        if len(new) > NAME_BUDGET:
+            sys.exit("namespacing: %s -> %s is %d characters, over the %d the game allows"
+                     % (low, new, len(new), NAME_BUDGET))
+        key = ckey(new)
+        other = by_ext[ext].get(key)
+        if other is not None and other.lower() != new.lower():
+            sys.exit("namespacing: %s and %s share CKeyGen key %08X" % (other, new, key))
+        if key in sa_keys[ext]:
+            sys.exit("namespacing: %s has the same CKeyGen key as a San Andreas %s" % (new, ext))
+        by_ext[ext][key] = new
 
 
 # ---------------------------------------------------------------- main
@@ -590,15 +739,14 @@ def main():
         archive = f.read()
     print("archive: %d entries" % len(entries))
 
-    taken = set()
+    tag = TAG.get(dat_name.lower(), prefix[:1] + "_")
+    renames, dropped, reasons = {}, set(), {}
     if do_rename:
-        for name in ("models/gta3.img", "models/gta_int.img"):
-            p = find_file(sa, name)
-            if p:
-                taken |= read_img_v2_names(p)
-        if not taken:
-            print("warning: SA's models/gta3.img not found under %s; name clashes not checked" % sa)
-    renames = make_renames([e[0] for e in entries], taken, prefix) if do_rename else {}
+        sa_keys = sa_name_keys(sa)
+        if not sa_keys[".dff"]:
+            print("warning: no San Andreas names found under %s; key clashes with the game not checked" % sa)
+        renames, dropped, reasons = make_renames(entries, sa_keys, tag)
+        assert_namespaces(renames, sa_keys)
 
     def renamed(name):
         new_base = renames.get(name.lower())
@@ -637,7 +785,11 @@ def main():
     txd_parts = {}
     dff_refs = {}
     tex_done, tex_failed, txds = 0, 0, 0
-    for name, off, size in entries:
+    dropped_dups = []
+    for index, (name, off, size) in enumerate(entries):
+        if index in dropped:
+            dropped_dups.append(name)
+            continue
         blob = archive[off:off + size]
         ext = os.path.splitext(name)[1].lower()
         low = name.lower()
@@ -746,9 +898,21 @@ def main():
         print("textures: %d raster(s) in %d TXD(s) rewritten from D3D8 to San Andreas' D3D9%s"
               % (tex_done, txds, "" if not tex_failed else
                  "; %d left alone and will render white" % tex_failed))
+    if dropped_dups:
+        print("dropped %d later cop%s of a .dff name the archive already carries (the source game "
+              "binds only the first): %s" % (len(dropped_dups), "y" if len(dropped_dups) == 1 else "ies",
+                                             ", ".join(sorted(dropped_dups))))
     if renames:
-        print("renamed %d entries that also exist in SA's archives (prefix %s): %s%s"
-              % (len(renames), prefix, ", ".join(sorted(renames)[:12]), ", ..." if len(renames) > 12 else ""))
+        counts = {}
+        for why in reasons.values():
+            counts[why] = counts.get(why, 0) + 1
+        print("named %d model/texture entries under the %s tag: %s"
+              % (len(renames), tag, ", ".join("%d %s" % (n, w) for w, n in sorted(counts.items(), key=lambda kv: -kv[1]))))
+        with open(os.path.join(out, "names.txt"), "w", encoding="latin-1") as f:
+            f.write("# new name, original name, why - written by tools/import_city.py; the loader reads it\n")
+            for low in sorted(renames, key=lambda k: renames[k].lower()):
+                ext = os.path.splitext(low)[1]
+                f.write("%s%s\t%s\t%s\n" % (renames[low], ext, low, reasons[low]))
 
     for rel in ([] if lite else col_rel):
         p = find_file(src, rel)
@@ -818,7 +982,8 @@ def main():
         lines += ["Img          = %s%s.img" % (base, region),
                   "Ide          = " + ", ".join(base + "ide\\" + n for n in ide_out),
                   "Ipl          = " + ", ".join(base + "ipl\\" + n for n in ipl_out),
-                  "Col          = %scol\\*.col" % base]
+                  "Col          = %scol\\*.col" % base,
+                  "Names        = %snames.txt" % base]
     lines += ["", "; [World]", "; Gxt = %samerican.gxt" % base]
     with open(os.path.join(out, "region.ini"), "w") as f:
         f.write("\n".join(lines) + "\n")

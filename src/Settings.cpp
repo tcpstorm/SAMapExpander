@@ -136,6 +136,8 @@ namespace Settings {
             r.imgFiles = SplitPaths(s.GetString("Img", ""));
             r.ideFiles = SplitPaths(s.GetString("Ide", ""));
             r.colFiles = SplitPaths(s.GetString("Col", ""));
+            r.namesFile = s.GetString("Names", "");
+            if (!r.namesFile.empty()) r.namesFile = ResolveGamePath(r.namesFile);
             r.tileSize = s.GetFloat("TileSize", 500.0f);
             r.tilesX = s.GetInt("TilesX", 0);
             r.tilesY = s.GetInt("TilesY", 0);

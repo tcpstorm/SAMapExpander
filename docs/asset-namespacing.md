@@ -110,6 +110,10 @@ only as an overflow fallback.
 
 ## Recommended scheme
 
+*Implemented in `tools/import_city.py` (`make_renames`, `sa_name_keys`, `assert_namespaces`) and
+read back by the loader through the region's `Names` key. Items 1–7 and 10's key-hash part are
+in; archive filtering (8) and the GXT allow-list (10) are not yet.*
+
 1. **Tag: two characters, `v_` / `l_`.** Share of Vice City's 6,015 entries that keep a fully
    readable name within the 19-character budget: `v` 99.2%, **`v_` 98.2%**, `vc_` 96.4%,
    `vice_` 87%. A bare `v` collides with San Andreas' own ped naming (`vbmycr`, `vhfyst`,

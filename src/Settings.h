@@ -16,6 +16,7 @@ struct MapRegion {
     std::vector<std::string> ideFiles;  // IDE files; model ids are remapped into the free range
     std::vector<std::string> iplFiles;  // IPL files to load with the origin added to every coordinate
     std::vector<std::string> colFiles;  // .col archives loaded into permanent collision slots
+    std::string namesFile;              // importer's names.txt: new name, original name, why - for the log
     std::string zoneInfoLabel;          // existing zone whose CZoneInfo slot region zones share
     std::string regionName;             // area name over the whole tile grid, empty for none
 

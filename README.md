@@ -138,10 +138,18 @@ source game's `gta_vc.dat`/`gta3.dat` for the file order and writes `MapExpander
 - `american.gxt`, `waterpro.dat`, `navig.zon`, `info.zon`.
 - `region.ini` — the `[region]` keys to paste, with `Ide`/`Ipl` in `.dat` order.
 
-**Name clashes.** San Andreas resolves archive contents purely by name, so a model or texture whose
-name also exists in SA's `gta3.img`/`gta_int.img` would lose to SA's copy and stay invisible. The
-importer prefixes such names (`vc_`, `iii_`) consistently across the archive, the IDE model/txd
-columns, the IPL `inst` lines and the collision entry names; `-NoRename` turns that off.
+**Names.** San Andreas keeps no asset names - only a CRC32 of each (`CKeyGen`) - so a region's
+model or dictionary whose name matches one of SA's would silently lose to SA's copy, and two of a
+region's own that meet after the game's 19-character cut would leave one with no data behind it,
+which freezes the streamer. The importer therefore renames every model and texture dictionary under
+a two-character tag (`v_` for Vice City, `l_` for III), consistently across the archive, the IDE
+model/txd columns, the IPL `inst` lines and the collision entry names. A name stays readable when
+it fits and takes a short hashed tail when it does not; every name is checked to be unique and to
+share no key with anything SA has before the archive is written. Texture names inside a dictionary
+are never touched - they resolve within that dictionary alone. `names.txt` beside the archive maps
+each new name back to the original, and the loader reads it (the `Names` key) so the log can say
+`v_veg_fern_balcn~D50 (veg_fern_balcny_kb2)` rather than an id. `-NoRename` turns all of this off.
+The measurements behind the scheme are in `docs/asset-namespacing.md`.
 
 ## Loading a city's own assets
 
