@@ -6,7 +6,7 @@ Usage: gen_model_limit_sites.py [inventory] [header]
 import sys
 
 KINDS = {
-    "info": "kInfoArray", "ptr": "kPtrArray", "atomic": "kAtomicStore",
+    "info": "kInfoArray", "ptr": "kPtrArray", "atomic": "kAtomicStore", "time": "kTimeStore",
     "res": "kResourceBase", "resneg": "kResourceBaseNeg", "count4": "kCountTimes4",
     "sentinel16": "kSentinelIndex",
 }
@@ -37,7 +37,7 @@ def main():
         out.write("// Do not edit by hand; re-run the scanner and the generator instead.\n")
         out.write("#pragma once\n#include <cstdint>\n\nnamespace ModelLimits {\n\n")
         out.write("enum SiteKind : uint8_t {\n")
-        for name in ("kInfoArray", "kPtrArray", "kAtomicStore", "kResourceBase",
+        for name in ("kInfoArray", "kPtrArray", "kAtomicStore", "kTimeStore", "kResourceBase",
                      "kResourceBaseNeg", "kCountTimes4", "kSentinelIndex", "kSiteKindCount"):
             out.write("    %s,\n" % name)
         out.write("};\n\n")

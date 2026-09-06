@@ -632,13 +632,20 @@
 0x4C63E0 | atomic     | +1 | 4 | 0x00AAE950 | 1 | Models::ShutDown | ms_atomicModelInfoStore.m_nCount
 0x4C63F1 | atomic     | +1 | 4 | 0x00AAE954 | 1 | Models::ShutDown+0x11 | ms_atomicModelInfoStore.m_aObjects[0]+0x0
 0x4C63FD | atomic     | +1 | 4 | 0x00AAE950 | 1 | Models::ShutDown+0x1D | ms_atomicModelInfoStore.m_nCount
+0x4C6458 | time       | +1 | 4 | 0x00B1C960 | 1 | Models::ShutDown+0x78 | ms_timeModelInfoStore.m_nCount
+0x4C6463 | time       | +1 | 4 | 0x00B1C964 | 1 | Models::ShutDown+0x83 | ms_timeModelInfoStore.m_aObjects[0]+0x0
+0x4C646F | time       | +1 | 4 | 0x00B1C960 | 1 | Models::ShutDown+0x8F | ms_timeModelInfoStore.m_nCount
 0x4C65D8 | atomic     | +2 | 4 | 0x00AAE950 | 1 | Models::ShutDown+0x1F8 | ms_atomicModelInfoStore.m_nCount
+0x4C65EA | time       | +2 | 4 | 0x00B1C960 | 1 | Models::ShutDown+0x20A | ms_timeModelInfoStore.m_nCount
 0x4C6620 | atomic     | +1 | 4 | 0x00AAE950 | 1 | Models::AddAtomicModel | ms_atomicModelInfoStore.m_nCount
 0x4C662B | atomic     | +2 | 4 | 0x00AAE954 | 1 | Models::AddAtomicModel+0xB | ms_atomicModelInfoStore.m_aObjects[0]+0x0
 0x4C6632 | atomic     | +1 | 4 | 0x00AAE950 | 1 | Models::AddAtomicModel+0x12 | ms_atomicModelInfoStore.m_nCount
 0x4C6642 | ptr        | +3 | 4 | 0x00A9B0C8 | 1 | Models::AddAtomicModel+0x22 | ms_modelInfoPtrs[0]
 0x4C6671 | ptr        | +3 | 4 | 0x00A9B0C8 | 1 | Models::AddDamageAtomicModel+0x21 | ms_modelInfoPtrs[0]
 0x4C66A1 | ptr        | +3 | 4 | 0x00A9B0C8 | 1 | Models::AddLodAtomicModel+0x21 | ms_modelInfoPtrs[0]
+0x4C66B0 | time       | +1 | 4 | 0x00B1C960 | 1 | Models::AddTimeModel | ms_timeModelInfoStore.m_nCount
+0x4C66BA | time       | +3 | 4 | 0x00B1C964 | 1 | Models::AddTimeModel+0xA | ms_timeModelInfoStore.m_aObjects[0]+0x0
+0x4C66C1 | time       | +1 | 4 | 0x00B1C960 | 1 | Models::AddTimeModel+0x11 | ms_timeModelInfoStore.m_nCount
 0x4C66D1 | ptr        | +3 | 4 | 0x00A9B0C8 | 1 | Models::AddTimeModel+0x21 | ms_modelInfoPtrs[0]
 0x4C6701 | ptr        | +3 | 4 | 0x00A9B0C8 | 1 | Models::AddLodTimeModel+0x21 | ms_modelInfoPtrs[0]
 0x4C6731 | ptr        | +3 | 4 | 0x00A9B0C8 | 1 | Models::AddWeaponModel+0x21 | ms_modelInfoPtrs[0]
@@ -649,6 +656,7 @@
 0x4C681A | ptr        | +1 | 4 | 0x00A9B0C8 | 1 | Models::Initialise+0xA | ms_modelInfoPtrs[0]
 0x4C6821 | atomic     | +1 | 4 | 0x00AAE954 | 1 | Models::Initialise+0x11 | ms_atomicModelInfoStore.m_aObjects[0]+0x0
 0x4C6828 | atomic     | +1 | 4 | 0x00AAE954 | 1 | Models::Initialise+0x18 | ms_atomicModelInfoStore.m_aObjects[0]+0x0
+0x4C6839 | time       | +2 | 4 | 0x00B1C960 | 1 | Models::Initialise+0x29 | ms_timeModelInfoStore.m_nCount
 0x4C6863 | atomic     | +2 | 4 | 0x00AAE950 | 1 | Models::Initialise+0x53 | ms_atomicModelInfoStore.m_nCount
 0x4C6876 | atomic     | +1 | 4 | 0x00AAE954 | 1 | Models::Initialise+0x66 | ms_atomicModelInfoStore.m_aObjects[0]+0x0
 0x4C687B | atomic     | +6 | 4 | 0x00AAE954 | 1 | Models::Initialise+0x6B | ms_atomicModelInfoStore.m_aObjects[0]+0x0
@@ -1494,6 +1502,8 @@
 # 0x7E3486 | no id evidence nearby | cmp ebp, 0x13880 | model count * 4
 # 0x7E3583 | no id evidence nearby | add eax, 0xffff15a0 | -TXD * 3
 # 0x7FB4F9 | pushed as a call argument | push 0x4e20 | TXD
+# 0x84BC50 | the CRT's static constructor of ms_timeModelInfoStore; it builds the vanilla array | mov ecx, 0xb1c960 | ms_timeModelInfoStore.m_nCount
+# 0x856260 | the CRT's static destructor of ms_timeModelInfoStore; it tears the vanilla array down | mov ecx, 0xb1c960 | ms_timeModelInfoStore.m_nCount
 # 0x155A94A | sub of an unaligned interior address; decoded junk | sub eax, 0x8ec31e | ms_aInfoForModel[1515]+0x2
 # 0x155D498 | dword read at an unaligned interior offset; decoded junk | mov ecx, dword ptr [0x9050a3] | ms_aInfoForModel[6603]+0x7
 # 0x1566597 | bound of the special-model array at 0x8E4AF8, not of ms_aInfoForModel | cmp esi, 0x8f8378 | ms_aInfoForModel[3977]+0x4
@@ -1501,4 +1511,4 @@
 # 0x15665DA | bound of the special-model array at 0x8E4AF8, not of ms_aInfoForModel | cmp esi, 0x8f8378 | ms_aInfoForModel[3977]+0x4
 # 0x15665E2 | bound of the special-model array at 0x8E4AF8, not of ms_aInfoForModel | cmp esi, 0x8fd198 | ms_aInfoForModel[4977]+0x4
 #
-# 1404 sites: atomic=37, count4=1, info=363, ptr=740, res=229, resneg=30, sentinel16=4
+# 1412 sites: atomic=37, count4=1, info=363, ptr=740, res=229, resneg=30, sentinel16=4, time=8

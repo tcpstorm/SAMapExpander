@@ -11,6 +11,7 @@ enum SiteKind : uint8_t {
     kInfoArray,
     kPtrArray,
     kAtomicStore,
+    kTimeStore,
     kResourceBase,
     kResourceBaseNeg,
     kCountTimes4,
@@ -27,7 +28,7 @@ struct Site {
     uint8_t  scale;          // resource-base multiplier folded into the operand
 };
 
-// 1404 sites: kAtomicStore=37, kCountTimes4=1, kInfoArray=363, kPtrArray=740, kResourceBase=229, kResourceBaseNeg=30, kSentinelIndex=4
+// 1412 sites: kAtomicStore=37, kCountTimes4=1, kInfoArray=363, kPtrArray=740, kResourceBase=229, kResourceBaseNeg=30, kSentinelIndex=4, kTimeStore=8
 constexpr Site kSites[] = {
     { 0x40122A, 0x00A9B0C8, 3, 4, kPtrArray, 1 },
     { 0x403DA4, 0x00A9B0C8, 3, 4, kPtrArray, 1 },
@@ -637,13 +638,20 @@ constexpr Site kSites[] = {
     { 0x4C63E0, 0x00AAE950, 1, 4, kAtomicStore, 1 },
     { 0x4C63F1, 0x00AAE954, 1, 4, kAtomicStore, 1 },
     { 0x4C63FD, 0x00AAE950, 1, 4, kAtomicStore, 1 },
+    { 0x4C6458, 0x00B1C960, 1, 4, kTimeStore, 1 },
+    { 0x4C6463, 0x00B1C964, 1, 4, kTimeStore, 1 },
+    { 0x4C646F, 0x00B1C960, 1, 4, kTimeStore, 1 },
     { 0x4C65D8, 0x00AAE950, 2, 4, kAtomicStore, 1 },
+    { 0x4C65EA, 0x00B1C960, 2, 4, kTimeStore, 1 },
     { 0x4C6620, 0x00AAE950, 1, 4, kAtomicStore, 1 },
     { 0x4C662B, 0x00AAE954, 2, 4, kAtomicStore, 1 },
     { 0x4C6632, 0x00AAE950, 1, 4, kAtomicStore, 1 },
     { 0x4C6642, 0x00A9B0C8, 3, 4, kPtrArray, 1 },
     { 0x4C6671, 0x00A9B0C8, 3, 4, kPtrArray, 1 },
     { 0x4C66A1, 0x00A9B0C8, 3, 4, kPtrArray, 1 },
+    { 0x4C66B0, 0x00B1C960, 1, 4, kTimeStore, 1 },
+    { 0x4C66BA, 0x00B1C964, 3, 4, kTimeStore, 1 },
+    { 0x4C66C1, 0x00B1C960, 1, 4, kTimeStore, 1 },
     { 0x4C66D1, 0x00A9B0C8, 3, 4, kPtrArray, 1 },
     { 0x4C6701, 0x00A9B0C8, 3, 4, kPtrArray, 1 },
     { 0x4C6731, 0x00A9B0C8, 3, 4, kPtrArray, 1 },
@@ -654,6 +662,7 @@ constexpr Site kSites[] = {
     { 0x4C681A, 0x00A9B0C8, 1, 4, kPtrArray, 1 },
     { 0x4C6821, 0x00AAE954, 1, 4, kAtomicStore, 1 },
     { 0x4C6828, 0x00AAE954, 1, 4, kAtomicStore, 1 },
+    { 0x4C6839, 0x00B1C960, 2, 4, kTimeStore, 1 },
     { 0x4C6863, 0x00AAE950, 2, 4, kAtomicStore, 1 },
     { 0x4C6876, 0x00AAE954, 1, 4, kAtomicStore, 1 },
     { 0x4C687B, 0x00AAE954, 6, 4, kAtomicStore, 1 },

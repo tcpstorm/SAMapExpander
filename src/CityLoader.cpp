@@ -67,8 +67,8 @@ constexpr unsigned kCdSizeOffset = 0xC;
 // vanilla SA leaves only a few dozen atomic slots free and fills the time and clump stores exactly.
 constexpr uintptr_t kDamageStore = 0xB1BF58;
 constexpr int kDamageStoreMax = 70;
-constexpr uintptr_t kTimeStore = 0xB1C960;
-constexpr int kTimeStoreMax = 169;
+// The time store (tobj lines) is ModelLimits' now: it moves it to the heap with room for a region's
+// timed models, since vanilla SA fills the original 169 exactly.
 constexpr uintptr_t kClumpStore = 0xB1E958;
 constexpr int kClumpStoreMax = 92;
 
@@ -353,7 +353,7 @@ StoreBudget CurrentBudget() {
     StoreBudget b;
     b.atomic = AtomicLimit() - (int)StoreCount(ModelLimits::AtomicStore());
     b.damage = kDamageStoreMax - (int)StoreCount(kDamageStore);
-    b.time = kTimeStoreMax - (int)StoreCount(kTimeStore);
+    b.time = ModelLimits::TimeCapacity() - (int)StoreCount(ModelLimits::TimeStore());
     b.clump = kClumpStoreMax - (int)StoreCount(kClumpStore);
     return b;
 }
@@ -742,9 +742,10 @@ void LoadModelDefinitions() {
                        Settings::world.freeModelIdStart, FreeIdEnd());
         if (rs.droppedNoStore)
             Log::Write("[%s] models: a model-info store ran out (atomic %d, damage %d, time %d, clump %d "
-                       "in total; tobj lines need the time store, which vanilla SA already fills) - "
-                       "this is the hard wall, not the id range", rs.region->name.c_str(),
-                       AtomicLimit(), kDamageStoreMax, kTimeStoreMax, kClumpStoreMax);
+                       "in total; tobj lines need the time store, and anim lines the clump store, "
+                       "which vanilla SA fills exactly) - this is the hard wall, not the id range",
+                       rs.region->name.c_str(), AtomicLimit(), kDamageStoreMax,
+                       ModelLimits::TimeCapacity(), kClumpStoreMax);
     }
 }
 

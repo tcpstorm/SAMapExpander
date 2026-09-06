@@ -21,4 +21,6 @@ namespace ModelLimits {
     uintptr_t ModelInfoPtrs();   // CModelInfo::ms_modelInfoPtrs
     uintptr_t AtomicStore();     // CModelInfo::ms_atomicModelInfoStore (int32 count, then objects)
     int AtomicCapacity();        // how many CAtomicModelInfo that store can hold
+    uintptr_t TimeStore();       // CModelInfo::ms_timeModelInfoStore (int32 count, then objects)
+    int TimeCapacity();          // how many CTimeModelInfo it can hold: what tobj lines become
 }

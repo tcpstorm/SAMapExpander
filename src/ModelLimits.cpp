@@ -45,6 +45,17 @@ constexpr int kVanillaAtomicCapacity = 14000;
 constexpr int kAtomicHeadroom = 1000;
 constexpr uint32_t kAtomicVTable = 0x85BBF0;   // written by CAtomicModelInfo's constructor, 0x4C5540
 
+// CStore<CTimeModelInfo, 169>: what every tobj line becomes. Vanilla San Andreas fills it exactly,
+// so a region's timed models - the lit night variants of its buildings - had nowhere to go and
+// were dropped. Ten sites name it, all in CModelInfo, and AddTimeModel (0x4C66B0) never checks
+// the count against 169: it multiplies by 0x24 and increments, so a bigger array is all it takes.
+// The vtable is read from the vanilla store's first object rather than hard-coded, because the
+// CRT constructed those before any plugin loaded.
+constexpr uintptr_t kTimeStore = 0xB1C960;
+constexpr unsigned kTimeElem = 0x24;
+constexpr int kVanillaTimeCapacity = 169;
+constexpr int kTimeHeadroom = 1024;
+
 // Vanilla bases, in the order they follow the DFF range.
 constexpr int kTxdBase = 20000, kColBase = 25000, kIplBase = 25255, kDatBase = 25511;
 constexpr int kIfpBase = 25575, kRrrBase = 25755, kScmBase = 26230;
@@ -54,6 +65,7 @@ int gModelCount = kVanillaModelCount;
 uint8_t* gInfo = nullptr;
 uint8_t* gPtrs = nullptr;
 uint8_t* gStore = nullptr;
+uint8_t* gTimeStore = nullptr;
 
 int Shift() { return gModelCount - kVanillaModelCount; }
 
@@ -87,6 +99,8 @@ uint32_t NewValue(const ModelLimits::Site& s) {
             return (uint32_t)(uintptr_t)gPtrs + ShiftedIndex((s.oldValue - kPtrArray) / 4) * 4;
         case ModelLimits::kAtomicStore:
             return (uint32_t)(uintptr_t)gStore + (s.oldValue - kAtomicStore);
+        case ModelLimits::kTimeStore:
+            return (uint32_t)(uintptr_t)gTimeStore + (s.oldValue - kTimeStore);
         case ModelLimits::kResourceBase:
         case ModelLimits::kSentinelIndex:
             return s.oldValue + Shift();
@@ -118,11 +132,31 @@ bool Allocate() {
     gInfo = (uint8_t*)calloc((size_t)total, kInfoElem);
     gPtrs = (uint8_t*)calloc((size_t)gModelCount, 4);
     gStore = (uint8_t*)calloc(1, 4 + (size_t)atomicCapacity * kAtomicElem);
-    if (!gInfo || !gPtrs || !gStore) {
-        free(gInfo); free(gPtrs); free(gStore);
-        gInfo = gPtrs = gStore = nullptr;
+    const int timeCapacity = kVanillaTimeCapacity + kTimeHeadroom;
+    gTimeStore = (uint8_t*)calloc(1, 4 + (size_t)timeCapacity * kTimeElem);
+    if (!gInfo || !gPtrs || !gStore || !gTimeStore) {
+        free(gInfo); free(gPtrs); free(gStore); free(gTimeStore);
+        gInfo = gPtrs = gStore = gTimeStore = nullptr;
         Log::Write("ERROR: model id limit not raised: out of memory");
         return false;
+    }
+
+    // The time store's objects the same way, with the vtable the CRT gave the vanilla ones. A
+    // vtable that does not point into the executable means the store is not where this build
+    // expects it, and everything is put back.
+    const uint32_t timeVTable = *reinterpret_cast<const uint32_t*>(kTimeStore + 4);
+    if (timeVTable < 0x401000 || timeVTable >= 0x870000) {
+        free(gInfo); free(gPtrs); free(gStore); free(gTimeStore);
+        gInfo = gPtrs = gStore = gTimeStore = nullptr;
+        Log::Write("ERROR: model id limit not raised: ms_timeModelInfoStore's first object has no "
+                   "vtable (%08X); another mod has moved or overwritten it", timeVTable);
+        return false;
+    }
+    for (int i = 0; i < timeCapacity; i++) {
+        uint8_t* object = gTimeStore + 4 + (size_t)i * kTimeElem;
+        *(uint32_t*)object = timeVTable;
+        *(uint16_t*)(object + 8) = 0;
+        *(uint16_t*)(object + 0xA) = 0xFFFF;
     }
 
     // The store's objects are normally constructed by a static initialiser, and AddAtomicModel
@@ -136,9 +170,11 @@ bool Allocate() {
     }
 
     Log::Write("model arrays moved to the heap: streaming info %d x %u at %p, "
-               "model info pointers %d at %p, atomic model infos %d at %p",
+               "model info pointers %d at %p, atomic model infos %d at %p, time model infos "
+               "%d at %p (vanilla %d, which SA's own map fills)",
                total, kInfoElem, (void*)gInfo, gModelCount, (void*)gPtrs,
-               atomicCapacity, (void*)(gStore + 4));
+               atomicCapacity, (void*)(gStore + 4), timeCapacity, (void*)(gTimeStore + 4),
+               kVanillaTimeCapacity);
     return true;
 }
 
@@ -160,6 +196,8 @@ int TotalCount() { return kVanillaTotal + Shift(); }
 uintptr_t StreamingInfo() { return gActive ? (uintptr_t)gInfo : kInfoArray; }
 uintptr_t ModelInfoPtrs() { return gActive ? (uintptr_t)gPtrs : kPtrArray; }
 uintptr_t AtomicStore() { return gActive ? (uintptr_t)gStore : kAtomicStore; }
+uintptr_t TimeStore() { return gActive ? (uintptr_t)gTimeStore : kTimeStore; }
+int TimeCapacity() { return gActive ? kVanillaTimeCapacity + kTimeHeadroom : kVanillaTimeCapacity; }
 int AtomicCapacity() { return gActive ? kVanillaAtomicCapacity + Shift() + kAtomicHeadroom : kVanillaAtomicCapacity; }
 
 void Install() {
@@ -216,9 +254,9 @@ void Install() {
     Log::Write("model id limit %d -> %d: txd %d, col %d, ipl %d, dat %d, ifp %d, rrr %d, scm %d, "
                "%d streaming entries", kVanillaModelCount, gModelCount, TxdBase(), ColBase(),
                IplBase(), DatBase(), IfpBase(), RrrBase(), ScmBase(), TotalCount());
-    Log::Write("model id limit: %d site(s) patched (array %d + %d + %d, resource base %d + %d, "
-               "count %d, sentinel %d)", (int)std::size(kSites), patched[kInfoArray],
-               patched[kPtrArray], patched[kAtomicStore], patched[kResourceBase],
+    Log::Write("model id limit: %d site(s) patched (array %d + %d + %d, time store %d, resource "
+               "base %d + %d, count %d, sentinel %d)", (int)std::size(kSites), patched[kInfoArray],
+               patched[kPtrArray], patched[kAtomicStore], patched[kTimeStore], patched[kResourceBase],
                patched[kResourceBaseNeg], patched[kCountTimes4], patched[kSentinelIndex]);
 }
 

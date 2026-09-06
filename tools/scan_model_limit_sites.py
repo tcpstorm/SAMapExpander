@@ -38,6 +38,10 @@ from scan_exe import Pe, KNOWN  # noqa: E402
 INFO_BASE, INFO_ELEM, INFO_N = 0x8E4CC0, 0x14, 26316
 PTR_BASE, PTR_ELEM, PTR_N = 0xA9B0C8, 4, 20000
 ATOM_BASE, ATOM_ELEM, ATOM_N = 0xAAE950, 0x20, 14000
+# CStore<CTimeModelInfo, 169>: what tobj lines are made of. Vanilla SA fills it exactly, so a
+# region's timed models have nowhere to go without moving it. Ten sites name it, and CModelInfo::
+# AddTimeModel (0x4C66B0) never checks the count against 169, so a bigger array is all it takes.
+TIME_BASE, TIME_ELEM, TIME_N = 0xB1C960, 0x24, 169
 MODEL_COUNT = 20000
 TIMERS = (0xB7CB84, 0xB7CB88, 0xB7CB8C, 0xB7CB94)  # CTimer::m_snTimeInMilliseconds and friends
 # Functions whose presence proves the constant next to them is an id, not a literal.
@@ -76,6 +80,8 @@ DENY = {  # has evidence, but the constant is a literal
 # comparisons are always false, and would stop being false if they were moved to the heap);
 # the other two are dwords read at unaligned interior offsets, i.e. decoded junk.
 ADDRESS_DENY = {
+    0x84BC50: "the CRT's static constructor of ms_timeModelInfoStore; it builds the vanilla array",
+    0x856260: "the CRT's static destructor of ms_timeModelInfoStore; it tears the vanilla array down",
     0x7AABD3: "or eax, 0xaa0000 - a bit mask",
     0x7B3D52: "or eax, 0xaa0000 - a bit mask",
     0x1566597: "bound of the special-model array at 0x8E4AF8, not of ms_aInfoForModel",
@@ -136,7 +142,7 @@ def main():
             if ins.id == 0:
                 continue
             for kind, off, size, old, scale, note in classify(ins):
-                if ins.address in ADDRESS_DENY and kind in ("info", "ptr", "atomic"):
+                if ins.address in ADDRESS_DENY and kind in ("info", "ptr", "atomic", "time"):
                     skipped.append((ins.address, ADDRESS_DENY[ins.address],
                                     "%s %s | %s" % (ins.mnemonic, ins.op_str, note)))
                 elif (kind == "res" and old in AMBIGUOUS) or kind == "count4" or \
@@ -224,6 +230,10 @@ def match_address(value, is_imm):
         return [("atomic", v, 1, "ms_atomicModelInfoStore.m_nCount")]
     if ATOM_BASE + 4 <= v < ATOM_BASE + 4 + ATOM_ELEM:
         return [("atomic", v, 1, "ms_atomicModelInfoStore.m_aObjects[0]+0x%X" % (v - ATOM_BASE - 4))]
+    if v == TIME_BASE:
+        return [("time", v, 1, "ms_timeModelInfoStore.m_nCount")]
+    if TIME_BASE + 4 <= v < TIME_BASE + 4 + TIME_ELEM:
+        return [("time", v, 1, "ms_timeModelInfoStore.m_aObjects[0]+0x%X" % (v - TIME_BASE - 4))]
     return []
 
 
