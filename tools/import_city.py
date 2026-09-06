@@ -519,13 +519,41 @@ def rename_col(data, renames):
 
 
 def make_renames(names, taken, prefix):
+    """Prefixed names for the entries that clash with San Andreas, each unique within its extension.
+
+    An IMG entry holds 23 characters plus the extension, so a prefixed stem is cut to fit - and two
+    long stems that differ only past the cut become one name. Vice City's veg_fern_balcny_kb1 and
+    _kb2 both came out as vc_veg_fern_balcny_: the IDE then declared two models under one name,
+    the archive's single entry bound to the first, and the second was left with no data behind it.
+    San Andreas does not check for that. Something at the docks placed the second one, the streamer
+    was asked for it, built a read of size zero from a garbage position, and retried it for ever -
+    the game froze with no crash and nothing in the log, and it took a long time to find.
+
+    So a stem that would collide after the cut gets a short distinct tail instead, with a trailing
+    _nt/_dy kept in place because CBaseModelInfo::FindOtherTimeModel matches on it literally.
+    """
     renames = {}
+    used = set()                       # (extension, new stem) already handed out
     for name in names:
         low = name.lower()
         if low not in taken:
             continue
         base, ext = os.path.splitext(name)
-        new_base = (prefix + base)[:23 - len(ext)]
+        ext = ext.lower()
+        budget = 23 - len(ext)
+        new_base = (prefix + base)[:budget]
+        if (ext, new_base.lower()) in used:
+            suffix = base[-3:] if base[-3:].lower() in ("_nt", "_dy") else ""
+            stem = base[:-3] if suffix else base
+            n = 1
+            while True:
+                tail = "~%X" % n
+                candidate = (prefix + stem)[:budget - len(tail) - len(suffix)] + tail + suffix
+                if (ext, candidate.lower()) not in used:
+                    break
+                n += 1
+            new_base = candidate
+        used.add((ext, new_base.lower()))
         renames[low] = new_base
     return renames
 

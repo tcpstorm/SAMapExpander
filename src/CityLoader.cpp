@@ -435,6 +435,7 @@ struct Inst {
 
 struct IplStats {
     int unmappedModel = 0;
+    int noArchiveEntry = 0;   // defined by an IDE, but bound to nothing in any archive
     int malformed = 0;
     int lodLost = 0;
     int scaled = 0;
@@ -506,6 +507,16 @@ std::vector<Inst> CollectInsts(const RegionState& rs, const std::string& source,
         auto mapped = rs.ids.find(inst.model);
         if (mapped == rs.ids.end() || !ModelInfoAt(mapped->second)) {
             stats.unmappedModel++;
+            newIndex.push_back(-1);
+            continue;
+        }
+        // A model defined by the IDEs but bound to nothing in any archive must not be placed. San
+        // Andreas never checks: the first time the streamer is asked for it, it builds a read of
+        // size zero from whatever the entry holds and retries it for ever, and the game freezes -
+        // no crash, no exception, nothing in the log. Vice City's veg_fern_balcny_kb2 at the docks
+        // did exactly that when the importer cut its name to the same 19 characters as _kb1's.
+        if (!ModelHasArchiveEntry(mapped->second)) {
+            stats.noArchiveEntry++;
             newIndex.push_back(-1);
             continue;
         }
@@ -861,8 +872,10 @@ void ReportMissingArchiveEntries() {
         for (const auto& pair : rs.ids)
             if (!ModelHasArchiveEntry(pair.second)) missing++;
         if (missing)
-            Log::Write("[%s] models: %d of %d have no .dff in any registered archive - they will be "
-                       "invisible (check the IMG contents and that no SA model shares the name)",
+            Log::Write("[%s] models: %d of %d have no .dff in any registered archive - their "
+                       "placements are skipped, because a request for one hangs the streamer (two "
+                       "IDE lines sharing a name after the importer's 19-character cut is the usual "
+                       "cause; check the IMG contents and that no SA model shares the name)",
                        rs.region->name.c_str(), missing, (int)rs.ids.size());
     }
 }
@@ -935,6 +948,11 @@ void PlaceInstances() {
                        "(model not defined by this region's IDEs), %d unrecognised, %d LOD link(s) lost",
                        rs.region->name.c_str(), placed, files, stats.unmappedModel, stats.malformed,
                        stats.lodLost);
+        if (stats.noArchiveEntry)
+            Log::Write("[%s] inst: %d line(s) NOT placed - their model is defined by an IDE but has "
+                       "no .dff in any registered archive, and asking the streamer for such a model "
+                       "freezes the game (see the 'have no .dff' line above for the count)",
+                       rs.region->name.c_str(), stats.noArchiveEntry);
         if (stats.scaled)
             Log::Write("[%s] inst: %d line(s) carried a non-unit scale, which San Andreas has no "
                        "field for - placed at scale 1", rs.region->name.c_str(), stats.scaled);
