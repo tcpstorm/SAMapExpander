@@ -1040,6 +1040,13 @@ void PlaceInstances() {
                     Log::Write("[%s] ipl: cannot write %s", rs.region->name.c_str(), cached.c_str());
                     continue;
                 }
+                {
+                    int links = 0;
+                    for (size_t i = first; i < first + count; i++)
+                        if (insts[i].lod >= 0) links++;
+                    Log::Write("[%s] ipl: loading %s - %u inst, %d LOD link(s)", rs.region->name.c_str(),
+                               cached.c_str(), (unsigned)count, links);
+                }
                 CallLoadScene(cached.c_str());
                 placed += (int)*reinterpret_cast<unsigned*>(kNumLoadedBuildings);
                 files++;

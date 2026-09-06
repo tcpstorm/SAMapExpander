@@ -73,6 +73,24 @@ static LONG CALLBACK OnException(EXCEPTION_POINTERS* info) {
     // thread, and catching the first of those would use up the one report we get.
     if ((code & 0xF0000000u) != 0xC0000000u)
         return EXCEPTION_CONTINUE_SEARCH;
+    // IsBadReadPtr and friends work by touching the page and catching the fault themselves, and
+    // a vectored handler sees that fault first. The watchdog probes stack values with it, one of
+    // which is the executable's own base - a probe eight bytes below that is unmapped - and the
+    // resulting "crash" in KERNEL32 used up the one report this handler makes, leaving the real
+    // crash a minute later unrecorded. A fault raised inside the system DLLs is theirs to handle.
+    {
+        HMODULE faulting = nullptr;
+        if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                               reinterpret_cast<LPCSTR>(info->ExceptionRecord->ExceptionAddress), &faulting) && faulting) {
+            char path[MAX_PATH] = { 0 };
+            GetModuleFileNameA(faulting, path, sizeof(path));
+            const char* name = strrchr(path, '\\');
+            name = name ? name + 1 : path;
+            if (_stricmp(name, "KERNEL32.DLL") == 0 || _stricmp(name, "KERNELBASE.dll") == 0 ||
+                _stricmp(name, "ntdll.dll") == 0)
+                return EXCEPTION_CONTINUE_SEARCH;
+        }
+    }
     if (InterlockedCompareExchange(&gLogged, 1, 0) != 0) return EXCEPTION_CONTINUE_SEARCH;
 
     const CONTEXT& c = *info->ContextRecord;

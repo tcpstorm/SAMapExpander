@@ -94,6 +94,8 @@ void ReportStack(const CONTEXT& c) {
                                 (LPCSTR)v, &module) || !module)
             continue;
         // Only bytes that a call could have pushed: the instruction before has to be one.
+        // A value equal to a module's base is not a return address, and probing below it faults.
+        if ((uintptr_t)v < (uintptr_t)module + 8) continue;
         const unsigned char* pre = (const unsigned char*)(uintptr_t)v;
         if (IsBadReadPtr(pre - 8, 8)) continue;
         bool isCall = pre[-5] == 0xE8;
