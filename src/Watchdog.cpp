@@ -23,6 +23,7 @@
 //     the stack really are above it - no guessing which cluster is live, which is the whole reason
 //     the dumps were ambiguous.
 #include <windows.h>
+#include <tlhelp32.h>
 #include <cstdio>
 #include <cstring>
 #include <safetyhook.hpp>
@@ -146,7 +147,7 @@ void ReportStreaming(const StreamSnapshot& s) {
     Say("  streaming: ms_channelError = %d%s, RetryLoadFile entered %ld time(s)", s.error,
         s.error == -1 ? " (nothing failed)" : "  <- the retry loop only ends when this is -1",
         s.retries);
-    Say("  last read(s) issued, most recent first (archive 5 is the region's):");
+    Say("  last read(s) issued, most recent first (top byte is the CdStream handle: 0A = gta3.img):");
     const int have = s.head < kRing ? (int)s.head : kRing;
     for (int i = 0; i < have; i++) {
         const ReadRecord& r = s.ring[(s.head - 1 - i) % kRing];
@@ -205,6 +206,95 @@ void __cdecl Hooked_RetryLoadFile(int channel) {
     RetryHook().ccall<void>(channel);
 }
 
+// Every thread, not just the game's. Each hang so far has had the main thread parked in a kernel
+// wait - inside CdStreamRead's semaphore one time, inside the D3D driver the next - and a wait that
+// never returns means some other thread is holding what it wants. The streaming worker, the audio
+// threads, the driver's own, CLEO's: whichever it is, it shows up as a thread whose Eip is also a
+// wait, or one that is busy in a lock it never leaves.
+//
+// Nothing that can take a lock runs while a thread is suspended: only its context and a copy of
+// its stack are taken, and every thread is resumed before any of it is described. Suspending a
+// thread that holds the loader lock and then calling into the loader from here would freeze the
+// process for good, which is a worse outcome than the one being diagnosed.
+struct ThreadSample {
+    DWORD tid;
+    bool ok;
+    DWORD eip, esp;
+    DWORD stack[192];
+    int got;
+};
+const int kMaxThreads = 40;
+ThreadSample gThreads[kMaxThreads];
+
+int SampleAllThreads() {
+    int count = 0;
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+    if (snap == INVALID_HANDLE_VALUE) return 0;
+    THREADENTRY32 te;
+    te.dwSize = sizeof(te);
+    const DWORD me = GetCurrentThreadId(), pid = GetCurrentProcessId();
+    for (BOOL more = Thread32First(snap, &te); more && count < kMaxThreads; more = Thread32Next(snap, &te)) {
+        if (te.th32OwnerProcessID != pid || te.th32ThreadID == me) continue;
+        HANDLE h = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION,
+                              FALSE, te.th32ThreadID);
+        if (!h) continue;
+        ThreadSample& s = gThreads[count++];
+        s.tid = te.th32ThreadID;
+        s.ok = false;
+        s.got = 0;
+        if (SuspendThread(h) != (DWORD)-1) {
+            CONTEXT c;
+            memset(&c, 0, sizeof(c));
+            c.ContextFlags = CONTEXT_CONTROL;
+            if (GetThreadContext(h, &c)) {
+                s.ok = true;
+                s.eip = c.Eip;
+                s.esp = c.Esp;
+                const DWORD* st = (const DWORD*)c.Esp;
+                for (int i = 0; i < 192; i++) {
+                    if (IsBadReadPtr(st + i, sizeof(DWORD))) break;
+                    s.stack[s.got++] = st[i];
+                }
+            }
+            ResumeThread(h);
+        }
+        CloseHandle(h);
+    }
+    CloseHandle(snap);
+    return count;
+}
+
+void ReportThreads(int count) {
+    char where[160];
+    Say("  other thread(s): %d", count);
+    for (int t = 0; t < count; t++) {
+        const ThreadSample& s = gThreads[t];
+        if (!s.ok) {
+            Say("    thread %04X: no context", (unsigned)s.tid);
+            continue;
+        }
+        Describe(s.eip, where, sizeof(where));
+        Say("    thread %04X: eip %08X %s", (unsigned)s.tid, (unsigned)s.eip, where);
+        int shown = 0;
+        for (int i = 0; i < s.got && shown < 6; i++) {
+            DWORD v = s.stack[i];
+            HMODULE module = nullptr;
+            if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                    (LPCSTR)v, &module) || !module)
+                continue;
+            const unsigned char* pre = (const unsigned char*)(uintptr_t)v;
+            if (IsBadReadPtr(pre - 8, 8)) continue;
+            bool isCall = pre[-5] == 0xE8;
+            for (int back = 2; back <= 7 && !isCall; back++)
+                if (pre[-back] == 0xFF && ((pre[-back + 1] >> 3) & 7) == 2) isCall = true;
+            if (!isCall) continue;
+            Describe(v, where, sizeof(where));
+            Say("        esp+%04X  %08X  %s", (unsigned)(i * 4), (unsigned)v, where);
+            shown++;
+        }
+    }
+}
+
 DWORD WINAPI WatchdogProc(void*) {
     LONG last = -1;
     int stalledFor = 0, reports = 0, sample = 0;
@@ -248,6 +338,7 @@ DWORD WINAPI WatchdogProc(void*) {
         if (ok) ReportStack(c);
         else Say("  could not read the thread context (error %u)", (unsigned)GetLastError());
         ReportStreaming(snap);
+        ReportThreads(SampleAllThreads());
         stalledFor = 0;                 // wait out another window before the next sample
     }
 }
