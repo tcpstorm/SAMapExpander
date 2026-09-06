@@ -24,6 +24,7 @@
 #include <safetyhook.hpp>
 #include <cstdint>
 #include "AlphaListGuard.h"
+#include "ModelLimits.h"
 #include "Settings.h"
 #include "Log.h"
 
@@ -45,73 +46,72 @@ struct AlphaNode {
 
 static SafetyHookInline& Hook() { static SafetyHookInline h; return h; }
 int gReports = 0;
-uintptr_t gLowest = ~0u, gHighest = 0;   // the pool's extent, learned from nodes that were fine
 
 bool IsGameCode(const void* p) {
     const uintptr_t a = (uintptr_t)p;
     return (a >= 0x401000 && a < 0x860000) || (a >= 0x1556000 && a < 0x1577000);
 }
 
+// A CEntity's vtable is one of a handful in the .rdata band the entity classes live in - CBuilding,
+// CTreadable, CDummy (0x8638C0), CObject and the rest cluster there. Recycled or freed memory whose
+// "vtable" word happens to land in the code range still fails this, which is what let the second
+// crash through: its vtable pointed at readable code whose +0x4C slot was FFFFFFFF, so the render
+// callback jumped through junk. Combined with a model index in range, a false pass is very unlikely.
+bool LooksLikeEntity(const void* p) {
+    if (IsBadReadPtr(p, 0x40)) return false;
+    const uint8_t* e = (const uint8_t*)p;
+    const uintptr_t vtable = *(const uintptr_t*)e;
+    if (vtable < 0x858000 || vtable >= 0x867000) return false;   // the entity vtable band
+    const uint16_t model = *(const uint16_t*)(e + 0x22);
+    return model < (uint16_t)ModelLimits::TotalCount();
+}
+
+// Walk the fading list ahead of the game. If a node is not a node, or holds something that is not
+// an entity, splice it out for the length of the render and put the list back exactly as it was
+// afterwards. The list is transient - the game clears and rebuilds it every frame - so restoring
+// it rather than cutting it permanently is what keeps the node pool's free list intact; a permanent
+// cut orphans nodes without freeing them, which is its own corruption and made an earlier build
+// crash worse over time.
 void __cdecl Hooked_RenderFadingEntities() {
     AlphaNode* node = *reinterpret_cast<AlphaNode**>(kListHead);
     AlphaNode* previous = nullptr;
+    AlphaNode** cutPoint = nullptr;   // the next-pointer to restore after the render
+    AlphaNode* cutSaved = nullptr;
     int index = 0;
     while ((uintptr_t)node != kListSentinel) {
         const bool inRange = !IsBadReadPtr(node, sizeof(AlphaNode));
-        // A node is bad if it is unreadable, its render callback is not code, OR the entity it
-        // holds is not an entity: RenderFadingEntities calls the callback with the entity, and the
-        // callback dereferences the entity's vtable straight away, so a dangling entity - one
-        // streamed out while still on the list - crashes just as surely as a bad callback. The
-        // first crash caught here was exactly that: a valid callback and an entity that read as a
-        // float. Validate both.
-        bool badEntity = false;
-        if (inRange && IsGameCode(node->callback)) {
-            badEntity = IsBadReadPtr(node->entity, 4) ||
-                        !IsGameCode(*reinterpret_cast<void**>(node->entity));  // its vtable
-        }
-        if (!inRange || !IsGameCode(node->callback) || badEntity) {
-            if (gReports < 8) {
+        const bool badNode = !inRange || !IsGameCode(node->callback);
+        const bool badEntity = !badNode && !LooksLikeEntity(node->entity);
+        if (badNode || badEntity || index > 4096) {
+            if (gReports < 12) {
                 gReports++;
                 const uintptr_t a = (uintptr_t)node;
-                Log::Write("alpha list: node %d at %08X is bad (%s%s callback %08X, entity %08X, "
-                           "distance bits %08X); nodes seen so far lay in %08X..%08X, so this one is "
-                           "%s the pool. Reached from node at %08X fading entity %08X%s. The walk is "
-                           "cut here so the frame can render.",
+                Log::Write("alpha list: node %d at %08X is bad (%s%s callback %08X, entity %08X); "
+                           "skipped for this frame, list restored after",
                            index, (unsigned)a, inRange ? "readable," : "UNREADABLE,",
-                           badEntity ? " dangling entity," : "",
+                           badEntity ? " not an entity," : "",
                            inRange ? (unsigned)(uintptr_t)node->callback : 0u,
-                           inRange ? (unsigned)(uintptr_t)node->entity : 0u,
-                           inRange ? *(unsigned*)&node->distance : 0u,
-                           (unsigned)gLowest, (unsigned)gHighest,
-                           (a >= gLowest && a <= gHighest) ? "INSIDE" : "outside",
-                           previous ? (unsigned)(uintptr_t)previous : (unsigned)kListHead,
-                           previous ? (unsigned)(uintptr_t)previous->entity : 0u,
-                           previous && !IsBadReadPtr(previous->entity, 0x24)
-                               ? "" : " (that entity is unreadable too)");
-                if (previous && !IsBadReadPtr(previous->entity, 0x24)) {
+                           inRange ? (unsigned)(uintptr_t)node->entity : 0u);
+                if (previous && LooksLikeEntity(previous->entity)) {
                     const uint8_t* e = (const uint8_t*)previous->entity;
-                    Log::Write("alpha list:   the entity before it: model %d, type/status byte %02X, "
-                               "flags %08X, rwobject %08X", *(const int16_t*)(e + 0x22), e[0x36],
-                               *(const uint32_t*)(e + 0x1C), *(const uint32_t*)(e + 0x18));
+                    Log::Write("alpha list:   the good entity before it: model %d - the dangling one "
+                               "is probably its neighbour in this area", *(const int16_t*)(e + 0x22));
                 }
             }
-            // Cut the list at the last good node so RenderFadingEntities stops before the junk.
-            if (previous) previous->next = reinterpret_cast<AlphaNode*>(kListSentinel);
-            else *reinterpret_cast<uintptr_t*>(kListHead) = kListSentinel;
+            if (previous) { cutPoint = &previous->next; }
+            else { cutPoint = reinterpret_cast<AlphaNode**>(kListHead); }
+            cutSaved = *cutPoint;
+            *cutPoint = reinterpret_cast<AlphaNode*>(kListSentinel);
             break;
         }
-        const uintptr_t a = (uintptr_t)node;
-        if (a < gLowest) gLowest = a;
-        if (a > gHighest) gHighest = a;
         previous = node;
         node = node->next;
-        if (++index > 4096) {                     // a cycle; the same cure
-            if (gReports < 8) { gReports++; Log::Write("alpha list: cycles after %d nodes; cut", index); }
-            previous->next = reinterpret_cast<AlphaNode*>(kListSentinel);
-            break;
-        }
+        index++;
     }
+
     Hook().ccall<void>();
+
+    if (cutPoint) *cutPoint = cutSaved;   // put the list back for the game to clear itself
 }
 
 }  // namespace
