@@ -49,12 +49,11 @@ constexpr uint32_t kAtomicVTable = 0x85BBF0;   // written by CAtomicModelInfo's 
 // so a region's timed models - the lit night variants of its buildings - had nowhere to go and
 // were dropped. Ten sites name it, all in CModelInfo, and AddTimeModel (0x4C66B0) never checks
 // the count against 169: it multiplies by 0x24 and increments, so a bigger array is all it takes.
-// The vtable is read from the vanilla store's first object rather than hard-coded, because the
-// CRT constructed those before any plugin loaded.
 constexpr uintptr_t kTimeStore = 0xB1C960;
 constexpr unsigned kTimeElem = 0x24;
 constexpr int kVanillaTimeCapacity = 169;
 constexpr int kTimeHeadroom = 1024;
+constexpr uintptr_t kTimeModelInfoCtor = 0x4C5640;   // CTimeModelInfo::CTimeModelInfo, __thiscall
 
 // Vanilla bases, in the order they follow the DFF range.
 constexpr int kTxdBase = 20000, kColBase = 25000, kIplBase = 25255, kDatBase = 25511;
@@ -141,23 +140,16 @@ bool Allocate() {
         return false;
     }
 
-    // The time store's objects the same way, with the vtable the CRT gave the vanilla ones. A
-    // vtable that does not point into the executable means the store is not where this build
-    // expects it, and everything is put back.
-    const uint32_t timeVTable = *reinterpret_cast<const uint32_t*>(kTimeStore + 4);
-    if (timeVTable < 0x401000 || timeVTable >= 0x870000) {
-        free(gInfo); free(gPtrs); free(gStore); free(gTimeStore);
-        gInfo = gPtrs = gStore = gTimeStore = nullptr;
-        Log::Write("ERROR: model id limit not raised: ms_timeModelInfoStore's first object has no "
-                   "vtable (%08X); another mod has moved or overwritten it", timeVTable);
-        return false;
-    }
-    for (int i = 0; i < timeCapacity; i++) {
-        uint8_t* object = gTimeStore + 4 + (size_t)i * kTimeElem;
-        *(uint32_t*)object = timeVTable;
-        *(uint16_t*)(object + 8) = 0;
-        *(uint16_t*)(object + 0xA) = 0xFFFF;
-    }
+    // The time store's objects are built by their own constructor, the way the CRT builds the
+    // vanilla ones: CStore<CTimeModelInfo, 169>'s constructor (0x4C5DD0) hands the element
+    // constructor to the runtime's array-construction helper, and that constructor - CBaseModelInfo's,
+    // then the vtable 0x85BCB0, then m_nOtherTimeModel = -1 - touches nothing but the object. The
+    // vanilla store cannot be copied from instead: this plugin loads before the executable's static
+    // initialisers run, so at this point its objects are still zero.
+    typedef void(__thiscall* TimeModelInfoCtor)(void*);
+    const TimeModelInfoCtor constructTimeModelInfo = reinterpret_cast<TimeModelInfoCtor>(kTimeModelInfoCtor);
+    for (int i = 0; i < timeCapacity; i++)
+        constructTimeModelInfo(gTimeStore + 4 + (size_t)i * kTimeElem);
 
     // The store's objects are normally constructed by a static initialiser, and AddAtomicModel
     // calls a virtual on the next one before initialising it, so every slot needs its vtable and
