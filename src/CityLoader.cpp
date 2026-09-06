@@ -25,6 +25,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 #include "CityLoader.h"
@@ -119,6 +120,14 @@ constexpr int kPtrNodePoolMargin = 1024;
 // own collision runs out of entries halfway through CColStore::LoadAllBoundingBoxes and the game
 // dies at CFileLoader::LoadCollisionModelVer3+0x32 on a model that has nothing to do with us.
 constexpr uintptr_t kColModelPoolSizeOperand = 0x551107;  // imm32 of `push 10150` in CPools::Initialise
+
+// CTxdStore keeps one TxdDef per dictionary name in a CPool of 5000, created by `push 5000` in
+// CTxdStore::Initialise (0x731F5F). San Andreas' own map uses most of that, and AddTxdSlot writes
+// into whatever the pool hands back without looking: with Vice City's 820 dictionaries there was
+// room, with Liberty City's 422 on top there was not, and the 5001st slot was a write to address 0.
+constexpr uintptr_t kTxdPoolSizeOperand = 0x731F60;
+constexpr int kVanillaTxdPool = 5000;
+constexpr int kTxdPoolMargin = 256;
 constexpr int kVanillaColModelPool = 10150;
 constexpr int kColModelPoolMargin = 128;
 
@@ -947,6 +956,52 @@ void RaiseColModelPool() {
                "%d spare)", current, wanted, needed, wanted - current - needed);
 }
 
+// Distinct dictionary names the regions' IDEs bind models to - every one becomes a TxdDef.
+int RegionTxdCount() {
+    std::set<std::string> names;
+    for (RegionState& rs : Regions()) {
+        for (const std::string& source : rs.region->ideFiles) {
+            IdeSection section = IdeSection::None;
+            for (const std::string& raw : ReadLines(source)) {
+                std::string line = Trim(raw);
+                if (line.empty() || line[0] == '#') continue;
+                std::string low = Lower(line);
+                if (section == IdeSection::None) {
+                    if (low == "objs") section = IdeSection::Objs;
+                    else if (low == "tobj") section = IdeSection::Tobj;
+                    else if (low == "anim") section = IdeSection::Anim;
+                    continue;
+                }
+                if (low == "end") { section = IdeSection::None; continue; }
+                std::vector<std::string> t = Tokens(line);
+                if (t.size() >= 3) names.insert(Lower(t[2]));
+            }
+        }
+    }
+    return (int)names.size();
+}
+
+void RaiseTxdPool() {
+    int current = (int)patch::GetUInt(kTxdPoolSizeOperand);
+    if (current != kVanillaTxdPool)
+        Log::Write("txd: the dictionary pool is already sized %d rather than the vanilla %d - "
+                   "another limit adjuster got here first", current, kVanillaTxdPool);
+
+    int wanted = Settings::world.txdPoolLimit;
+    int needed = RegionTxdCount();
+    if (wanted < 0) wanted = current + needed + kTxdPoolMargin;
+    if (wanted <= current) {
+        if (needed)
+            Log::Write("txd: dictionary pool left at %d entries; the regions need %d and the "
+                       "configured limit is %d", current, needed, wanted);
+        return;
+    }
+
+    patch::SetUInt(kTxdPoolSizeOperand, (unsigned)wanted);
+    Log::Write("txd: dictionary pool %d -> %d entries (%d dictionary name(s) across the regions' "
+               "IDEs, %d spare)", current, wanted, needed, wanted - current - needed);
+}
+
 void LoadCollisionArchives() {
     std::vector<uint8_t> data;
     for (RegionState& rs : Regions()) {
@@ -1131,6 +1186,7 @@ namespace CityLoader {
         }
 
         RaiseColModelPool();
+        RaiseTxdPool();
         RaiseEntityPools();
         MoveIplEntityArrays();
 
