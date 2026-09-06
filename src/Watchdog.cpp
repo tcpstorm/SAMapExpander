@@ -26,9 +26,11 @@
 #include <tlhelp32.h>
 #include <cstdio>
 #include <cstring>
+#include <cstdint>
 #include <safetyhook.hpp>
 #include "Watchdog.h"
 #include "Settings.h"
+#include "ModelLimits.h"
 #include "Log.h"
 
 namespace {
@@ -201,8 +203,71 @@ int __cdecl Hooked_CdStreamRead(int streamId, void* buffer, unsigned position, u
     return ReadHook().ccall<int>(streamId, buffer, position, sectors);
 }
 
+// With every other ASI removed the ring is finally trustworthy, and it shows channel 1 reissuing
+// one read for ever: 458 sectors at position 723B6590. That is not a disc position, it is a
+// pointer into this module's .bss. The channel copies its position from
+// CStreaming::ms_aInfoForModel[id].m_nCdPosn when the batch is built, so either an entry holds a
+// pointer where its position should be, or the id indexes something that is not the array at all.
+//
+// The channel layout is now certain - it is what makes the retry loop's operands line up:
+// tStreamingChannel is 0x98 bytes, ms_channel[2] starts at 0x8E4A60, and ms_channelError sits
+// right after the pair at 0x8E4B90.
+//
+//     +0x00  int32 modelIds[16]
+//     +0x40  int32 bufferOffsets[16]
+//     +0x80  int32 loadStatus         (what the loop reads through [esi + 0x8E4AE0])
+//     +0x84  int32 loadingLevel
+//     +0x88  int32 offsetAndHandle    (handle in the top byte, sector below)
+//     +0x8C  int32 sectorCount
+//     +0x90  int32 totalTries
+//     +0x94  int32 cdStreamStatus
+//
+// So at RetryLoadFile's entry, on the game thread, with the values guaranteed coherent, write down
+// the ids in the failing channel and the streaming-info entry each one resolves to - through
+// ModelLimits::StreamingInfo, which is the relocated array, the same one the patched game reads.
+const uintptr_t kChannelArray = 0x8E4A60;
+
 void __cdecl Hooked_RetryLoadFile(int channel) {
     InterlockedIncrement(&gRetryCalls);
+
+    const uintptr_t ch = kChannelArray + (uintptr_t)(channel & 1) * kChannelStride;
+    if (!IsBadReadPtr((void*)ch, kChannelStride)) {
+        const int* ids = (const int*)ch;
+        const unsigned position = *(const unsigned*)(ch + 0x88);
+        Log::Write("stream: RetryLoadFile(channel %d): ms_channelError %d, status %d, level %d, "
+                   "%u sector(s) at position %08X (handle %u, sector %u), tries %d, cd status %d",
+                   channel, IsBadReadPtr((void*)kChannelError, 4) ? -2 : *(const int*)kChannelError,
+                   *(const int*)(ch + 0x80), *(const int*)(ch + 0x84),
+                   *(const unsigned*)(ch + 0x8C), position, position >> 24, position & 0xFFFFFFu,
+                   *(const int*)(ch + 0x90), *(const int*)(ch + 0x94));
+
+        const uintptr_t info = ModelLimits::StreamingInfo();
+        const int total = ModelLimits::TotalCount();
+        for (int i = 0; i < 16; i++) {
+            const int id = ids[i];
+            if (id == -1) continue;
+            if (id < 0 || id >= total) {
+                Log::Write("stream:   slot %2d: model %d is OUTSIDE the streaming-info array (0..%d)",
+                           i, id, total - 1);
+                continue;
+            }
+            const uint8_t* e = (const uint8_t*)(info + (uintptr_t)id * 0x14);
+            const char* kind = id < ModelLimits::ModelCount() ? "dff"
+                             : id < ModelLimits::ColBase() ? "txd"
+                             : id < ModelLimits::IplBase() ? "col"
+                             : id < ModelLimits::DatBase() ? "ipl" : "other";
+            Log::Write("stream:   slot %2d: id %d (%s%s) buffer offset %d: next %u prev %u nextOnCd %u "
+                       "flags %02X img %u cdPosn %08X (handle %u, sector %u) cdSize %u loadState %u",
+                       i, id, kind,
+                       (id >= Settings::world.freeModelIdStart && id < ModelLimits::ModelCount())
+                           ? ", region" : "",
+                       ids[16 + i],
+                       *(const uint16_t*)(e + 0), *(const uint16_t*)(e + 2), *(const uint16_t*)(e + 4),
+                       e[6], e[7], *(const uint32_t*)(e + 8), *(const uint32_t*)(e + 8) >> 24,
+                       *(const uint32_t*)(e + 8) & 0xFFFFFFu, *(const uint32_t*)(e + 0xC),
+                       *(const uint32_t*)(e + 0x10));
+        }
+    }
     RetryHook().ccall<void>(channel);
 }
 
