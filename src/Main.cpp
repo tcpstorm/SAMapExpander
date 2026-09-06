@@ -15,6 +15,7 @@
 #include "Teleport.h"
 #include "Watchdog.h"
 #include "TxdProbe.h"
+#include "AlphaListGuard.h"
 #include "Gxt.h"
 #include "Zones.h"
 #include "ModelLimits.h"
@@ -49,6 +50,7 @@ public:
         Teleport::Install();
         Watchdog::Install();
         TxdProbe::Install();
+        AlphaListGuard::Install();
 
         Log::Write("MapExpander initialised: %u region(s)", (unsigned)Settings::regions.size());
     }
