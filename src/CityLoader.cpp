@@ -475,6 +475,7 @@ struct Inst {
     float x, y, z;
     float rx, ry, rz, rw;
     int lod;
+    bool hadLodColumn;   // an SA-format line, whose lod is the file's own and never guessed at
 };
 
 struct IplStats {
@@ -483,6 +484,8 @@ struct IplStats {
     std::string noArchiveNames;   // the first few of those, for the log
     int malformed = 0;
     int lodLost = 0;
+    int lodPaired = 0;    // HD lines given a LOD by the source game's naming rule
+    int lodOrphans = 0;   // LOD lines no HD in the same file claimed
     int scaled = 0;
     int interior = 0;
 };
@@ -517,7 +520,8 @@ bool ParseInst(const std::string& line, Inst& inst, IplStats& stats) {
     inst.ry = (float)atof(t[rot + 1].c_str());
     inst.rz = (float)atof(t[rot + 2].c_str());
     inst.rw = (float)atof(t[rot + 3].c_str());
-    inst.lod = t.size() == 11 ? atoi(t[10].c_str()) : -1;
+    inst.hadLodColumn = t.size() == 11;
+    inst.lod = inst.hadLodColumn ? atoi(t[10].c_str()) : -1;
 
     if (inst.interior) stats.interior++;
     // SA throws away small X/Y tilts unless bit 512 (CFileObjectInstance::m_bDontStream) is set,
@@ -587,6 +591,53 @@ std::vector<Inst> CollectInsts(const RegionState& rs, const std::string& source,
         } else {
             inst.lod = newIndex[inst.lod];
         }
+    }
+
+    // III and VC carry no LOD column. There, a LOD is a separate model whose name matches its HD
+    // model's from the fourth character on - LODhotel01 for dt_hotel01 - and the engine hid it
+    // whenever the camera was inside the HD's draw distance (CSimpleModelInfo::FindRelatedModel).
+    // San Andreas links by index and suppresses a LOD while any of its children draw; placed as
+    // two unrelated objects, both draw at once and the LOD's textures show through the building.
+    //
+    // So rebuild the link the way SA wants it. Measured over Vice City's 9,114 placements: 1,099
+    // of its 1,111 LODs have their HD in the same file, 1,066 of those at the identical position,
+    // and one is in another file - the rule reconstructs nearly every link there is. The nearest
+    // match by position settles a model placed more than once. The convention lives in the source
+    // game's names; the region's are tagged, so names.txt supplies the originals.
+    bool needsPairing = false;
+    for (const Inst& inst : kept)
+        if (!inst.hadLodColumn) { needsPairing = true; break; }
+    if (needsPairing) {
+        auto original = [&](const std::string& name) {
+            auto o = rs.originals.find(Lower(name));
+            return Lower(o != rs.originals.end() ? o->second : name);
+        };
+        std::map<std::string, std::vector<size_t>> lodsByKey;
+        for (size_t i = 0; i < kept.size(); i++) {
+            std::string o = original(kept[i].name);
+            if (o.size() > 3 && o.compare(0, 3, "lod") == 0) lodsByKey[o.substr(3)].push_back(i);
+        }
+        std::vector<bool> claimed(kept.size(), false);
+        for (size_t i = 0; i < kept.size() && !lodsByKey.empty(); i++) {
+            Inst& inst = kept[i];
+            if (inst.hadLodColumn || inst.lod >= 0) continue;
+            std::string o = original(inst.name);
+            if (o.size() <= 3 || o.compare(0, 3, "lod") == 0) continue;
+            auto group = lodsByKey.find(o.substr(3));
+            if (group == lodsByKey.end()) continue;
+            size_t best = group->second.front();
+            float bestDistance = 1e30f;
+            for (size_t j : group->second) {
+                float dx = kept[j].x - inst.x, dy = kept[j].y - inst.y;
+                if (dx * dx + dy * dy < bestDistance) { bestDistance = dx * dx + dy * dy; best = j; }
+            }
+            inst.lod = (int)best;
+            claimed[best] = true;
+            stats.lodPaired++;
+        }
+        for (const auto& group : lodsByKey)
+            for (size_t j : group.second)
+                if (!claimed[j]) stats.lodOrphans++;
     }
     return kept;
 }
@@ -999,6 +1050,11 @@ void PlaceInstances() {
                        "(model not defined by this region's IDEs), %d unrecognised, %d LOD link(s) lost",
                        rs.region->name.c_str(), placed, files, stats.unmappedModel, stats.malformed,
                        stats.lodLost);
+        if (stats.lodPaired || stats.lodOrphans)
+            Log::Write("[%s] inst: %d HD placement(s) linked to their LOD by the source game's naming "
+                       "rule, so SA hides the LOD while the HD draws; %d LOD placement(s) had no HD to "
+                       "claim them in their file and stay always-visible as before",
+                       rs.region->name.c_str(), stats.lodPaired, stats.lodOrphans);
         if (stats.noArchiveEntry)
             Log::Write("[%s] inst: %d line(s) NOT placed - their model is defined by an IDE but has "
                        "no .dff in any registered archive, and asking the streamer for such a model "
