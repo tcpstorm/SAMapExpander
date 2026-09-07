@@ -411,6 +411,113 @@ def convert_txd(data):
     return build_txd(chunks), converted, failed
 
 
+def txd_chunks_asis(data):
+    """[(texture name, chunk bytes)] from a dictionary already in San Andreas' own format.
+
+    txd_texture_chunks above rewrites a III/VC raster into San Andreas' D3D9 form; this one is for
+    reading San Andreas' own dictionaries, where the chunk is already right and copying it verbatim
+    is both correct and lossless.
+    """
+    out = []
+    for kind, s, e in rw_sections(data, 0, len(data)):
+        if kind != RW_TEX_DICTIONARY:
+            continue
+        for k, ts, te in rw_sections(data, s, e):
+            if k != RW_TEXTURE_NATIVE:
+                continue
+            for k2, bs, _be in rw_sections(data, ts, te):
+                if k2 != RW_STRUCT:
+                    continue
+                name = data[bs + 8:bs + 40].split(b"\0")[0].decode("ascii", "replace")
+                out.append((name, data[ts - 12:te]))
+                break
+        break
+    return out
+
+
+def rename_texture_chunk(chunk, new_name):
+    """A copy of a TextureNative chunk carrying a different texture name.
+
+    The chunk is always <TextureNative header 12><Struct header 12><struct body>, and RenderWare
+    keeps the 32-byte texture name at body+8 - so the name is at offset 32 of the chunk, whether the
+    chunk was built by txd_texture_chunks or lifted whole out of a San Andreas dictionary.
+    """
+    kind, _size, _ver = struct.unpack_from("<III", chunk, 0)
+    inner, _isize, _iver = struct.unpack_from("<III", chunk, 12)
+    if kind != RW_TEXTURE_NATIVE or inner != RW_STRUCT:
+        raise RwError("not a texture chunk with its struct first")
+    name = new_name.encode("latin-1")[:31].ljust(32, b"\0")
+    return chunk[:32] + name + chunk[64:]
+
+
+# ---------------------------------------------------------------- the weapon HUD icon
+#
+# CHud::DrawWeaponIcon (0x58D7D0) does not look a texture up by name. It takes the weapon's model
+# info - GetWeaponInfo(type, STD)->m_nModelId1 through CModelInfo::ms_modelInfoPtrs - reads the
+# dictionary bound to that model (m_nTxdIndex at +0x0A, through CTxdStore's pool at 0xC8800C), and
+# then at 0x58D83E does:
+#
+#     push "ICON"                       ; the literal at 0x866C54
+#     push [modelInfo + 4]              ; CBaseModelInfo::m_nKey, the model NAME's key
+#     call CKeyGen::AppendStringToKey   ; 0x53CF70
+#     call RwTexDictionaryFindNamedTexture-by-key   ; 0x734E50, which keys each texture's own name
+#                                                   ; through CKeyGen::GetUppercaseKey (0x53CF30)
+#
+# GetUppercaseKey folds toupper(c) of every character into a standard reflected CRC-32 (the table at
+# 0x8CD068 is exactly that table); AppendStringToKey continues the same fold without the toupper,
+# which is why the literal is spelled in capitals. So the key of "modelname" continued with "ICON"
+# is the key of the single string "modelnameicon", in any case - which is how San Andreas' own
+# desert_eagle.txd gets away with desert_eagleicon while sniper.txd spells it SNIPERicon.
+# keygen_key/keygen_append below reproduce both so that the name we write can be checked against
+# the key the game will actually compute, rather than assumed from the spelling.
+#
+# CHud::DrawCrossHairs (0x58E888) does the same thing with the literal "CROSSHAIR", which is the
+# scoped weapon's reticle - sniper.txd holds SNIPERcrosshair.
+#
+# Where the art comes from: Vice City already ships the icon in the weapon's own dictionary, named
+# after the weapon and nothing else - python.txd holds `python` (64x64, with alpha) beside the gun's
+# own skin `gun_python` (64x64, no alpha), exactly the shape San Andreas' icons have. So the icon is
+# already there under a name San Andreas will never ask for, and all that is needed is a second copy
+# under the name it will. Where the source game has no such texture - and for the scoped reticle,
+# which neither III nor Vice City keeps in the weapon's dictionary at all - the donor's own San
+# Andreas art is copied instead. A weapon that can get neither is left without an icon and named in
+# the log; a blank or a wrong-shaped texture would be worse than none.
+
+CRC32_TABLE = []
+for _i in range(256):
+    _c = _i
+    for _bit in range(8):
+        _c = (_c >> 1) ^ (0xEDB88320 if _c & 1 else 0)
+    CRC32_TABLE.append(_c)
+
+
+def keygen_key(name):
+    """CKeyGen::GetUppercaseKey (0x53CF30): toupper each character, fold as reflected CRC-32."""
+    key = 0xFFFFFFFF
+    for ch in name:
+        key = (key >> 8) ^ CRC32_TABLE[(ord(ch.upper()) ^ key) & 0xFF]
+    return key
+
+
+def keygen_append(key, text):
+    """CKeyGen::AppendStringToKey (0x53CF70): the same fold, without the toupper."""
+    for ch in text:
+        key = (key >> 8) ^ CRC32_TABLE[(ord(ch) ^ key) & 0xFF]
+    return key
+
+
+def hud_texture_name(model, suffix):
+    """The texture CHud will look for, checked against the key it will actually build.
+
+    Not a spelling convention: the name is only right if it hashes to the key the game computes,
+    so that is what is asserted here rather than eyeballed.
+    """
+    name = model + suffix.lower()
+    assert keygen_key(name) == keygen_append(keygen_key(model), suffix), \
+        "%s does not hash to the key CHud builds for %s + %s" % (name, model, suffix)
+    return name
+
+
 # ---------------------------------------------------------------- DFF -> San Andreas
 #
 # Converting the textures is only half of it: San Andreas cannot read a Liberty City model either.
@@ -2118,9 +2225,11 @@ VC_WEAPON_MAP = [
     ("SilencedIngram", "TEC9", True,
      "Vice City silenced Ingram - a slot-5 submachine gun; San Andreas' silenced pistol is a "
      "pistol and not the same class"),
-    ("LaserScope", "COUNTRYRIFLE", True,
-     "Vice City laser-sighted sniper rifle - over the country rifle rather than the sniper rifle, "
-     "so the sniper rifle San Andreas' missions hand out stays as it was"),
+    ("LaserScope", "SNIPERRIFLE", True,
+     "Vice City .308 laser-sighted sniper - the sniper rifle and not the country rifle, because "
+     "the scope is the donor's: CPed::UpdateCameraWeaponModes gives SNIPERRIFLE camera mode 7 and "
+     "COUNTRYRIFLE none at all, and CWeapon::Fire reads that mode to decide whether to call "
+     "FireSniper. Over the country rifle it drew, aimed and fired but never zoomed in"),
     ("Machete", "KATANA", True,
      "Vice City machete - a long blade swung one-handed, so it takes the katana's slot, animation "
      "group and combo"),
@@ -2232,6 +2341,110 @@ def sa_weapon_anims(sa):
                 if len(tok) >= 4 and tok[0].isdigit():
                     anim_of[int(tok[0])] = tok[3]
     return {name: anim_of.get(model, "null") for name, model in model_of.items()}
+
+
+def sa_weapon_meshes(sa):
+    """San Andreas weapon name -> (model name, dictionary name) from its weapon.dat and default.ide.
+
+    The donor's own HUD art lives in that dictionary, which is where an imported weapon borrows an
+    icon from when the source game has none of its own.
+    """
+    model_of, mesh_of = {}, {}
+    path = find_file(sa, "data/weapon.dat")
+    if path:
+        with open(path, "r", encoding="latin-1") as f:
+            for line in f:
+                if not line or line[0] not in ("$", "\xa3"):
+                    continue
+                tok = [t for t in re.split(r"[,\s]+", line.strip()) if t]
+                if len(tok) >= 6 and tok[5].lstrip("-").isdigit():
+                    model_of.setdefault(tok[1].upper(), int(tok[5]))
+    ide = find_file(sa, "data/default.ide")
+    if ide:
+        section = None
+        with open(ide, "r", encoding="latin-1") as f:
+            for line in f:
+                s = line.strip().lower()
+                if section is None:
+                    if s == "weap":
+                        section = s
+                    continue
+                if s == "end":
+                    section = None
+                    continue
+                tok = [t for t in re.split(r"[,\s]+", line.strip()) if t]
+                if len(tok) >= 3 and tok[0].isdigit():
+                    mesh_of[int(tok[0])] = (tok[1], tok[2])
+    return {name: mesh_of[model] for name, model in model_of.items() if model in mesh_of}
+
+
+def sa_weapon_dictionaries(sa, wanted):
+    """{dictionary stem: {texture name lower: (name, chunk)}} for `wanted` out of SA's gta3.img."""
+    out = {}
+    path = find_file(sa, "models/gta3.img")
+    if not path or not wanted:
+        return out
+    with open(path, "rb") as f:
+        head = f.read(8)
+        if head[:4] != b"VER2":
+            return out
+        count = struct.unpack("<I", head[4:])[0]
+        table = f.read(32 * count)
+        for at in range(0, 32 * count, 32):
+            off, streamed, archived = struct.unpack_from("<IHH", table, at)
+            name = table[at + 8:at + 32].split(b"\0", 1)[0].decode("latin-1").lower()
+            if not name.endswith(".txd") or name[:-4] not in wanted:
+                continue
+            f.seek(off * SECTOR)
+            blob = f.read(max(streamed, archived) * SECTOR)
+            out[name[:-4]] = {n.lower(): (n, c) for n, c in txd_chunks_asis(blob)}
+    return out
+
+
+def weapon_hud_plan(src, sa, renames):
+    """The HUD textures each imported weapon needs, and where each one comes from.
+
+    Returns ({dictionary file name lower: [(new texture name, name to copy inside that dictionary
+    or None, ready-made chunk or None)]}, notes for the log). The local name is tried first, because
+    it is the source game's own art for the gun the player is actually holding; the chunk is the
+    donor's San Andreas art, used when the source has none.
+    """
+    plan, notes = {}, []
+    weapons = read_source_weapons(src)
+    weap_ide = read_weap_ide(src)
+    if not weapons or not weap_ide:
+        return plan, notes
+
+    meshes = sa_weapon_meshes(sa)
+    wanted = {meshes[donor][1].lower() for _n, donor, _l, _w in VC_WEAPON_MAP if donor in meshes}
+    donor_txds = sa_weapon_dictionaries(sa, wanted)
+
+    for source_name, donor, _live, _why in VC_WEAPON_MAP:
+        tok = weapons.get(source_name.lower())
+        if not tok:
+            continue
+        ide = weap_ide.get(int(tok[VC_COL["model"]]))
+        if not ide:
+            continue
+        model = renames.get(ide[1].lower() + ".dff", ide[1])
+        key = (renames.get(ide[2].lower() + ".txd", ide[2]) + ".txd").lower()
+
+        donor_model, donor_txd = meshes.get(donor, (None, None))
+        donor_art = donor_txds.get((donor_txd or "").lower(), {})
+
+        for suffix in ("ICON", "CROSSHAIR"):
+            wanted_name = hud_texture_name(model, suffix)
+            # Vice City names its icon after the weapon and nothing else; it keeps no reticle at
+            # all, so that one always comes from the donor.
+            local = ide[1] if suffix == "ICON" else None
+            spare = donor_art.get((donor_model or "").lower() + suffix.lower())
+            if not local and not spare:
+                if suffix == "CROSSHAIR":
+                    continue          # the donor has no reticle either, so neither weapon draws one
+                notes.append("%s: no icon in the source and none on %s either" % (model, donor))
+                continue
+            plan.setdefault(key, []).append((wanted_name, local, spare[1] if spare else None))
+    return plan, notes
 
 
 def write_weapons(out, src, sa, renames, prefix):
@@ -2617,6 +2830,13 @@ def main():
     # surfaces. A name is one streaming slot, so packing both means the second silently replaces the
     # first and every model bound to it renders untextured - white leaves, in the case that found
     # this. Merge same-named dictionaries into one instead, keeping the first texture of any name.
+    # The weapon HUD art, added last so that it lands in the dictionary as it will be written and
+    # cannot be lost to the merge above. See the note by hud_texture_name for what San Andreas
+    # actually looks for and why the source game's own icon is already sitting in there under the
+    # wrong name.
+    hud_plan, hud_notes = ({}, []) if lite else weapon_hud_plan(src, sa, renames)
+    hud_local, hud_donor, hud_none = 0, 0, []
+
     shared = []
     for key, chunks, sources in txd_parts.values():
         seen, unique = set(), []
@@ -2626,12 +2846,37 @@ def main():
                 continue
             seen.add(low)
             unique.append((texname, chunk))
+        for wanted, local, spare in hud_plan.get(key.lower(), ()):
+            if wanted.lower() in seen:
+                continue
+            source = None
+            if local:
+                source = next((c for n, c in unique if n.lower() == local.lower()), None)
+            if source is not None:
+                hud_local += 1
+            elif spare is not None:
+                source = spare
+                hud_donor += 1
+            else:
+                hud_none.append(wanted)
+                continue
+            seen.add(wanted.lower())
+            unique.append((wanted, rename_texture_chunk(source, wanted)))
         if sources > 1:
             shared.append("%s (%d dictionaries, %d texture(s))" % (key, sources, len(unique)))
         packed.append((key, build_txd(unique)))
     if shared:
         print("merged %d texture dictionary name(s) the source archive carried more than once: %s"
               % (len(shared), ", ".join(sorted(shared))))
+    if hud_local or hud_donor:
+        print("weapon HUD art: %d texture(s) copied under the name CHud looks for - %d from the "
+              "source game's own icon, %d from the San Andreas weapon the import is paired with"
+              % (hud_local + hud_donor, hud_local, hud_donor))
+    for note in hud_notes:
+        print("  %s" % note)
+    if hud_none:
+        print("  warning: no art for %s, so %s will show no icon rather than a blank one"
+              % (", ".join(sorted(hud_none)), "those weapons" if len(hud_none) > 1 else "that weapon"))
 
     if lite:
         print("%d radar tiles" % tiles)

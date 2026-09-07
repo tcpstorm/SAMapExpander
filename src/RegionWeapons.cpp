@@ -436,7 +436,14 @@ int ApplyLine(const RegionArms& arms, const Line& line) {
 
     // The reverse link the game keeps on the model itself. Without it the pickup lying in the
     // street and the icon in the weapon wheel both fail to find the weapon the model belongs to.
-    if (model && written) *(int32_t*)((uintptr_t)model + kWeaponModelType) = line.type;
+    if (model && written) {
+        *(int32_t*)((uintptr_t)model + kWeaponModelType) = line.type;
+        // CPlayerPed::ProcessAnimGroups reads that same field and compares it against a fixed list
+        // of rifle types, so WeaponTypes needs the pointer to lend it the donor's number while that
+        // function runs. Handed over rather than computed: ModelLimits has moved the array these
+        // pointers usually come out of.
+        if (adding) WeaponTypes::SetModelInfo(line.type, model);
+    }
     return written;
 }
 

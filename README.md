@@ -316,13 +316,29 @@ All run in throwaway containers; nothing is installed on the host.
     weapon pickup whose type is 47 or above, and `CWeapon::IsType2Handed` (0x73B1E0) is a hardcoded list of seven
     types, so it is hooked rather than patched. Every site is verified against the exact bytes 1.0 US ships before
     anything is written; one mismatch and nothing at all is changed.
+  - *The equality tests.* Not everything keyed on a weapon type is a switch. Sweeping the camera, HUD and player code
+    for `cmp` against the sniper constants 33/34 turns up fifteen sites, and **eleven of them are camera modes, not
+    weapon types** — `TheCamera+0x830`, the global at 0xB6F858, the active cam's `m_nMode` at 0xB6F1A8 — so they come
+    right by themselves once `UpdateCameraWeaponModes` hands the new type its donor's camera mode. Two more
+    (`Camera::Process_AimWeapon` 0x52163D, `CHud::DrawCrossHairs` 0x58E1BD) are real type tests that `SNIPERRIFLE`
+    misses too, so the donor and the new type behave identically. That leaves two, and both are answered by lending
+    the function the donor's number for the length of the call and putting ours back on the way out — no
+    hand-assembled code: `CHud::DrawCrossHairs` (0x58E703, the branch that draws the scope's reticle; the
+    fall-through at 0x58E719 jumps past the `CROSSHAIR` lookup entirely) and `CPlayerPed::ProcessAnimGroups`
+    (0x6099D4/D9, which walk and run animations the player uses while holding it).
   - *Still wrong.* `Events::ComputeDamageResponse` (0x4C0327) and `Events::ComputeDamageAnim` (0x4B44BB) branch on
     `type >= 47` into the arm for the pseudo weapons, and that bound cannot be raised without sending `RAMMEDBYCAR`
     with it — so a ped shot with a new gun takes the right damage but plays the generic reactions. `CHud::DrawWeaponIcon`
-    (0x58D7D0) draws the HUD icon from a texture in the weapon model's own TXD named *model name* + `ICON` — SA's
-    `desert_eagle.txd` holds `desert_eagleicon`, and an imported `v_python.txd` holds only `python` and `gun_python`,
-    so the new guns show no icon in the wheel. Fixing it means the importer adding a `<model>icon` texture to each
-    weapon TXD it copies. `CDarkel` (0x43D7B6) will not hand a new gun back after a rampage. A savegame carrying one
+    (0x58D7D0) finds the HUD icon by *key*, not by name: it takes `CBaseModelInfo::m_nKey` — the model name folded
+    through `CKeyGen::GetUppercaseKey` (0x53CF30, `toupper` into a standard reflected CRC-32) — appends the literal
+    `"ICON"` with `CKeyGen::AppendStringToKey` (0x53CF70, the same fold without the `toupper`), and looks that key up
+    in the dictionary bound to the weapon's model. So the texture is `<model name>icon` in any case, which is how SA
+    gets away with `desert_eagleicon` in one dictionary and `SNIPERicon` in another. `CHud::DrawCrossHairs` (0x58E888)
+    does the same with `"CROSSHAIR"` for a scoped weapon's reticle. **`tools/import_city.py` now writes both**: Vice
+    City already ships the icon in the weapon's own dictionary under the weapon's plain name (`python.txd` holds
+    `python`, 64×64 with alpha, beside the skin `gun_python`), so a second copy goes in under the name SA will ask
+    for; where the source has none — the reticle, which neither III nor VC keeps there — the donor's own SA art is
+    copied instead. `CDarkel` (0x43D7B6) will not hand a new gun back after a rampage. A savegame carrying one
     expects the mod to still be installed.
 - All 13 of `CPed`'s weapon slots (`m_aWeapons` at +0x5A0, `0x1C` each) are used, and `Ped::GiveWeapon` indexes them
   without a bounds check — but a slot *groups* weapons rather than naming one (slot 2 already holds the pistol, the
