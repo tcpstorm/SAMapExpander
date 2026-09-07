@@ -9,6 +9,9 @@ Writes <SA game dir>/MapExpander/<region>/ with
     col/           every .col from the archive plus the COLFILE entries of the source .dat
     ide/, ipl/     the IDE and IPL files the source .dat lists, in its order
     tiles/         radar00.png .. radarNN.png decoded from the radar TXDs
+    object.dat     the source game's object.dat, model names renamed and its collision damage
+                   effects mapped onto San Andreas' - what makes a prop breakable rather than
+                   scenery; a model with no line here is placed as a building and never reacts
     american.gxt, waterpro.dat, and the source's zone file (navig.zon/info.zon, or III's gta3.zon)
     zone_names.txt the display name of every zone the region creates, under its namespaced key
     region.ini     the [region] keys to paste into MapExpander.ini, lists in .dat order, with the
@@ -1299,6 +1302,196 @@ def rename_col(data, renames, relight=True):
     return bytes(out), lit
 
 
+# ---------------------------------------------------------------- object.dat
+#
+# data/object.dat is the file that decides whether a placed model is a lump of scenery or a thing
+# the world can push, break and smash. All three games read it the same way: each line names a
+# MODEL, and the loader looks that name up and hangs the line's index on the model info. An IPL
+# `inst` line whose model carries such an index is built as a dynamic object (a CDummyObject that
+# the streamer promotes to a real CObject when the player comes near); one that does not is built
+# as a CBuilding, which is static geometry and can never take damage. So a region imported without
+# an object.dat has no breakable glass, no traffic cones to knock over, no smashable crates - not
+# because anything is missing from the models, but because every one of them came in as a building.
+#
+# The three column sets are not the same, and they have to be established before anything can be
+# mapped between them:
+#
+#   III  A..K   name mass turnMass airRes elasticity percentSubmerged uprootLimit colDamageMult
+#               colDamageEffect specialColResponse cameraAvoid                          (11 fields)
+#   VC   A..K   the same eleven, in the same order and the same units
+#   SA   A..L + FX + breakable
+#               the same eleven, then L causesExplosion, then FX_TYPE FX_OFFSET(x,y,z) FX_NAME
+#               (17 fields), and if the damage effect is 200 or 202 seven more breakable columns:
+#               smashMultiplier breakVelocity(x,y,z) breakVelocityRand gunBreakMode sparks (24)
+#
+# A..K therefore carry across verbatim - the meaning of every one of them is unchanged - and San
+# Andreas' extra columns get the values its own file uses for an object with no effect attached:
+# no explosion, FX_TYPE 0 and the FX name `none`. (The header in San Andreas' object.dat says the
+# name must read "noname" when FX_TYPE is 0; its own 928 such lines all write `none`, so that is
+# what is written here.)
+#
+# What does need translating is column I, the collision damage effect, because the three games
+# number it differently and III and Vice City spend most of their numbering on effects hardcoded to
+# one model each - "smash this particular cardboard box completely". San Andreas has no handler for
+# any of those, so they collapse onto its generic smash. The full table is COLLISION_DAMAGE_EFFECT
+# below; the important cases are that III's 3/4 are Vice City's 20/21 (San Andreas agrees with Vice
+# City), and that every 50-and-above "smash_<some model>_completely" becomes San Andreas' 20.
+#
+# Two San Andreas effects are deliberately never emitted: 200 (breakable) and 202 (breakable then
+# removed), which is how San Andreas' own lamp posts and palms come apart. Those need break-away
+# geometry inside the model that III and Vice City's DFFs simply do not carry, so asking for them
+# would be asking the game to shatter something that has no pieces. Because of that no imported
+# line ever needs the seven breakable columns, and every line written here is the 17-field form.
+#
+# Breakable glass needs no translation at all, which is worth saying plainly because it is the
+# thing most obviously missing from an imported city. Glass is not driven by object.dat's damage
+# effect: it is the IDE flag word, 0x200 "code glass" and 0x400 "artist glass", and Vice City and
+# San Andreas number those bits identically - San Andreas' own `wglasssmash` (0x404) and
+# `od_copwindows` (0x204) are the same models with the same flags as Vice City's, and both games
+# give them the same object.dat line, damage effect 0 and special collision response 4. The flags
+# already survive the import untouched. What was missing was the object.dat line that makes the
+# pane a dynamic object in the first place, because CGlass only ever works on a CObject.
+
+# Column I as III and Vice City write it -> column I as San Andreas reads it.
+#
+#   0   none                              -> 0   none
+#   1   change_model                      -> 1   change_model (San Andreas ships 39 lines of this
+#                                                on models that are not flagged damageable, so it
+#                                                is safe on ours, which never are either)
+#   2   split_model                       -> 0   San Andreas has no equivalent; neither shipped
+#                                                file uses it, so this is theory only
+#   3   VC smash_and_damage_trafficlights -> 20  smash_completely (the object's own half of it;
+#       III smash_completely                     San Andreas has no traffic-light damage state)
+#   4   III change_then_smash             -> 21  change_then_smash
+#   20  VC smash_completely               -> 20
+#   21  VC change_then_smash              -> 21
+#   50  smash_cardbox_completely          -> 20
+#   51  smash_yellow_target_completely    -> 20
+#   60  smash_woodenbox_completely        -> 20
+#   70  smash_trafficcone_completely      -> 20
+#   80  smash_barpost_completely          -> 20
+#   91..95 smash_newstandnew1..5          -> 20
+#   100 smash_blackbag                    -> 20
+#   110 smash_vegpalm                     -> 20
+#   120 burst_beachball                   -> 20
+#   131 smash_beachlounge_wood            -> 20
+#   132 smash_beachlounge_towel           -> 20
+COLLISION_DAMAGE_EFFECT = {0: 0, 1: 1, 2: 0, 3: 20, 4: 21, 20: 20, 21: 21}
+COLLISION_DAMAGE_EFFECT.update(dict.fromkeys((50, 51, 60, 70, 80, 91, 92, 93, 94, 95,
+                                              100, 110, 120, 131, 132), 20))
+
+# III and Vice City's column J, the special collision response case, is 0 none, 1 lampost,
+# 2 smallbox, 3 bigbox, 4 fencepart - which is exactly San Andreas' 0..4. San Andreas adds 5
+# grenade, 6 swing door, 7 lock door, 8 hanging, 9 pool ball, none of which a source value can
+# land on, so the column travels unchanged and anything outside 0..4 is refused rather than guessed.
+SPECIAL_COL_RESPONSE_MAX = 4
+
+# The 17 columns San Andreas reads, with the seven extra breakable ones deliberately absent.
+OBJECT_DAT_HEADER = [
+    "; San Andreas object.dat for a MapExpander region, written by tools/import_city.py.",
+    ";",
+    "; Every line is one of the source game's own object.dat lines with its model name replaced by",
+    "; the name the region carries it under (see names.txt) and its collision damage effect mapped",
+    "; onto San Andreas' numbering. Lines naming a model this region does not define are left out.",
+    ";",
+    "; A  Name           E  Elasticity        I  CollisionDamageEffect   FX_TYPE   0, never used",
+    "; B  Mass           F  PercentSubmerged  J  SpecialColResponse      FX_OFFSET 0 0 0",
+    "; C  TurnMass       G  UprootLimit       K  CameraAvoid             FX_NAME   none",
+    "; D  AirResistance  H  CollDamageMult    L  CausesExplosion (0)",
+    ";",
+]
+
+
+def read_object_dat(path):
+    """The (name, [B..K]) rows of a III or Vice City object.dat, in file order.
+
+    Comments start with `;`, and the file ends with a `*` line the parser stops at. Vice City's
+    ships one damaged line - `parkingmeter` has a second row's worth of numbers run onto the end of
+    it - so a row with more than eleven columns keeps the first eleven, which is what the source
+    game's own sscanf does with it too.
+    """
+    rows, malformed = [], []
+    for line in open(path, "r", encoding="latin-1"):
+        s = line.strip()
+        if not s or s[0] in ";#":
+            continue
+        if s[0] == "*":
+            break
+        tok = [t for t in re.split(r"[,\s]+", s) if t]
+        if len(tok) < 11:
+            malformed.append(s)
+            continue
+        rows.append((tok[0], tok[1:11]))
+    return rows, malformed
+
+
+def decimal(value):
+    """A float with its point kept: San Andreas' own file never writes a bare integer here."""
+    text = "%g" % value
+    return text if "." in text or "e" in text else text + ".0"
+
+
+def convert_object_dat(path, renames, models):
+    """San Andreas object.dat text for the rows whose model this region actually defines.
+
+    `renames` is the archive's rename table (lowercase `name.dff` -> new stem) and `models` the set
+    of lowercase model names the region's objs/tobj IDE lines declare. A row is kept only when its
+    name is in `models`: object data attaches to a model info by name, so a row for a weapon or a
+    pickup - the fifteen-odd rows at the top of both files - would find nothing to attach to, and
+    would spend one of San Andreas' fixed object-data slots doing it.
+
+    Returns (text, kept, skipped, notes).
+    """
+    rows, malformed = read_object_dat(path)
+    notes = []
+    if malformed:
+        notes.append("%d malformed line(s) ignored (%s)"
+                     % (len(malformed), "; ".join(m[:40] for m in malformed[:3])))
+
+    out, kept, skipped, seen, unmapped = list(OBJECT_DAT_HEADER), 0, 0, set(), {}
+    for name, fields in rows:
+        low = name.lower()
+        if low not in models:
+            skipped += 1
+            continue
+        if low in seen:
+            # GTA III lists `vheistlocdoor` twice. The source loader binds the model to whichever
+            # row it read last; keeping only the first is the same object with one slot spent.
+            notes.append("duplicate row for %s ignored" % name)
+            continue
+        seen.add(low)
+
+        try:
+            effect = int(fields[7])
+            response = int(fields[8])
+            camera = int(fields[9])
+            floats = [float(f) for f in fields[:7]]
+        except ValueError:
+            notes.append("unreadable numbers on %s, line left out" % name)
+            continue
+
+        sa_effect = COLLISION_DAMAGE_EFFECT.get(effect)
+        if sa_effect is None:
+            unmapped[effect] = unmapped.get(effect, 0) + 1
+            sa_effect = 0
+        if not 0 <= response <= SPECIAL_COL_RESPONSE_MAX:
+            notes.append("special collision response %d on %s is not one San Andreas shares, "
+                         "written as 0" % (response, name))
+            response = 0
+        camera = 1 if camera else 0
+
+        out.append("%-22s %s%4d,%3d,%3d,   0,   0,   0.0, 0.0, 0.0,  none"
+                   % (renames.get(low + ".dff", name) + ",",
+                      "".join("%-11s" % (decimal(f) + ",") for f in floats),
+                      sa_effect, response, camera))
+        kept += 1
+    for effect, count in sorted(unmapped.items()):
+        notes.append("collision damage effect %d is in neither game's documented set (%d line(s)), "
+                     "written as 0" % (effect, count))
+    out.append("* ;end of file")
+    return "\n".join(out) + "\n", kept, skipped, notes
+
+
 # ---------------------------------------------------------------- namespacing
 #
 # Every model, texture dictionary and collision name the game sees from a region is given a name
@@ -1881,8 +2074,10 @@ def main():
 
     # Which dictionary each model is bound to, in post-rename names. The IDEs are written out
     # further down; they are read here too because the packing below needs to know which textures
-    # each dictionary is actually asked for.
+    # each dictionary is actually asked for. The same pass collects the models the region declares
+    # under their ORIGINAL names, which is the set object.dat's rows have to be matched against.
     model_txd = {}
+    ide_models = set()
     for rel in ([] if lite else ide_rel):
         path = find_file(src, rel)
         if not path:
@@ -1905,6 +2100,7 @@ def main():
                     model = renames.get(tok[1].lower() + ".dff", tok[1]).lower()
                     txd = renames.get(tok[2].lower() + ".txd", tok[2]).lower() + ".txd"
                     model_txd[model] = txd
+                    ide_models.add(tok[1].lower())
 
     # Split the archive: models/textures into the new IMG, collision into loose files,
     # radar tiles into PNGs. Everything else (audio, misc) is dropped.
@@ -2216,6 +2412,24 @@ def main():
     if not lite:
         print("%d IDE, %d IPL, %d collision files" % (len(ide_out), len(ipl_out), cols))
 
+    # data/object.dat: which of the region's models are physical objects rather than scenery, and
+    # how each of them reacts to being hit. Written last because it is matched against the model
+    # names the IDEs above declare - a row for a weapon or a pickup has nothing to attach to.
+    object_dat = None
+    src_object_dat = None if lite else find_file(src, "data/object.dat")
+    if src_object_dat:
+        text, kept, skipped, notes = convert_object_dat(src_object_dat, renames, ide_models)
+        with open(os.path.join(out, "object.dat"), "w", encoding="latin-1") as f:
+            f.write(text)
+        object_dat = "object.dat"
+        print("object.dat: %d model(s) become dynamic objects - breakable, pushable, smashable - "
+              "of %d row(s) the source lists; %d name a model no IDE of this region declares"
+              % (kept, kept + skipped, skipped))
+        for note in notes:
+            print("  object.dat: %s" % note)
+    elif not lite:
+        print("  data/object.dat not found - the region's props will all be static scenery")
+
     copied, zones_have, gxt_missed = [], [], []
     for rel, dst in text_files:
         p = find_file(src, rel)
@@ -2327,6 +2541,8 @@ def main():
                   "Ipl          = " + ", ".join(base + "ipl\\" + n for n in ipl_out),
                   "Col          = %scol\\*.col" % base,
                   "Names        = %snames.txt" % base]
+        if object_dat:
+            lines.append("ObjectData   = %s%s" % (base, object_dat))
     # The emitted GXT carries namespaced keys, so it adds the region's strings to San Andreas'
     # rather than replacing them, and two regions no longer take each other's place either. It is
     # optional all the same: the zone names a player actually reads are in zone_names.txt, and

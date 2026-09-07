@@ -131,6 +131,87 @@ constexpr int kTxdPoolMargin = 256;
 constexpr int kVanillaColModelPool = 10150;
 constexpr int kColModelPoolMargin = 128;
 
+// ---------------------------------------------------------------- object data
+//
+// Whether a placed model is scenery or a thing the world can push, break and smash comes down to a
+// single number: the int16 at CBaseModelInfo+0x10, the index of that model's row in
+// CObjectData::ms_aObjectInfo. CFileLoader::LoadObjectInstance (0x538090) reads it at 0x5380DB:
+//
+//     cmp word ptr [ebp+0x10], bx    ; bx = -1, what CBaseModelInfo::Init writes
+//     je  <0x538146>                 ; -1: new CBuilding (or CAnimatedBuilding)
+//                                    ; anything else: new CDummyObject
+//
+// and that is the whole rule. It is not an IDE flag and not a model type. A dummy object is what
+// CPopulation::ConvertToRealObject (0x614580) promotes to a real CObject once the player is close
+// enough, and only a CObject has mass, buoyancy, damage or breakage; a CBuilding is geometry that
+// nothing can touch. The index is written in exactly one place - CObjectData::Initialise (0x5B5360),
+// which reads DATA\OBJECT.DAT and matches each line's first column to a model BY NAME through
+// CModelInfo::GetModelInfo. So a model that no object.dat names is a building, always. That is why
+// an imported city's glass, crates, cones and parking meters stood there like walls: the importer
+// never brought object.dat across, so every single one of its models had index -1.
+//
+// Breakable glass is the same story from the other end. CGlass::IsObjectGlass (0x46A760) asks two
+// questions - is the entity a CObject, and does the model info's special type (bits 11..14 of the
+// word at +0x12, set from IDE flags 0x200 and 0x400) say glass - and every CGlass entry point in
+// CPhysical::ApplyCollision, CWorld::TriggerExplosionSectorList and CWeapon::DoBulletImpact is
+// gated on it. Vice City writes those same two flag bits with those same two meanings, so they
+// already survive the import untouched; what was missing was the object.dat line that makes the
+// pane a CObject in the first place.
+//
+// The table itself is 160 entries of 0x50 bytes at 0xBB4A90, ending exactly where the next global
+// (a CObject.cpp static float, written by the CRT thunk at 0x84FCE0) begins. Initialise fills
+// entries 0..4 itself from one template and appends parsed lines from index 5; it de-duplicates,
+// both through a fast path (mass 99999, damage multiplier 1, damage effect 0 and special response
+// 0 or 4 reuse one of the four built-in entries) and through a full field-by-field scan of what it
+// has already stored, so San Andreas' 995 lines collapse into exactly the 160 entries the array
+// holds. Vanilla therefore leaves NO room at all - and there is no bounds check anywhere in
+// Initialise, so one extra row would run straight into the statics behind the array.
+//
+// The array is moved to the heap for that reason, the same way ModelLimits moves the model info
+// stores: 34 code operands name it or one of its first five entries, every one of them is checked
+// to still hold the value this table expects before anything is written, and on any mismatch the
+// game is left exactly as it was.
+constexpr uintptr_t kObjectInfo = 0xBB4A90;
+constexpr unsigned kObjectInfoStride = 0x50;
+constexpr int kVanillaObjectInfoCount = 160;
+constexpr int kObjectInfoMargin = 32;
+// Initialise's own count is a stack local, never a global, so the number of entries in use has to
+// be recovered from the table: the first one that is still all zeroes. A parsed row always has a
+// mass (the file's own range is 1..50000), and the block is allocated zeroed, so the scan is exact.
+constexpr int kFirstParsedObjectInfo = 5;   // 0..4 are the hard-coded defaults
+constexpr unsigned kObjectInfoIndexOffset = 0x10;   // int16 on CBaseModelInfo; -1 means "building"
+// Read rather than written down, so this stays right if the values are ever patched: Initialise
+// computes the buoyancy constant as (100.0 / percentSubmerged) * mass * 0.008 at 0x5B5536.
+constexpr uintptr_t kBuoyancyNumerator = 0x858628;
+constexpr uintptr_t kBuoyancyScale = 0x863984;
+
+typedef void*(__cdecl* GetModelInfoByNameFn)(const char*, int*);
+const GetModelInfoByNameFn CallGetModelInfoByName = reinterpret_cast<GetModelInfoByNameFn>(0x4C5940);
+
+// Every instruction whose imm32 or disp32 names the array or one of its first five entries, found
+// by disassembling the live sections and checking each operand; nothing in .rdata or .data points
+// into it. `operandOffset` is where the four bytes sit inside the instruction.
+struct ObjectInfoSite { uintptr_t address; unsigned char operandOffset; uint32_t oldValue; };
+const ObjectInfoSite kObjectInfoSites[] = {
+    { 0x59F857, 6, 0xBB4A90 },  // CObject::Init: m_pObjectInfo defaults to entry 0
+    { 0x5A2D28, 2, 0xBB4A90 },  // CObjectData::SetObjectData: index * 0x50 + base
+    { 0x5A2E44, 6, 0xBB4A90 },  // SetObjectData's "model has no object data" fallback
+    { 0x5B5369, 2, 0xBB4A90 }, { 0x5B5373, 2, 0xBB4A94 }, { 0x5B537D, 2, 0xBB4A98 },
+    { 0x5B5387, 2, 0xBB4A9C }, { 0x5B5391, 2, 0xBB4AA0 }, { 0x5B539B, 2, 0xBB4AA4 },
+    { 0x5B53A5, 2, 0xBB4AA8 }, { 0x5B53AF, 2, 0xBB4AAC }, { 0x5B53B6, 2, 0xBB4AAD },
+    { 0x5B53BD, 2, 0xBB4AAE },                            // entry 0, field by field
+    { 0x5B53C9, 1, 0xBB4A90 }, { 0x5B53CE, 1, 0xBB4AE0 }, { 0x5B53D5, 2, 0xBB4AFE },  // entry 1
+    { 0x5B53E1, 1, 0xBB4A90 }, { 0x5B53E6, 1, 0xBB4B30 }, { 0x5B53EF, 1, 0xBB4B4D },  // entry 2
+    { 0x5B53F9, 1, 0xBB4A90 }, { 0x5B53FE, 1, 0xBB4B80 }, { 0x5B5405, 1, 0xBB4B9D },
+    { 0x5B540A, 2, 0xBB4B9E },                                                        // entry 3
+    { 0x5B5416, 1, 0xBB4A90 }, { 0x5B541B, 1, 0xBB4BD0 }, { 0x5B542C, 2, 0xBB4BED },  // entry 4
+    { 0x5B5466, 1, 0xBB4C20 },  // where parsing starts: base + 5 * 0x50
+    { 0x5B5587, 2, 0xBB4A90 }, { 0x5B5596, 2, 0xBB4AA8 }, { 0x5B55A6, 2, 0xBB4AAC },
+    { 0x5B55B1, 2, 0xBB4AAD }, { 0x5B55BB, 2, 0xBB4B4D },  // the fast path's comparisons
+    { 0x5B5608, 1, 0xBB4A94 },  // the de-duplication walk, biased by one field
+    { 0x73860C, 6, 0xBB4BD0 },  // CProjectileInfo::AddProjectile: grenades take entry 4
+};
+
 // CIplStore keeps one entity-index array per IPL file - the table that turns an inst line's LOD
 // column into the entity the streamer later loads for it - and CFileLoader::LoadScene takes a fresh
 // one every time it runs. CIplStore::GetNewIplEntityIndexArray appends to that table with no bounds
@@ -1114,7 +1195,199 @@ void GivePlaceholderCollision() {
     }
 }
 
+// ---------------------------------------------------------------- object data
+
+uint8_t* gObjectInfo = nullptr;                          // the relocated array, or null
+int gObjectInfoCapacity = kVanillaObjectInfoCount;
+
+uintptr_t ObjectInfoBase() { return gObjectInfo ? (uintptr_t)gObjectInfo : kObjectInfo; }
+
+// The rows a region's object.dat holds, without parsing them: enough to size the table before the
+// game builds it. A row is anything that is not blank, a `;` comment or the `*` end marker, which
+// is where CObjectData::Initialise stops reading (0x5B5486).
+int RegionObjectDataRows() {
+    int rows = 0;
+    for (RegionState& rs : Regions()) {
+        if (rs.region->objectDataFile.empty()) continue;
+        for (const std::string& raw : ReadLines(rs.region->objectDataFile)) {
+            std::string line = Normalise(raw);
+            if (line.empty() || line[0] == ';' || line[0] == '#') continue;
+            if (line[0] == '*') break;
+            rows++;
+        }
+    }
+    return rows;
+}
+
+// Move ms_aObjectInfo to a block big enough for San Andreas' own rows and the regions' on top.
+// Nothing checks the table's length at run time - Initialise walks it with a stack local and
+// appends without ever looking at a limit - so a bigger block is the whole of the change; what has
+// to be right is that every operand naming the old one is rewritten, and that is verified first.
+void RelocateObjectData() {
+    int rows = RegionObjectDataRows();
+    if (!rows) return;
+
+    // De-duplication means the regions will need fewer entries than they have rows, but by how many
+    // is not knowable until the names are matched, so budget one entry per row and a little over.
+    int wanted = kVanillaObjectInfoCount + rows + kObjectInfoMargin;
+
+    for (const ObjectInfoSite& s : kObjectInfoSites) {
+        uint32_t have = (uint32_t)patch::GetUInt(s.address + s.operandOffset);
+        if (have == s.oldValue) continue;
+        Log::Write("ERROR: object data table not grown: 0x%X holds 0x%08X, expected 0x%08X "
+                   "(another mod patched it); the regions' object.dat files are not loaded",
+                   (unsigned)(s.address + s.operandOffset), have, s.oldValue);
+        return;
+    }
+
+    uint8_t* block = (uint8_t*)calloc((size_t)wanted, kObjectInfoStride);
+    if (!block) {
+        Log::Write("ERROR: object data table not grown: cannot allocate %d entries", wanted);
+        return;
+    }
+    for (const ObjectInfoSite& s : kObjectInfoSites)
+        patch::SetUInt(s.address + s.operandOffset,
+                       (unsigned)((uintptr_t)block + (s.oldValue - kObjectInfo)));
+
+    gObjectInfo = block;
+    gObjectInfoCapacity = wanted;
+    Log::Write("object data: table %d -> %d entries at %p (%d row(s) across the regions' "
+               "object.dat; vanilla San Andreas fills all 160 of its own)",
+               kVanillaObjectInfoCount, wanted, (void*)block, rows);
+}
+
+// Append a region's object.dat to the table San Andreas has just built, and hang each row's index
+// on its model. This has to be its own parser rather than a second call to CObjectData::Initialise:
+// Initialise always starts writing at entry 5 with its count reset to 5, so calling it again would
+// overwrite San Andreas' own rows underneath the models that already point at them. It has to run
+// here, after CFileLoader::LoadLevel has finished, because Initialise is called from inside
+// LoadLevel (0x5B925F) BEFORE CStreaming::Init2 (0x5B927D) - which is where a region's model infos
+// are created - so at the moment San Andreas reads object.dat none of our models exist yet.
+//
+// The columns are San Andreas' own, and the importer has already mapped the source game's into
+// them (tools/import_city.py). Unlike Initialise this appends every row instead of folding equal
+// ones together: the table has room, and a shared entry silently loses the columns the fast path
+// does not compare - an uproot limit, a break velocity - which is a thing to inherit, not to copy.
+void LoadRegionObjectData() {
+    bool any = false;
+    for (RegionState& rs : Regions())
+        if (!rs.region->objectDataFile.empty()) any = true;
+    if (!any) return;
+
+    uintptr_t base = ObjectInfoBase();
+    int used = gObjectInfoCapacity;
+    for (int i = kFirstParsedObjectInfo; i < gObjectInfoCapacity; i++) {
+        const uint32_t* e = reinterpret_cast<const uint32_t*>(base + (unsigned)i * kObjectInfoStride);
+        if (!e[0] && !e[1] && !e[2] && !e[3]) { used = i; break; }
+    }
+    Log::Write("object data: San Andreas' own DATA\\OBJECT.DAT filled %d of %d entries",
+               used, gObjectInfoCapacity);
+
+    const float buoyancyNumerator = *reinterpret_cast<const float*>(kBuoyancyNumerator);
+    const float buoyancyScale = *reinterpret_cast<const float*>(kBuoyancyScale);
+
+    for (RegionState& rs : Regions()) {
+        if (rs.region->objectDataFile.empty()) continue;
+        std::vector<std::string> lines = ReadLines(rs.region->objectDataFile);
+        if (lines.empty()) {
+            Log::Write("[%s] object data: %s is missing or empty - the region's props stay static "
+                       "scenery", rs.region->name.c_str(), rs.region->objectDataFile.c_str());
+            continue;
+        }
+
+        int added = 0, unknown = 0, malformed = 0, full = 0, effects = 0;
+        std::string unknownNames;
+        for (const std::string& raw : lines) {
+            std::string line = Normalise(raw);
+            if (line.empty() || line[0] == ';' || line[0] == '#') continue;
+            if (line[0] == '*') break;
+
+            char name[64] = "", fx[64] = "";
+            float mass = 0.0f, turnMass = 0.0f, airResistance = 0.0f, elasticity = 0.0f;
+            float submerged = 0.0f, uprootLimit = 0.0f, damageMultiplier = 0.0f;
+            int damageEffect = 0, colResponse = 0, cameraAvoid = 0, explodes = 0, fxType = 0;
+            float fxX = 0.0f, fxY = 0.0f, fxZ = 0.0f;
+            float smash = 0.0f, breakX = 0.0f, breakY = 0.0f, breakZ = 0.0f, breakRand = 0.0f;
+            int gunBreak = 0, sparks = 0;
+            // The same format string Initialise uses (0x868DC8). Like the game, a short line is
+            // accepted and leaves the tail at zero; only the eleven columns every dialect has are
+            // required, which is what the return value is checked against.
+            int got = sscanf(line.c_str(),
+                             "%63s %f %f %f %f %f %f %f %d %d %d %d %d %f %f %f %63s %f %f %f %f %f %d %d",
+                             name, &mass, &turnMass, &airResistance, &elasticity, &submerged,
+                             &uprootLimit, &damageMultiplier, &damageEffect, &colResponse,
+                             &cameraAvoid, &explodes, &fxType, &fxX, &fxY, &fxZ, fx,
+                             &smash, &breakX, &breakY, &breakZ, &breakRand, &gunBreak, &sparks);
+            if (got < 11) { malformed++; continue; }
+
+            void* mi = CallGetModelInfoByName(name, nullptr);
+            if (!mi) {
+                if (unknown < 8) unknownNames += (unknownNames.empty() ? "" : ", ") + std::string(name);
+                unknown++;
+                continue;
+            }
+            if (used >= gObjectInfoCapacity) { full++; continue; }
+            if (fxType) { fxType = 0; effects++; }   // the FX system is looked up by name from a
+                                                     // table that holds San Andreas' effects only
+
+            uint8_t* e = reinterpret_cast<uint8_t*>(base + (unsigned)used * kObjectInfoStride);
+            float* f = reinterpret_cast<float*>(e);
+            f[0] = mass;
+            f[1] = turnMass;
+            f[2] = airResistance;
+            f[3] = elasticity;
+            // Percent submerged is not kept: the game stores only the buoyancy constant it becomes.
+            f[4] = submerged != 0.0f ? (buoyancyNumerator / submerged) * mass * buoyancyScale : 0.0f;
+            f[5] = uprootLimit;
+            f[6] = damageMultiplier;
+            e[0x1C] = (uint8_t)damageEffect;
+            e[0x1D] = (uint8_t)colResponse;
+            e[0x1E] = (uint8_t)cameraAvoid;
+            e[0x1F] = (uint8_t)explodes;
+            e[0x20] = (uint8_t)fxType;
+            f[0x24 / 4] = fxX;
+            f[0x28 / 4] = fxY;
+            f[0x2C / 4] = fxZ;
+            *reinterpret_cast<void**>(e + 0x30) = nullptr;   // FxSystemBP, only read when fxType > 0
+            f[0x34 / 4] = smash;
+            f[0x38 / 4] = breakX;
+            f[0x3C / 4] = breakY;
+            f[0x40 / 4] = breakZ;
+            f[0x44 / 4] = breakRand;
+            *reinterpret_cast<int*>(e + 0x48) = gunBreak;
+            *reinterpret_cast<int*>(e + 0x4C) = sparks;
+
+            *reinterpret_cast<int16_t*>(static_cast<uint8_t*>(mi) + kObjectInfoIndexOffset) = (int16_t)used;
+            used++;
+            added++;
+        }
+
+        Log::Write("[%s] object data: %d model(s) are dynamic objects now - breakable, pushable, "
+                   "smashable - instead of buildings; table at %d of %d entries",
+                   rs.region->name.c_str(), added, used, gObjectInfoCapacity);
+        if (unknown)
+            Log::Write("[%s] object data: %d line(s) name a model this region did not register: "
+                       "%s%s", rs.region->name.c_str(), unknown, unknownNames.c_str(),
+                       unknown > 8 ? ", ..." : "");
+        if (malformed)
+            Log::Write("[%s] object data: %d line(s) have fewer than the eleven columns every "
+                       "dialect writes and were left out", rs.region->name.c_str(), malformed);
+        if (effects)
+            Log::Write("[%s] object data: %d line(s) asked for a particle effect by name; San "
+                       "Andreas resolves those against its own effects only, so they were dropped "
+                       "and the object still breaks, just without the puff",
+                       rs.region->name.c_str(), effects);
+        if (full)
+            Log::Write("[%s] object data: %d line(s) dropped - the table is full at %d entries; "
+                       "those models stay static scenery", rs.region->name.c_str(), full,
+                       gObjectInfoCapacity);
+    }
+}
+
 void PlaceInstances() {
+    // Before the instances, not after: CFileLoader::LoadObjectInstance decides building or dynamic
+    // object from the model's object-data index, and it reads it as it places each line.
+    LoadRegionObjectData();
     GivePlaceholderCollision();
     int budget = PoolFree(kBuildingPool) - kBuildingPoolReserve;
     Log::Write("inst: %d free building-pool entries, %d free dummy-pool entries",
@@ -1243,6 +1516,7 @@ namespace CityLoader {
 
         RaiseColModelPool();
         RaiseTxdPool();
+        RelocateObjectData();
         RaiseEntityPools();
         MoveIplEntityArrays();
 
