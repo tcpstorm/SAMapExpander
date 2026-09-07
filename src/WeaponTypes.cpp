@@ -100,6 +100,7 @@ constexpr int kNewTypeCount = kLastNewType - kFirstNewType + 1;
 
 constexpr uintptr_t kWeaponInfoArray = 0xC8AAB8;
 constexpr unsigned kWeaponInfoStride = 0x70;
+constexpr unsigned kModelId1 = 0x0C;       // CWeaponInfo::m_nModelId1
 constexpr unsigned kSlotField = 0x14;      // CWeaponInfo::m_nWeaponSlot, -1 until a line writes it
 
 // CWeaponInfo::ms_aWeaponNames. 49 entries, of which 47 is the empty string that stands for
@@ -380,28 +381,77 @@ const uint8_t kDrawCrossHairsOp[5] = { 0x83, 0xEC, 0x30, 0x0F, 0xB6 };
 
 SafetyHookInline& CrossHairsOriginal() { static SafetyHookInline h; return h; }
 
+// Puts a value back whatever happens on the way out, which matters here because the two fields
+// being lent are the game's own live state and not copies of it.
+struct Lent {
+    int32_t* at = nullptr;
+    int32_t was = 0;
+    void Lend(int32_t* field, int32_t value) { at = field; was = *field; *field = value; }
+    ~Lent() { if (at) *at = was; }
+};
+
+bool gSaidCrossHair = false;
+
+// TheCamera.m_aCams[m_nActiveCam].m_nMode, for the one diagnostic line below.
+int ActiveCameraMode() {
+    const unsigned active = *(const uint8_t*)0xB6F081;
+    return *(const uint16_t*)(0xB6F1A8 + (uintptr_t)active * 0x238);
+}
+
 void __cdecl DrawCrossHairsHook() {
-    // The function reads the player's own m_aWeapons[activeSlot].m_nType inline, three times, and
-    // does nothing with it but choose a reticle - no state of the game hangs off it - so lending it
-    // the donor's number for one frame's HUD is safe and gives exactly the donor's crosshair, out
-    // of the donor's own texture dictionary.
+    // Two things have to be true for a new gun to get its donor's reticle, and the first one is
+    // the reason this is a memory swap rather than a return value.
+    //
+    // The branch that draws a weapon's own crosshair is at 0x58E7A0, and it is reached from three
+    // tests: type == CAMERA at 0x58E6E0, type == SNIPERRIFLE at 0x58E703, and a script global at
+    // 0x58E70C. Anything else falls through to a chain of CAMERA-mode tests at 0x58E719 that ends
+    // on the shared siteM16 sprite out of hud.txd - which is precisely what a new sniper rifle was
+    // drawing. Note that the type is read from the ped at 0x58E6D1 and read AGAIN, freshly, at
+    // 0x58E6F9, and a third time inside 0x58E7A0, and a fourth at 0x58E81A. Substituting a value
+    // once would be undone by the next read, so what is lent is the ped's stored field itself:
+    // every read in the function sees it, and it goes back before the function returns.
+    //
+    // The second is the dictionary. At 0x58E81A the branch takes the weapon type it has, asks
+    // GetWeaponInfo for m_nModelId1, and looks the CROSSHAIR key up in the dictionary bound to that
+    // model. With only the type lent, that resolves to the DONOR's model - San Andreas' own
+    // sniper.txd - which is not streamed in while the player is holding a v_laser, so
+    // m_pRwDictionary is null at 0x58E87D and nothing is drawn at all. So the donor's record is
+    // lent our model id for the same moment: the key is then built from our model's name and looked
+    // up in our own dictionary, which is loaded because the player is holding it, and which the
+    // importer has put v_lasercrosshair in.
+    //
+    // Both are cosmetic, both are restored on the way out, and nothing else runs in between: this
+    // is a leaf of the HUD pass on the game's own thread.
     typedef void* (__cdecl* FindPlayerPedFn)(int);
     void* ped = reinterpret_cast<FindPlayerPedFn>(kFindPlayerPed)(-1);
-    int32_t* held = nullptr;
-    int32_t mine = 0;
+    Lent type, model;
     if (ped) {
         const int slot = *(const int8_t*)((uintptr_t)ped + kPedActiveSlot);
         if (slot >= 0 && slot < kPedWeaponSlots) {
-            int32_t* type = (int32_t*)((uintptr_t)ped + kPedWeapons +
+            int32_t* held = (int32_t*)((uintptr_t)ped + kPedWeapons +
                                        (unsigned)slot * kPedWeaponStride);
-            if (*type >= kFirstNewType && *type <= kLastNewType) {
-                const int donor = gDonor[*type - kFirstNewType];
-                if (donor >= 0) { held = type; mine = *type; *type = donor; }
+            const int mine = *held;
+            if (mine >= kFirstNewType && mine <= kLastNewType) {
+                const int donor = gDonor[mine - kFirstNewType];
+                const int32_t ours = *(const int32_t*)(kWeaponInfoArray +
+                                                       (uintptr_t)mine * kWeaponInfoStride + kModelId1);
+                if (donor >= 0) {
+                    type.Lend(held, donor);
+                    if (ours > 0)
+                        model.Lend((int32_t*)(kWeaponInfoArray + (uintptr_t)donor * kWeaponInfoStride +
+                                              kModelId1), ours);
+                    if (!gSaidCrossHair) {
+                        gSaidCrossHair = true;
+                        Log::Write("weapon types: the crosshair stand-in is running - weapon type "
+                                   "%d is drawn as %d for one HUD pass, out of model %d's own "
+                                   "dictionary; camera mode %d",
+                                   mine, donor, (int)ours, ActiveCameraMode());
+                    }
+                }
             }
         }
     }
     CrossHairsOriginal().ccall<void>();
-    if (held) *held = mine;
 }
 
 // ---------------------------------------------------------------- CPlayerPed::ProcessAnimGroups
@@ -444,7 +494,12 @@ void HookStandIn(uintptr_t address, const uint8_t* expected, size_t length, void
         return;
     }
     store = safetyhook::create_inline(reinterpret_cast<void*>(address), replacement);
-    if (!store)
+    // Said either way. A hook that quietly did not go on and a hook that went on and never fires
+    // look identical from the outside, and the last round of this was spent guessing between them.
+    if (store)
+        Log::Write("weapon types: %s (0x%X) is hooked, so a new gun answers it as its donor would",
+                   what, (unsigned)address);
+    else
         Log::Write("weapon types: %s could not be hooked; %s", what, consequence);
 }
 
@@ -515,11 +570,11 @@ bool Install() {
 
     patch::SetUChar(kPickupBoundAt + 2, (unsigned char)(kLastNewType + 1));
 
-    Log::Write("weapon types: San Andreas' weapon system widened - names to %d, and the five "
-               "switches on weapon type (CWeapon::Fire, its noise, CWeapon::FireInstantHit, the "
-               "gunshot and the reload) now reach type %d. %d new types are free (%d..%d); San "
-               "Andreas' own %d weapons are untouched",
-               kLastNewType, kLastNewType, kNewTypeCount, kFirstNewType, kLastNewType, 47);
+    Log::Write("weapon types: San Andreas' weapon system widened - names to %d, and all %d switches "
+               "on weapon type (CWeapon::Fire, its noise, CWeapon::FireInstantHit, the gunshot, the "
+               "reload, the camera weapon mode that makes a scope and the bullet impact) now reach "
+               "type %d. %d new types are free (%d..%d); San Andreas' own 47 weapons are untouched",
+               kLastNewType, kDispatchCount, kLastNewType, kNewTypeCount, kFirstNewType, kLastNewType);
     gReady = true;
     return true;
 }

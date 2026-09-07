@@ -323,9 +323,18 @@ All run in throwaway containers; nothing is installed on the host.
     (`Camera::Process_AimWeapon` 0x52163D, `CHud::DrawCrossHairs` 0x58E1BD) are real type tests that `SNIPERRIFLE`
     misses too, so the donor and the new type behave identically. That leaves two, and both are answered by lending
     the function the donor's number for the length of the call and putting ours back on the way out — no
-    hand-assembled code: `CHud::DrawCrossHairs` (0x58E703, the branch that draws the scope's reticle; the
-    fall-through at 0x58E719 jumps past the `CROSSHAIR` lookup entirely) and `CPlayerPed::ProcessAnimGroups`
-    (0x6099D4/D9, which walk and run animations the player uses while holding it).
+    hand-assembled code: `CHud::DrawCrossHairs` and `CPlayerPed::ProcessAnimGroups` (0x6099D4/D9, which walk and run
+    animations the player uses while holding it).
+  - *The scope's reticle*, which took two goes. The branch that draws a weapon's own `CROSSHAIR` texture is 0x58E7A0,
+    reached from exactly three tests — `type == CAMERA` (0x58E6E0), `type == SNIPERRIFLE` (0x58E703) and a script
+    global (0x58E70C); anything else falls through to camera-mode tests at 0x58E719 and ends on the shared `siteM16`
+    sprite from `hud.txd`. Two things then have to be true. The type is re-read from the ped at 0x58E6D1, 0x58E6F9,
+    inside 0x58E7A0 *and* at 0x58E81A, so what is lent has to be the ped's stored field itself rather than a
+    substituted return value. And 0x58E81A builds the texture key from `GetWeaponInfo(type)->m_nModelId1`, so with
+    only the type lent the lookup lands in the *donor's* dictionary — SA's `sniper.txd`, which is not streamed in
+    while the player is holding a `v_laser`, giving a null `m_pRwDictionary` at 0x58E87D and nothing drawn. The
+    donor's record is therefore lent our model id for the same moment, and the reticle comes out of our own loaded
+    dictionary, from the `v_lasercrosshair` the importer wrote.
   - *Still wrong.* `Events::ComputeDamageResponse` (0x4C0327) and `Events::ComputeDamageAnim` (0x4B44BB) branch on
     `type >= 47` into the arm for the pseudo weapons, and that bound cannot be raised without sending `RAMMEDBYCAR`
     with it — so a ped shot with a new gun takes the right damage but plays the generic reactions. `CHud::DrawWeaponIcon`
