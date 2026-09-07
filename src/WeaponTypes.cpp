@@ -323,6 +323,24 @@ bool WidenDispatch(const Dispatch& d, Widened& w) {
     return true;
 }
 
+// Where a type ends up once the widening is in place: the address the CPU will jump to. Used only
+// to check the routing against the donor's, which is the assertion that would have caught a bad
+// table entry without anybody having to start the game.
+uint32_t ResolvedTarget(const Dispatch& d, const Widened& w, int type) {
+    const int i = type - d.firstType;
+    if (i < 0 || i > kLastNewType - d.firstType) return 0;
+    return d.indexAt ? w.jump[w.index[i]] : w.jump[i];
+}
+
+// The same question asked of San Andreas' own tables, which are left untouched by the widening.
+uint32_t VanillaTarget(const Dispatch& d, int type) {
+    const int i = type - d.firstType;
+    if (i < 0 || i > d.oldBound) return (uint32_t)d.expectedDefault;
+    return d.indexAt
+        ? patch::GetUInt(d.jumpTable + (uintptr_t)patch::GetUChar(d.indexTable + i) * 4)
+        : patch::GetUInt(d.jumpTable + (uintptr_t)i * 4);
+}
+
 // Point one new type at the case its donor uses. A donor outside the switch's span - a melee weapon
 // where the switch starts at PISTOL, say - keeps the default, which is what the donor itself gets.
 void RouteDispatch(const Dispatch& d, const Widened& w, int type, int donor) {
@@ -529,6 +547,112 @@ void __fastcall ProcessAnimGroupsHook(void* self, void*) {
     for (int i = 0; i < held; i++) *field[i] = saved[i];
 }
 
+// ---------------------------------------------------------------- the camera mode, set twice
+//
+// CPed::UpdateCameraWeaponModes is not the last word on which camera mode a weapon gets.
+// CTaskSimplePlayerOnFoot::ProcessPlayerWeapon works it out a second time, every frame the player
+// is on foot, and it does not switch - it is a chain of equality tests on the weapon type read at
+// 0x685B45, ending in a default:
+//
+//   0x685B4C  cmp eax, 0x23 (RLAUNCHER)     -> push 8
+//   0x685B59  cmp eax, 0x24 (RLAUNCHER_HS)  -> push 0x33
+//   0x685B7E  cmp eax, 0x22 (SNIPERRIFLE)   -> push 7
+//   0x685B87  cmp eax, 0x2B (CAMERA)        -> push 0x2E
+//   0x685B90  everything else               -> push 0x22, the M16 first-person mode
+//
+// then `call CCamera::SetPlayerWeaponMode`. A new type falls to the default, so the .308 was given
+// the M4's camera mode however correctly the switch above had routed it - and 0x22 is one of the
+// four values CHud::DrawCrossHairs tests at 0x58E4C3, which is what sent the frame into the block
+// that draws siteM16 four times. The reticle was never the bug; the mode was, and a wrong mode is
+// wrong in CCamera::Using1stPersonWeaponMode, StartTransition, UpdateSoundDistances and CamControl
+// too.
+//
+// The chain cannot be lengthened and the enclosing function must not be lent the donor's type -
+// ProcessPlayerWeapon is where the player's weapon is actually used, so it would fire the donor's
+// gun. So the tiny function at the end of it is hooked instead: when the player is holding one of
+// ours and the mode being set is that default, it is replaced with the mode the same chain gives
+// the donor. Only that one value is ever substituted, so every other caller of
+// SetPlayerWeaponMode - the attached camera, the drive-by task - is left exactly alone.
+
+constexpr uintptr_t kSetPlayerWeaponMode = 0x50BFB0;   // __thiscall(CCamera*, int mode, int, int)
+const uint8_t kSetPlayerWeaponModeOp[5] = { 0x66, 0x8B, 0x44, 0x24, 0x04 };
+
+// Where ProcessPlayerWeapon reads the weapon type, so the chain below is known to be the right one.
+constexpr uintptr_t kWeaponModeTypeAt = 0x685B45;
+const uint8_t kWeaponModeTypeOp[7] = { 0x8B, 0x84, 0x32, 0xA0, 0x05, 0x00, 0x00 };
+
+// Each arm of the chain: the `cmp eax, imm8` and the `push imm8` it leads to. Both operands are
+// read out of the executable rather than written down here, and both opcodes are checked first, so
+// the map is the game's own and not a copy of it that could drift.
+struct WeaponModeArm { uintptr_t cmpAt; uintptr_t pushAt; };
+const WeaponModeArm kWeaponModeArms[] = {
+    { 0x685B4C, 0x685B55 },
+    { 0x685B59, 0x685B7A },
+    { 0x685B7E, 0x685B83 },
+    { 0x685B87, 0x685B8C },
+};
+constexpr uintptr_t kWeaponModeDefaultPush = 0x685B90;
+constexpr int kWeaponModeArmCount = (int)(sizeof(kWeaponModeArms) / sizeof(kWeaponModeArms[0]));
+
+int gWeaponModeType[kWeaponModeArmCount];
+int gWeaponModeMode[kWeaponModeArmCount];
+int gWeaponModeDefault = -1;
+
+bool ReadWeaponModeChain() {
+    if (!BytesAre(kWeaponModeTypeAt, kWeaponModeTypeOp, sizeof(kWeaponModeTypeOp))) return false;
+    for (int i = 0; i < kWeaponModeArmCount; i++) {
+        const WeaponModeArm& arm = kWeaponModeArms[i];
+        if (patch::GetUChar(arm.cmpAt) != 0x83 || patch::GetUChar(arm.cmpAt + 1) != 0xF8) return false;
+        if (patch::GetUChar(arm.pushAt) != 0x6A) return false;
+        gWeaponModeType[i] = patch::GetUChar(arm.cmpAt + 2);
+        gWeaponModeMode[i] = patch::GetUChar(arm.pushAt + 1);
+    }
+    if (patch::GetUChar(kWeaponModeDefaultPush) != 0x6A) return false;
+    gWeaponModeDefault = patch::GetUChar(kWeaponModeDefaultPush + 1);
+    return true;
+}
+
+// What ProcessPlayerWeapon's chain answers for a given weapon type.
+int WeaponModeFor(int type) {
+    for (int i = 0; i < kWeaponModeArmCount; i++)
+        if (gWeaponModeType[i] == type) return gWeaponModeMode[i];
+    return gWeaponModeDefault;
+}
+
+SafetyHookInline& WeaponModeOriginal() { static SafetyHookInline h; return h; }
+bool gSaidWeaponMode = false;
+
+// The weapon type in the player's hands, or -1 when it is not one of ours.
+int HeldNewWeapon() {
+    typedef void* (__cdecl* FindPlayerPedFn)(int);
+    void* ped = reinterpret_cast<FindPlayerPedFn>(kFindPlayerPed)(-1);
+    if (!ped) return -1;
+    const int slot = *(const int8_t*)((uintptr_t)ped + kPedActiveSlot);
+    if (slot < 0 || slot >= kPedWeaponSlots) return -1;
+    const int type = *(const int32_t*)((uintptr_t)ped + kPedWeapons +
+                                       (unsigned)slot * kPedWeaponStride);
+    return (type >= kFirstNewType && type <= kLastNewType) ? type : -1;
+}
+
+void __fastcall SetPlayerWeaponModeHook(void* self, void*, int mode, int a, int b) {
+    const int mine = HeldNewWeapon();
+    if (mine >= 0 && gWeaponModeDefault >= 0 && mode == gWeaponModeDefault) {
+        const int donor = gDonor[mine - kFirstNewType];
+        const int want = donor >= 0 ? WeaponModeFor(donor) : mode;
+        if (want != mode) {
+            if (!gSaidWeaponMode) {
+                gSaidWeaponMode = true;
+                Log::Write("weapon types: camera mode stand-in - weapon type %d was being given "
+                           "mode 0x%X, the default ProcessPlayerWeapon hands anything it does not "
+                           "know; it gets 0x%X instead, which is what type %d gets",
+                           mine, mode, want, donor);
+            }
+            mode = want;
+        }
+    }
+    WeaponModeOriginal().thiscall<void>(self, mode, a, b);
+}
+
 bool gStandIns = false;
 
 // One inline hook, installed only while the function still begins with the bytes San Andreas ships,
@@ -650,6 +774,19 @@ int Add(const char* name, int donorType) {
     for (int i = 0; i < kDispatchCount; i++)
         RouteDispatch(kDispatch[i], gWidened[i], type, donorType);
 
+    // Having routed it, check it: resolve the new type through the widened tables exactly as the
+    // CPU will, resolve the donor through San Andreas' untouched ones, and say so if they differ.
+    // A wrong table entry is otherwise invisible until somebody plays the game and notices a rifle
+    // with the wrong camera, which is a slow way to find a one-byte mistake.
+    for (int i = 0; i < kDispatchCount; i++) {
+        const uint32_t ours = ResolvedTarget(kDispatch[i], gWidened[i], type);
+        const uint32_t theirs = VanillaTarget(kDispatch[i], donorType);
+        if (ours != theirs)
+            Log::Write("ERROR: weapon types: %s routes type %d to 0x%X but type %d to 0x%X - the "
+                       "new weapon will not behave as its donor here",
+                       kDispatch[i].what, type, ours, donorType, theirs);
+    }
+
     // The two functions that test the type against a fixed constant rather than switching on it.
     // Installed on the first gun and not before, so a game with no new weapons carries no hooks.
     if (!gStandIns) {
@@ -660,6 +797,18 @@ int Add(const char* name, int donorType) {
         HookStandIn(kProcessAnimGroups, kProcessAnimGroupsOp, sizeof(kProcessAnimGroupsOp),
                     reinterpret_cast<void*>(&ProcessAnimGroupsHook), AnimGroupsOriginal(),
                     "CPlayerPed::ProcessAnimGroups", "the player will walk with the wrong stance");
+        // The camera mode, which CTaskSimplePlayerOnFoot::ProcessPlayerWeapon rewrites every frame
+        // from a chain of equality tests whose default is the M4's. Read its four arms out of the
+        // executable first; if they are not what San Andreas ships, do not hook at all.
+        if (ReadWeaponModeChain())
+            HookStandIn(kSetPlayerWeaponMode, kSetPlayerWeaponModeOp, sizeof(kSetPlayerWeaponModeOp),
+                        reinterpret_cast<void*>(&SetPlayerWeaponModeHook), WeaponModeOriginal(),
+                        "CCamera::SetPlayerWeaponMode",
+                        "a new sniper rifle will zoom with the M4's camera mode and the wrong reticle");
+        else
+            Log::Write("weapon types: CTaskSimplePlayerOnFoot::ProcessPlayerWeapon's camera-mode "
+                       "chain at 0x685B4C is not what San Andreas ships, so it is left alone; a new "
+                       "sniper rifle will zoom with the M4's camera mode and the wrong reticle");
     }
 
     // Only worth an inline hook if one of the guns actually is a rifle; a pistol answers the same
