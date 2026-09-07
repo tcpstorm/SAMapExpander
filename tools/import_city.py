@@ -40,6 +40,7 @@ The GXT keys and the zone labels that name them go the same way, under a one-cha
 ("V", "L") because a key is only seven characters wide - readable where that fits, a hashed
 "V~XXXXX" where it does not - so that a donor game's text adds to San Andreas' strings rather
 than silently replacing 694 of them. The emitted american.gxt is the source table with its keys
+import time
 replaced, the .zon files are rewritten to match, and names.txt records both.
 --no-rename skips all of it, which is only safe for a source that clashes with nothing.
 Runs on plain Python; Pillow is used for the PNGs if it is installed, else a built-in writer.
@@ -2367,17 +2368,21 @@ def main():
     dat_name, ide_rel, ipl_rel, col_rel, texdict_rel, zon_rel = read_dat(src)
     prefix = "iii_" if dat_name.lower() == "gta3.dat" else "vc_"
     out = os.path.join(sa, "MapExpander", region)
-    # Empty the folders this writes before filling them again. A region's Ide/Ipl/Col keys are
-    # wildcards, so a file left behind by an earlier run of a different source - or of an earlier
-    # version of this script - is loaded as if it belonged, and an IDE that names models the
-    # archive no longer carries is the one thing the streamer does not survive.
+    # Stale files from an earlier run have to go, because a region's Ide/Ipl/Col keys are wildcards:
+    # a file left behind by a different source, or by an older version of this script, is loaded as
+    # if it belonged, and an IDE naming models the archive no longer carries is the one thing the
+    # streamer does not survive.
+    #
+    # They are swept at the END of the import, not here. Emptying the folders first and refilling
+    # them is fine right up until the run does not finish - and twice now it has not, once when the
+    # game held the archive open and once when the machine ran out of memory for the converter. Both
+    # left a region with its archive and its tiles and not one IDE, IPL or collision file, which the
+    # plugin loads without complaint and then places nothing at all: a city that is discovered,
+    # reported and invisible. Writing first and sweeping afterwards means a failed import leaves the
+    # region exactly as it was, which is always better than leaving it half destroyed.
+    run_started = time.time() - 1.0   # a second's grace for a coarse file-system clock
     for sub in (("tiles",) if lite else ("col", "ide", "ipl", "tiles")):
-        folder = os.path.join(out, sub)
-        os.makedirs(folder, exist_ok=True)
-        for name in os.listdir(folder):
-            path = os.path.join(folder, name)
-            if os.path.isfile(path):
-                os.remove(path)
+        os.makedirs(os.path.join(out, sub), exist_ok=True)
     print("source: %s (%s)%s" % (src, dat_name, " - lite: tiles, text, water and zones only" if lite else ""))
     print("output: %s" % out)
 
@@ -2987,6 +2992,21 @@ def main():
     lines += ["", "; [World] Gxt takes a comma-separated list; the keys in this file are tagged",
               "; \"%s\" so they add to San Andreas' strings instead of replacing them." % gxt_tag,
               "; Gxt = %samerican.gxt" % base]
+    # Everything this run meant to write is written, so anything older in those folders is a leftover
+    # from a previous import and goes now - see the note where run_started is taken. Reaching here at
+    # all is what makes the sweep safe: a run that died earlier swept nothing and left the region
+    # whole.
+    stale = 0
+    for sub in (("tiles",) if lite else ("col", "ide", "ipl", "tiles")):
+        folder = os.path.join(out, sub)
+        for name in os.listdir(folder):
+            path = os.path.join(folder, name)
+            if os.path.isfile(path) and os.path.getmtime(path) < run_started:
+                os.remove(path)
+                stale += 1
+    if stale:
+        print("swept %d file(s) left by an earlier import" % stale)
+
     with open(os.path.join(out, "region.ini"), "w") as f:
         f.write("\n".join(lines) + "\n")
     print("\nwrote %s - paste it into MapExpander.ini" % os.path.join(out, "region.ini"))
