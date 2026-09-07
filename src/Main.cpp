@@ -13,6 +13,7 @@
 #include "DebugKeys.h"
 #include "Gxt.h"
 #include "Zones.h"
+#include "Interiors.h"
 #include "ModelLimits.h"
 
 using namespace plugin;
@@ -33,6 +34,7 @@ public:
             Water::Install();
             WaterRender::Install();
             CityLoader::Install();
+            Interiors::Install();
         }
         if (Settings::world.fixPickupPositions || Settings::world.fixCarGeneratorPositions) PickupFix::Install();
         if (Settings::world.fixMeleeBeyondMap) MeleeFix::Install();

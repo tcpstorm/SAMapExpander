@@ -7,9 +7,11 @@
 #include <CMessages.h>
 #include <safetyhook.hpp>
 #include <windows.h>
+#include <string>
 #include "DebugKeys.h"
 #include "Settings.h"
 #include "Zones.h"
+#include "Interiors.h"
 #include "Gxt.h"
 #include "Log.h"
 
@@ -39,7 +41,13 @@ static void OnFrame() {
 
     Log::Write("F8: player at SA (%.1f, %.1f, %.1f)", pos.x, pos.y, pos.z);
     for (auto& r : Settings::regions)
-        Log::Write("    [%s] local (%.1f, %.1f)", r.name.c_str(), pos.x - r.originX, pos.y - r.originY);
+        Log::Write("    [%s] local (%.1f, %.1f, %.1f)", r.name.c_str(),
+                   pos.x - r.originX, pos.y - r.originY, pos.z - r.originZ);
+    // The local coordinates above are the ones an Interior<N> box is written in, so F8 in a corner
+    // of a room is how you find the numbers for one.
+    std::string interior;
+    Interiors::Describe(interior);
+    Log::Write("    interior: %s", interior.c_str());
     Zones::LogPlayerZone(pos.x, pos.y, pos.z);
 }
 

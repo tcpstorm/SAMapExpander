@@ -84,6 +84,7 @@ handy for placing an origin against a known landmark. Leave it off for normal pl
 | `WorldOriginZ` | height added to everything the region loads (water levels, zone boxes, IPL and inst coordinates) when the map was placed higher or lower than in its own game; default 0 |
 | `WorldMinX/MaxX/MinY/MaxY` | alternative to the origin: extent in SA space; the origin becomes its centre |
 | `Img`, `Ide`, `Ipl`, `Col` | the region's own map assets — see *Loading a city's own assets* |
+| `Interior<N>` | `area, minX, minY, minZ, maxX, maxY, maxZ [, name]` — one box, in the region's own coordinates, that puts the player in that interior; see *Interiors* |
 
 Vice City as shipped in the example: 8×8 tiles of 500 covering local −2000..2000, origin
 `5998.5, 1052.5` (VC is placed by `SA = VC + offset` in the VC2SAMP conversion, so its landmass spans
@@ -191,6 +192,57 @@ IPL in one paragraph: "item placement" is the map's placement data — `inst` ar
 objects themselves, `cull` invisible behaviour boxes (interior lighting, no-rain, mirrors, tunnels),
 `pick` pickups, `enex` interior doorway markers, `tcyc` local weather/lighting boxes, `jump` stunt jumps,
 `cars` parked-car generators, `grge` garages, `auzo` ambient-sound areas, `zone` area names.
+
+## Interiors
+
+Vice City and San Andreas hide interiors with the same mechanism, because San Andreas inherited the
+code. Every entity carries a one-byte *area code* — the third column of an IPL `inst` line, which
+`CFileLoader::LoadObjectInstance` stores at `CEntity + 0x2F` (0x538353 takes only the low byte; the
+higher bits of that column are unrelated flags, which is why the loader can keep setting bit 512
+there). The renderer then draws an entity only when the code matches, in
+`CRenderer::SetupEntityVisibility` at 0x554476:
+
+```
+mov al,  [esi+0x2F]     ; entity->m_nAreaCode
+mov ecx, [0xB72914]     ; CGame::currArea
+cmp edx, ecx  / je  visible
+cmp al,  0xD  / jne hidden      ; 13 means "everywhere", in both games
+```
+
+`CRenderer::SetupBigBuildingVisibility` (0x55466A) and `CStreaming::RemoveBuildingsNotInArea`
+(0x4094EC) test the same two values and the same 13.
+
+Vice City writes real area codes into its own IPLs — 1 Ocean View hotel, 2 Vercetti estate, 3 the
+bank, 4 North Point Mall, 5 Pole Position, 6 Ken Rosenberg's office, 7 Café Robina, 8 the concert
+hall, 9 the studio, 10 the rifle range, 11 the biker bar, 12 the police station, 13 *everywhere*,
+14/15/16 the three stadium events, 17 the Malibu Club, 18 the print works. So the column carries
+across untouched and the interiors are already loaded, already placed and already correctly hidden.
+That is what black rectangles in doorways are: the room behind the opening is switched off.
+
+Unlike San Andreas, which parks its interiors in an unused corner of the world and teleports you
+there, Vice City builds them **inside the real buildings at real world coordinates**. Nothing has to
+be moved, and nothing leaks out: the building shell is in the way, and the area code covers the
+doorway. Collision is not area-gated anywhere in San Andreas — only rendering and streaming read
+`currArea` — so an interior is solid whether or not it is drawn; that is true in Vice City too, and
+harmless for the same reason, because the only way to reach the collision is to be inside.
+
+The one missing piece is the switch. Vice City changed the area from its mission script when the
+player crossed a trigger at a door, and that script is not here; VC's data records nothing about
+where its doorways are. `Interior<N>` is that switch, one box per room, and `src/Interiors.cpp`
+does what script command 04BB does — store `CGame::currArea` and call
+`CStreaming::RemoveBuildingsNotInArea` — from a hook on `CEntryExitManager::Update`, so it runs in
+the same frame slot as SA's own "has the player entered an interior" check and backs off entirely
+whenever SA owns the area. Boxes for the same area may be repeated for an interior that is not one
+room. Entry uses the box as written, exit the box plus two units, so a doorway cannot flicker.
+
+Entry/exit markers were the alternative and are the wrong tool here: `enex` exists to *teleport* the
+player to an interior that lives somewhere else, and these interiors are already where the player is
+standing, so the marker would be a fade to black that puts them back where they were — and every
+door would need a hand-written position and heading, which is how a player ends up inside a wall.
+The `enex` section is still loaded from region IPLs by `IplLoader` for anyone who wants that
+behaviour. Vice City's `cull.ipl` is a red herring: cull zones control fading, wanted-level drops
+and camera behaviour, not interiors, and San Andreas' dialect of the section differs anyway
+(III/VC write centre + min + max, SA writes centre + length/bottom/width).
 
 ## Tools
 
