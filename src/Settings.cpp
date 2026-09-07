@@ -127,6 +127,162 @@ namespace Settings {
         return true;
     }
 
+    // ------------------------------------------------------------------ packing regions together
+    //
+    // San Andreas files every static entity into a grid of exactly 120 x 120 sectors, and that
+    // count is fixed: the index that reaches the array is clamped with `cmp reg, imm8`, three bytes
+    // with a sign-extended immediate, at every one of the 136 sites that do it, so the largest
+    // index the code can express is 127 and the grid can never be more than 128 a side
+    // (tools/sector_array_sites.txt is the whole enumeration). What WorldSectors can do is stretch
+    // those 120 cells over whatever ground is in use - and the wider that ground, the bigger each
+    // cell, and the more entities every per-frame scan over a cell walks. The cost is the square of
+    // the cell: sectors of 128 units hold 6.5 times what a vanilla 50-unit one does.
+    //
+    // So the one thing left that decides the frame cost of a region is how far apart the maps are,
+    // and that is a placement question, not an engine one. This closes the gap: each region is
+    // moved up against the ground already in use, on whichever of the four sides leaves the world
+    // squarest, and the world grid then has less to cover.
+    //
+    // Choosing the side is what earns the most. Liberty City off the west coast with Vice City to
+    // the east spreads the world over 15348 units on one axis and only 6052 on the other, and the
+    // grid is square because one pair of constants serves both, so it pays for the wider one twice:
+    // 128-unit sectors. The same city to the north sits alongside Vice City instead of opposite it
+    // and the world is 10500 a side - 88-unit sectors, less than half the scan cost, for a city
+    // that is exactly as far from Los Santos either way.
+    //
+    // Off by default, because it moves the map out from under anything that remembers where it was:
+    // pickups and parked cars in a savegame, screenshots, teleport coordinates, and an SA-MP
+    // server's idea of where the region's buildings are. The log says what it would save so the
+    // choice can be made on a number.
+    void PackRegions(bool apply) {
+        if (regions.empty()) return;
+
+        struct Box { float x0, x1, y0, y1; };
+        auto boxOf = [](const MapRegion& r) {
+            return Box{ r.TileWest(0), r.TileWest(r.tilesX), r.TileNorth(r.tilesY), r.TileNorth(0) };
+        };
+
+        // San Andreas' own map is the fixed centre everything else packs around.
+        Box used{ -3000.0f, 3000.0f, -3000.0f, 3000.0f };
+        Box loose = used;
+        for (const MapRegion& r : regions) {
+            Box b = boxOf(r);
+            loose.x0 = b.x0 < loose.x0 ? b.x0 : loose.x0;
+            loose.x1 = b.x1 > loose.x1 ? b.x1 : loose.x1;
+            loose.y0 = b.y0 < loose.y0 ? b.y0 : loose.y0;
+            loose.y1 = b.y1 > loose.y1 ? b.y1 : loose.y1;
+        }
+
+        const float gap = world.regionGap < 0.0f ? 0.0f : world.regionGap;
+        std::vector<std::pair<float, float>> moved;   // the packed origin of each region, in order
+        for (const MapRegion& r : regions) {
+            Box b = boxOf(r);
+            const float w = b.x1 - b.x0, h = b.y1 - b.y0;
+
+            // Already inside the ground in use: leave it alone. Someone who drops a small map into
+            // the middle of San Andreas means it.
+            if (b.x0 >= used.x0 && b.x1 <= used.x1 && b.y0 >= used.y0 && b.y1 <= used.y1) {
+                moved.push_back({ r.originX, r.originY });
+                continue;
+            }
+
+            // Which side of San Andreas the author put it on, by the largest overhang. Only used to
+            // break ties, so that a region that is already where packing would put it anyway stays
+            // pointing the way it was written.
+            const float over[4] = { b.x1 - 3000.0f, -3000.0f - b.x0, b.y1 - 3000.0f, -3000.0f - b.y0 };
+            int authorSide = 0;
+            for (int s = 1; s < 4; s++) if (over[s] > over[authorSide]) authorSide = s;
+
+            // Try all four sides and keep the one that leaves the smallest square, since the grid
+            // is square and pays for whichever axis is widest. Along the other axis the region is
+            // free to sit anywhere, so try two: centred on San Andreas, which keeps a city looking
+            // like it was put next to the map, and centred on everything placed so far, which is
+            // what packs tightest once there is more than one region out there.
+            float bestX = r.originX, bestY = r.originY, bestSpan = -1.0f;
+            int bestSide = 0, bestAlign = 0;
+            Box bestUsed = used;
+            const float centre[2][2] = { { 0.0f, 0.0f },
+                                         { (used.x0 + used.x1) * 0.5f, (used.y0 + used.y1) * 0.5f } };
+            for (int align = 0; align < 2; align++)
+            for (int side = 0; side < 4; side++) {
+                Box p = b;
+                switch (side) {
+                    case 0: p.x0 = used.x1 + gap; p.y0 = centre[align][1] - h * 0.5f; break;      // east
+                    case 1: p.x0 = used.x0 - gap - w; p.y0 = centre[align][1] - h * 0.5f; break;  // west
+                    case 2: p.y0 = used.y1 + gap; p.x0 = centre[align][0] - w * 0.5f; break;      // north
+                    default: p.y0 = used.y0 - gap - h; p.x0 = centre[align][0] - w * 0.5f; break; // south
+                }
+                p.x1 = p.x0 + w;
+                p.y1 = p.y0 + h;
+                Box u{ p.x0 < used.x0 ? p.x0 : used.x0, p.x1 > used.x1 ? p.x1 : used.x1,
+                       p.y0 < used.y0 ? p.y0 : used.y0, p.y1 > used.y1 ? p.y1 : used.y1 };
+                const float span = (u.x1 - u.x0) > (u.y1 - u.y0) ? (u.x1 - u.x0) : (u.y1 - u.y0);
+                // Ties: the author's side first, then the San Andreas alignment, then the fixed
+                // order east, west, north, south - so the same ini always produces the same world.
+                const bool better = bestSpan < 0.0f || span < bestSpan - 0.5f ||
+                    (span < bestSpan + 0.5f &&
+                     ((side == authorSide && bestSide != authorSide) ||
+                      (side == bestSide && align < bestAlign)));
+                if (better) {
+                    bestSpan = span;
+                    bestSide = side;
+                    bestAlign = align;
+                    bestX = r.originX + (p.x0 - b.x0);
+                    bestY = r.originY + (p.y0 - b.y0);
+                    bestUsed = u;
+                }
+            }
+            moved.push_back({ bestX, bestY });
+            used = bestUsed;
+        }
+
+        const float looseSpan = (loose.x1 - loose.x0) > (loose.y1 - loose.y0)
+                              ? (loose.x1 - loose.x0) : (loose.y1 - loose.y0);
+        const float packedSpan = (used.x1 - used.x0) > (used.y1 - used.y0)
+                               ? (used.x1 - used.x0) : (used.y1 - used.y0);
+        // 120 is the sector count the grid has and cannot exceed by more than 8; see the comment
+        // above and tools/sector_array_sites.txt.
+        const float looseCell = looseSpan / 120.0f, packedCell = packedSpan / 120.0f;
+
+        // Packing that does not shrink the world is not packing, it is just moving the map about;
+        // a single region already tucked in closer than RegionGap would come out of the loop above
+        // very slightly worse off. Leave it where the author put it.
+        if (packedSpan >= looseSpan - 1.0f) {
+            if (apply)
+                Log::Write("regions: already as tight as packing would make them (%.0f units of "
+                           "world a side, %.0f-unit sectors); left where their ini puts them",
+                           looseSpan, looseCell);
+            return;
+        }
+
+        if (!apply) {
+            Log::Write("regions: left where their ini puts them, which needs %.0f units of world a "
+                       "side and so %.0f-unit sectors. Packed against the map they would need "
+                       "%.0f, giving %.0f-unit sectors and %.0f%% of the per-frame sector scan "
+                       "cost%s",
+                       looseSpan, looseCell, packedSpan, packedCell,
+                       100.0f * (packedCell * packedCell) / (looseCell * looseCell),
+                       world.packRegions ? "" : " ([World] PackRegions = 1 does it, and moves the "
+                       "maps with everything that remembers where they were - savegame pickups and "
+                       "parked cars, teleport coordinates, screenshots)");
+            return;
+        }
+
+        for (size_t i = 0; i < regions.size(); i++) {
+            MapRegion& r = regions[i];
+            if (r.originX == moved[i].first && r.originY == moved[i].second) continue;
+            Log::Write("[%s] packed: origin (%.1f, %.1f) -> (%.1f, %.1f)", r.name.c_str(),
+                       r.originX, r.originY, moved[i].first, moved[i].second);
+            r.originX = moved[i].first;
+            r.originY = moved[i].second;
+        }
+        Log::Write("regions: packed against the map - the world is %.0f units a side instead of "
+                   "%.0f, so the fixed 120x120 sector grid gets %.0f-unit cells instead of %.0f "
+                   "and every per-frame sector scan walks %.0f%% of what it did",
+                   packedSpan, looseSpan, packedCell, looseCell,
+                   100.0f * (packedCell * packedCell) / (looseCell * looseCell));
+    }
+
     void Load() {
         regions.clear();
         // Field by field: WorldSettings holds a std::vector, so a brace list would silently leave
@@ -149,6 +305,8 @@ namespace Settings {
         world.dummyPoolLimit = -1;         // vanilla 2500, same
         world.ptrNodePoolLimit = -1;       // vanilla 70000 plus what the regions need
         world.extendWorldSectors = true;
+        world.packRegions = false;         // leave every region exactly where its ini puts it
+        world.regionGap = 500.0f;
         world.linkRegionLods = true;
         world.dropUnlinkedLods = true;
         world.regionWeapons = true;
@@ -187,6 +345,8 @@ namespace Settings {
             world.dummyPoolLimit = w->GetInt("DummyPoolLimit", -1);
             world.ptrNodePoolLimit = w->GetInt("PtrNodePoolLimit", -1);
             world.extendWorldSectors = w->GetBool("ExtendWorldSectors", true);
+            world.packRegions = w->GetBool("PackRegions", false);
+            world.regionGap = w->GetFloat("RegionGap", 500.0f);
             world.linkRegionLods = w->GetBool("LinkRegionLods", true);
             world.dropUnlinkedLods = w->GetBool("DropUnlinkedLods", true);
             world.regionWeapons = w->GetBool("RegionWeapons", true);
@@ -327,6 +487,17 @@ namespace Settings {
             for (auto& f : r.iplFiles) Log::Write("[%s] ipl: %s", r.name.c_str(), f.c_str());
             regions.push_back(r);
         }
+
+        // Last, because it rewrites the origins every other module is about to read: the tiles, the
+        // zones, the water, the interiors and every inst line all sit at origin + something. Never
+        // under SA-MP, where the server places the region's buildings from its own coordinates and
+        // a client that quietly moved the map would draw the radar somewhere the buildings are not.
+        const bool underSaMp = RunningUnderSaMp();
+        if (world.packRegions && underSaMp)
+            Log::Write("regions: PackRegions is on, but under SA-MP the server places the region's "
+                       "buildings from its own coordinates and a client that moved the map on its "
+                       "own would draw the radar where the buildings are not; left as the ini says");
+        PackRegions(world.packRegions && !underSaMp);
     }
 
     bool RunningUnderSaMp() {
