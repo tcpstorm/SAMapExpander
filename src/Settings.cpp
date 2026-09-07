@@ -121,6 +121,7 @@ namespace Settings {
             world.ptrNodePoolLimit = w->GetInt("PtrNodePoolLimit", -1);
             world.extendWorldSectors = w->GetBool("ExtendWorldSectors", true);
             world.linkRegionLods = w->GetBool("LinkRegionLods", true);
+            for (const std::string& s : SplitPaths(w->GetString("DebugSkipModels", ""))) world.skipRenderModels.push_back(atoi(s.c_str()));
             if (world.compressedPositionScale <= 0.0f) world.compressedPositionScale = 4.0f;
             world.gxtFiles = SplitPaths(w->GetString("Gxt", ""));
             world.gxtLogMisses = w->GetBool("GxtLogMisses", false);

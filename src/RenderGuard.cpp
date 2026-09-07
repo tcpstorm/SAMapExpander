@@ -78,6 +78,12 @@ void __cdecl Hooked_RenderEntity(void* entity, float distance) {
     // entity still has an RwObject while its model reads not-loaded, the object is stale, so do not
     // draw it. This is a safe skip at the top of the function, not stack surgery mid-fault.
     const uint16_t model = *(const uint16_t*)((const uint8_t*)entity + 0x22);
+
+    // A model named in DebugSkipModels is refused outright - a workaround for one that reliably
+    // crashes the render (its RwObject is not safe to draw) while the cause is still being found.
+    for (int skip : Settings::world.skipRenderModels)
+        if (skip == model) return;
+
     const void* rwObject = *(void* const*)((const uint8_t*)entity + 0x18);
     if (rwObject && model < ModelLimits::TotalCount()) {
         const uint32_t loadState = *(const uint32_t*)(ModelLimits::StreamingInfo() +

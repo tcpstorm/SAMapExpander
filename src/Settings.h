@@ -55,6 +55,7 @@ struct WorldSettings {
     int ptrNodePoolLimit;                  // CPools' sector pointer-node pool; < 0 = vanilla + what the regions need
     bool extendWorldSectors;               // double what the static world grids cover, so a region beyond +/-3000 renders
     bool linkRegionLods;                   // rebuild HD->LOD links from the source game's naming rule; off = LODs draw as plain objects
+    std::vector<int> skipRenderModels;     // remapped model ids the render guard refuses to draw (a crash workaround while a model is diagnosed)
     bool debug;                      // verbose log, F8 diagnostics, water render statistics
 };
 
