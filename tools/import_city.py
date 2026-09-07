@@ -2083,22 +2083,25 @@ def rename_zon(text, renames):
 
 # ---------------------------------------------------------------- weapons
 
-# Which San Andreas weapon each Vice City gun takes over, and why that one.
+# Which San Andreas weapon each Vice City gun is paired with, and why that one.
 #
-# San Andreas cannot be given a genuinely new weapon type. The name in column A of weapon.dat is
-# looked up in a fixed table of 49 char* at 0x8D6150, the records live in aWeaponInfo[80] at
-# 0xC8AAB8 with the skill variants packed in directly behind the 47 real weapons, and - the part
-# that actually decides it - every switch on weapon type in the executable (CWeapon::Fire,
-# CWeapon::FireInstantHit, the firing audio) ends in "ja default". A new type would draw in the
-# player's hand and then do nothing when fired, in silence. So each imported gun is written over
-# the San Andreas weapon nearest to it in class, slot and role, and the cost is that San Andreas'
-# own weapon changes everywhere, not only inside the region.
+# Under the plugin's default RegionWeaponMode = Add the pairing is a DONOR, not a replacement: the
+# Vice City gun becomes a weapon type of its own (San Andreas has ten free records at the end of
+# aWeaponInfo, 70..79, and src/WeaponTypes.cpp widens the name table and the five switches on weapon
+# type to reach them), and the donor only says which case in each of those switches it should land
+# in and which of San Andreas' columns it should inherit - the slot, the animation group, the target
+# range, the skill thresholds. San Andreas' own weapon is left exactly as it was.
 #
-# `default` says whether the line is written live or commented out. Live are the guns Vice City
-# has and San Andreas simply does not, over San Andreas weapons that give up least. Commented out
-# are the ones whose San Andreas counterpart is worth more than the import - the knife with its
-# stealth kill, the katana - and the ones where both games have the same gun under two names, so
-# the swap buys nothing but a different mesh.
+# Under RegionWeaponMode = Replace the same file means the older thing: the gun is written over the
+# donor, and that changes the donor for the whole game.
+#
+# So the donor is chosen for closeness of class, slot and role, which is what both modes want.
+#
+# `default` says whether the line is written live or commented out. Live are the ten guns Vice City
+# has and San Andreas simply does not - which is exactly the ten free type numbers. Commented out
+# are the two where both games have the same gun under two names, so a new type would buy nothing
+# but a different mesh. (Under Replace the four melee lines trade away the katana, the knife, the
+# shovel and the pool cue; comment them out if you are running that mode.)
 VC_WEAPON_MAP = [
     ("Python", "DESERT_EAGLE", True,
      "Vice City Python .357 - San Andreas' Desert Eagle is a re-skinned Python already: same fire "
@@ -2117,17 +2120,17 @@ VC_WEAPON_MAP = [
     ("LaserScope", "COUNTRYRIFLE", True,
      "Vice City laser-sighted sniper rifle - over the country rifle rather than the sniper rifle, "
      "so the sniper rifle San Andreas' missions hand out stays as it was"),
-    ("Machete", "KATANA", False,
-     "Vice City machete - the katana is a better weapon and a San Andreas landmark; uncomment to "
-     "trade it"),
-    ("Cleaver", "KNIFE", False,
-     "Vice City cleaver - the knife carries San Andreas' stealth kill, which is worth more than "
-     "the mesh"),
-    ("Hammer", "SHOVEL", False,
+    ("Machete", "KATANA", True,
+     "Vice City machete - a long blade swung one-handed, so it takes the katana's slot, animation "
+     "group and combo"),
+    ("Cleaver", "KNIFE", True,
+     "Vice City cleaver - the knife's slot and combo, though the stealth kill belongs to the knife "
+     "and stays with it"),
+    ("Hammer", "SHOVEL", True,
      "Vice City hammer - both are blunt tools on the baseball-bat combo"),
-    ("ScrewDriver", "POOLCUE", False,
-     "Vice City screwdriver - nothing in San Andreas stabs except the knife, so this is a poor "
-     "match either way"),
+    ("ScrewDriver", "POOLCUE", True,
+     "Vice City screwdriver - nothing in San Andreas stabs except the knife, so the pool cue's "
+     "one-handed combo is the closest there is"),
     ("Uzi", "MICRO_UZI", False,
      "Vice City Uzi - the same weapon as San Andreas' micro uzi with a different mesh"),
     ("Colt45", "PISTOL", False,
@@ -2265,7 +2268,11 @@ def write_weapons(out, src, sa, renames, prefix):
         model = renamed(ide[1], ".dff")
         fire = tok[VC_COL["fire"]].upper()
         melee = fire == "MELEE"
-        field = [sa_name,
+        # "PYTHON/DESERT_EAGLE": the name the new weapon type answers to, then the San Andreas
+        # weapon it is paired with. Under RegionWeaponMode = Add that pairing is only a donor -
+        # whose code paths, slot, animation group and unstated columns the new gun borrows - and San
+        # Andreas' own weapon is untouched. Under Replace the new gun is written over it.
+        field = ["%s/%s" % (source_name.upper(), sa_name),
                  fire if fire in SA_FIRE_TYPES else "*",
                  "*",                      # target range: San Andreas' own; Vice City has one range column
                  tok[VC_COL["range"]],
@@ -2304,23 +2311,31 @@ def write_weapons(out, src, sa, renames, prefix):
                 "weap\n" + "\n".join(ide_lines) + "\nend\n")
 
     header = (
-        "# The guns Vice City has and San Andreas does not, each written over the San Andreas\n"
-        "# weapon nearest to it. Written by tools/import_city.py; see the Weapons note in\n"
-        "# MapExpander.ini for what the columns mean.\n"
+        "# The guns Vice City has and San Andreas does not. Written by tools/import_city.py; see\n"
+        "# the Weapons note in MapExpander.ini for what the columns mean.\n"
         "#\n"
-        "# THIS CHANGES THOSE WEAPONS FOR THE WHOLE GAME, not only inside the region. There is one\n"
-        "# weapon table and it is global, so the first line below makes the Desert Eagle a Python\n"
-        "# in Los Santos as well as in Vice City. Comment out anything you would rather keep.\n"
+        "# Column A is NEWNAME/SAWEAPON. Under the plugin's default RegionWeaponMode = Add the\n"
+        "# NEWNAME becomes a weapon type of its own and SAWEAPON is only the donor it borrows its\n"
+        "# behaviour and its unstated columns from - San Andreas' Desert Eagle stays a Desert Eagle\n"
+        "# and the Python is a new gun beside it. There are exactly ten free weapon types, which is\n"
+        "# exactly how many live lines are below.\n"
         "#\n"
-        "# A column of * keeps what San Andreas already had. Everything Vice City has no column\n"
-        "# for is left that way: the target range, the weapon slot, the animation group, the skill\n"
-        "# levels and their accuracy and move speed, and the animation frame numbers - those last\n"
-        "# address San Andreas' own animations, which Vice City's numbers do not.\n"
+        "# UNDER RegionWeaponMode = Replace THE SAME FILE MEANS SOMETHING ELSE: each gun is written\n"
+        "# over its donor, for the whole game and not only inside the region, so the first line\n"
+        "# would make the Desert Eagle a Python in Los Santos too. In that mode you probably want\n"
+        "# the four melee lines commented out, since they trade the katana, the knife, the shovel\n"
+        "# and the pool cue away.\n"
+        "#\n"
+        "# A column of * keeps what was already there - the donor's under Add, San Andreas' own\n"
+        "# under Replace. Everything Vice City has no column for is left that way: the target\n"
+        "# range, the weapon slot, the animation group, the skill levels and their accuracy and\n"
+        "# move speed, and the animation frame numbers - those last address San Andreas' own\n"
+        "# animations, which Vice City's numbers do not.\n"
         "#\n"
         "# What does carry over: the mesh, the weapon range, the clip size, the damage, the fire\n"
         "# offset, and for a projectile its speed, radius, lifespan and spread.\n"
         "#\n"
-        "# name          fire type  target  range  model  model2 slot anim clip dmg  offset x y z  flags\n")
+        "# name/donor    fire type  target  range  model  model2 slot anim clip dmg  offset x y z  flags\n")
     with open(os.path.join(out, "weapons.dat"), "w", encoding="latin-1") as f:
         f.write(header + "\n".join(lines) + "\n")
 
@@ -2942,14 +2957,17 @@ def main():
     # rather than replacing them, and two regions no longer take each other's place either. It is
     # optional all the same: the zone names a player actually reads are in zone_names.txt, and
     # the rest of a donor game's text is only worth loading if something is going to ask for it.
-    # Left commented out on purpose. Everything else a region brings exists only inside the region;
-    # this one rewrites San Andreas' own weapon table, which is global, so it is the one key a
-    # player has to agree to rather than be given.
+    # The Weapons key is written live now that [World] RegionWeaponMode defaults to Add: the guns
+    # become weapon types of their own and San Andreas' own weapons are not touched. Set that key to
+    # Replace and the same file writes over them instead, which is the version a player has to agree
+    # to rather than be given - so the note is here where it will be read.
     if weapons_out:
-        lines += ["", "; The source game's guns over the San Andreas weapons nearest to them. This",
-                  "; changes those weapons for the WHOLE GAME and not only inside the region -",
-                  "; read the file, it says which line trades what.",
-                  "; Weapons = %s%s" % (base, weapons_out)]
+        lines += ["", "; The source game's guns, added as weapon types of their own alongside San",
+                  "; Andreas' - its own weapons are unchanged. If [World] RegionWeaponMode is set",
+                  "; to Replace instead, this same file writes them OVER the nearest San Andreas",
+                  "; weapon, for the whole game and not only inside the region; the file says which",
+                  "; line would trade what.",
+                  "Weapons = %s%s" % (base, weapons_out)]
     lines += ["", "; [World] Gxt takes a comma-separated list; the keys in this file are tagged",
               "; \"%s\" so they add to San Andreas' strings instead of replacing them." % gxt_tag,
               "; Gxt = %samerican.gxt" % base]

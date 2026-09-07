@@ -85,7 +85,7 @@ handy for placing an origin against a known landmark. Leave it off for normal pl
 | `WorldMinX/MaxX/MinY/MaxY` | alternative to the origin: extent in SA space; the origin becomes its centre |
 | `Img`, `Ide`, `Ipl`, `Col` | the region's own map assets — see *Loading a city's own assets* |
 | `Interior<N>` | `area, minX, minY, minZ, maxX, maxY, maxZ [, name]` — one box, in the region's own coordinates, that puts the player in that interior; see *Interiors* |
-| `Weapons` | the source game's guns written over the San Andreas weapon types nearest to them — see *Weapons and pickups*. Changes those weapons for the whole game, so the importer writes the key commented out. Ignored under SA-MP. |
+| `Weapons` | the source game's guns, added as weapon types of their own alongside San Andreas' (or written over them, under `RegionWeaponMode = Replace`). Ignored under SA-MP. |
 | `Pickups` | the world pickups the source game's main script leaves around its map, in the region's own coordinates. Ignored under SA-MP. |
 
 Vice City as shipped in the example: 8×8 tiles of 500 covering local −2000..2000, origin
@@ -110,6 +110,7 @@ SA x 4171..6963, y −778..2626).
 | `FreeModelIdStart`, `FreeModelIdEnd` | 18631, `ModelIdLimit`−1 | model ids region IDEs may claim |
 | `AtomicModelInfoLimit` | grows with `ModelIdLimit` (14000 stock) | capacity of SA's atomic model-info store; set only if another limit adjuster changed it |
 | `RegionWeapons` | 1 | master switch for every region's `Weapons` file. Skipped under SA-MP. |
+| `RegionWeaponMode` | `Add` | `Add` gives the region's guns weapon types of their own and leaves San Andreas' forty-seven exactly as they were (ten new types is the hard limit); `Replace` writes them over the nearest San Andreas weapon, which changes that weapon for the whole game |
 | `RegionPickups` | 1 | master switch for every region's `Pickups` file. Skipped under SA-MP. |
 | `PickupReserve` | 200 | how many of SA's 620 pickup slots to keep back for its own script, which asks for them after the regions are placed |
 | `Debug` | 0 | verbose log, F8 diagnostics, water render statistics |
@@ -290,17 +291,39 @@ All run in throwaway containers; nothing is installed on the host.
 - Audio zone boxes and occluders are also `int16 / 8` and stay limited to ±4096.
 - Every streamable resource shares one id space: DFF 0 (20000), TXD 20000 (5000), COL 25000 (255), IPL 25255 (256), DAT 25511 (64), IFP 25575 (180), RRR 25755 (475), SCM 26230 (82), plus 4 list-head sentinels — 26316 `CStreamingInfo` entries. `ModelIdLimit` shifts every base above the DFF range and reallocates the three arrays that size with it (`ms_aInfoForModel`, `ms_modelInfoPtrs`, `ms_atomicModelInfoStore`); the streaming lists link entries with `int16` indices, hence the 26400 ceiling. The other model-info stores keep their vanilla capacities (damage 70, time 169, weapon 51, clump 92, vehicle 212, ped 278, 2dfx 100) and none of them is bounds-checked.
 
-- **San Andreas cannot be given a new weapon type.** `CWeaponInfo::FindWeaponType` (0x743D10) looks a weapon.dat
-  name up in a fixed table of 49 `char*` at 0x8D6150 and answers 0 — `UNARMED` — for anything else, so an
-  unknown name silently overwrites unarmed combat rather than being skipped. The records are `aWeaponInfo[80]`
-  at 0xC8AAB8, `0x70` each, and `GetWeaponInfo` (0x743C60) indexes them as `type + {POOR 25, STD 0, PRO 36, COP 47}`
-  with no bounds check, so the eleven skill-varied weapons (types 22–32) sit immediately behind the 47 real ones and
-  there is no free index. Only 54 instructions name the array, so relocating it is easy next to `ModelIdLimit`'s 1407 —
-  but every switch keyed on weapon type (`CWeapon::Fire` 0x742880, `CWeapon::FireInstantHit` 0x740C85, the firing
-  audio at 0x504F9F) is a compare against the vanilla maximum followed by `ja default`, so a new type would draw
-  in the hand and do nothing when fired, in silence. Hence *Weapons* replaces rather than adds.
+- **San Andreas takes ten new weapon types, and no more.** `src/WeaponTypes.cpp` widens the weapon system so a gun
+  can be added rather than written over one of San Andreas' own; `RegionWeaponMode = Add` is the default and does it.
+  - *Type numbers.* `aWeaponInfo` at 0xC8AAB8 is eighty records of `0x70` — `CWeaponInfo::Initialise` (0x5BF750) walks
+    0xC8AABC to 0xC8CDBC, which is 80 × 0x70 exactly — and `GetWeaponInfo` (0x743C60) indexes it as
+    `type + {POOR 25, STD 0, PRO 36, COP 47}` with no bounds check. San Andreas fills 0–46 (the real weapons), 47–57
+    (POOR for types 22–32), 58–68 (PRO for the same) and 69 (COP for the pistol); **70–79 are never written**, and
+    `CWeaponInfo::LoadWeaponData` (0x5BE9C2) computes exactly that index itself, so no relocation of the array and no
+    repointing of the skill offsets is needed. Nothing lower is usable: `eWeaponType` does not stop at 46 — 47 is
+    `LAST_WEAPON`, 48 `ARMOUR`, and 49–58 are the pseudo weapons the damage system uses for `RAMMEDBYCAR`,
+    `EXPLOSION`, `DROWNING` and the rest.
+  - *Names.* `CWeaponInfo::FindWeaponType` (0x743D10) walks a fixed table of 49 `char*` at 0x8D6150 and answers 0 —
+    `UNARMED` — for anything else, so an unknown name silently overwrites unarmed combat. Exactly one instruction
+    names that table (0x743D20), so it is copied to an 80-entry array on the heap and the loop bound `cmp esi, 0x30`
+    (0x743D36) is raised.
+  - *The switches.* The reported blocker was half right. `CWeapon::Fire` (bound 0x742461, types 16–43),
+    its tail switch (0x742874, 16–40), `CWeapon::FireInstantHit` (0x740C75, 22–38), the gunshot audio (0x504F96,
+    22–45) and the reload audio (0x5036F2, 22–34) really are keyed on the **weapon type**, not on the fire type from
+    weapon.dat column B, and really do end in `ja default`. But each is a jump table, and a jump table can be made
+    longer: both tables are copied to the heap with room for types up to 79, the `cmp` bound is raised, and the two
+    `disp32` operands are repointed, so a new type is routed into its donor's case. Only `CWeapon::Fire` is fatal on
+    its own — its default is the case `ROCKET` takes, which fires nothing. `CPickup::Update` (0x457A3B) also refuses a
+    weapon pickup whose type is 47 or above, and `CWeapon::IsType2Handed` (0x73B1E0) is a hardcoded list of seven
+    types, so it is hooked rather than patched. Every site is verified against the exact bytes 1.0 US ships before
+    anything is written; one mismatch and nothing at all is changed.
+  - *Still wrong.* `Events::ComputeDamageResponse` (0x4C0327) and `Events::ComputeDamageAnim` (0x4B44BB) branch on
+    `type >= 47` into the arm for the pseudo weapons, and that bound cannot be raised without sending `RAMMEDBYCAR`
+    with it — so a ped shot with a new gun takes the right damage but plays the generic reactions. `CHud::DrawWeaponIcon`
+    (0x58D7D0) draws a texture called `ICON` from the weapon model's own TXD, which an imported weapon TXD will not
+    have. `CDarkel` (0x43D7B6) will not hand a new gun back after a rampage. A savegame carrying one expects the mod.
 - All 13 of `CPed`'s weapon slots (`m_aWeapons` at +0x5A0, `0x1C` each) are used, and `Ped::GiveWeapon` indexes them
-  without a bounds check, so a weapon cannot be given a slot of its own either.
+  without a bounds check — but a slot *groups* weapons rather than naming one (slot 2 already holds the pistol, the
+  silenced pistol and the Desert Eagle, one at a time), so a new gun joins its donor's slot and none of this needs
+  widening. That is why `CPed`'s size never has to change.
 - `CPickups::aPickUps` is 620 entries of `0x20` at 0x9788C0 (type at +0x1C, model at +0x18, positions `int16 / scale`).
   `GenerateNewOne` (0x456F20) returns −1 when full, and `CPickups::Save` writes the whole array into a savegame — so
   the array is deliberately *not* relocated, and regions are capped by `PickupReserve` instead.
