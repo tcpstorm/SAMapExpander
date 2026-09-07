@@ -101,13 +101,19 @@ const InteriorVolume* gVolume = nullptr;  // the volume the player was last foun
 int gOurArea = 0;                         // the area we set, 0 when we are not driving currArea
 bool gInstalled = false;
 
-bool Inside(const MapRegion& r, const InteriorVolume& v, const CVector& p, float grow) {
+// The horizontal and vertical margins are separate on purpose. Sideways, a box stops short of the
+// walls it was measured from, so entering demands a few units inside and leaving allows a few
+// outside - that is what stops a doorway flickering and what keeps the pavement lit. Up and down
+// there is nothing to be short of: the floor and the ceiling already are the bounds, and a room is
+// only as tall as it is. Shrinking those too asked the player to be three units above the floor of
+// the mall's car park before it would let them in.
+bool Inside(const MapRegion& r, const InteriorVolume& v, const CVector& p, float grow, float zGrow) {
     // The volume is written in the region's own coordinates, like its zones and its water map, so
     // the same origin that moved the buildings moves the box.
     float x = p.x - r.originX, y = p.y - r.originY, z = p.z - r.originZ;
     return x >= v.minX - grow && x <= v.maxX + grow &&
            y >= v.minY - grow && y <= v.maxY + grow &&
-           z >= v.minZ - grow && z <= v.maxZ + grow;
+           z >= v.minZ - zGrow && z <= v.maxZ + zGrow;
 }
 
 void SetArea(int area, CPlayerPed* player, const CVector& pos) {
@@ -167,12 +173,12 @@ void Update() {
 
     const MapRegion* region = gRegion;
     const InteriorVolume* found = gVolume;
-    if (!found || !Inside(*region, *found, pos, kLeaveMargin)) {
+    if (!found || !Inside(*region, *found, pos, kLeaveMargin, kLeaveMargin)) {
         found = nullptr;
         region = nullptr;
         for (const MapRegion& r : Settings::regions) {
             for (const InteriorVolume& v : r.interiors) {
-                if (!Inside(r, v, pos, -kEnterShrink)) continue;
+                if (!Inside(r, v, pos, -kEnterShrink, 0.0f)) continue;
                 found = &v;
                 region = &r;
                 break;
