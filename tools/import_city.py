@@ -395,6 +395,480 @@ def convert_txd(data):
     return build_txd(chunks), converted, failed
 
 
+# ---------------------------------------------------------------- DFF -> San Andreas
+#
+# Converting the textures is only half of it: San Andreas cannot read a Liberty City model either.
+# Every chunk of a RenderWare stream carries the library id of the version that wrote it, and
+# RenderWare's readers branch on that id, so the same bytes mean different things to GTA III's
+# 3.1/3.2 and to San Andreas' 3.6.0.3. Three of those branches decide whether a map model draws:
+#
+#   * Below 3.4.0.0 an RpGeometry's struct carries twelve bytes of surface properties - ambient,
+#     specular, diffuse - directly after its four counts. From 3.4 those live on the material
+#     instead and the geometry no longer has them, so San Andreas does not look for them and every
+#     field behind them is read twelve bytes early: the prelit colours come back as vertex
+#     positions and the triangle list runs off the end. That is the whole of Liberty City - all
+#     3134 of its clumps and all 6050 of its geometries are older than 3.4 - and 1919 of Vice
+#     City's geometries besides. A version stamp on its own cannot fix this one; the struct has to
+#     be re-laid, which is what convert_geometry_struct does and why this is not a header patch.
+#   * From 3.4 the number of texture-coordinate sets is carried in the geometry flags' third byte,
+#     (flags >> 16) & 0xFF. Before that it was implied by rpGEOMETRYTEXTURED (one set) and
+#     rpGEOMETRYTEXTURED2 (two). Both readers fall back to the flags when the byte is zero, so this
+#     one is survivable, but 678 of Liberty City's geometries lean on that fallback and the byte is
+#     what San Andreas writes for every one of its own.
+#   * Above 3.3.0.0 a clump's struct is numAtomics, numLights and numCameras rather than just
+#     numAtomics. All 3134 of GTA III's are the four-byte form, and five of Vice City's.
+#
+# The rebuild fixes something else on the way past. 570 of GTA III's clumps carry a size in their
+# header that stops short of their own contents - 538 just before the extension chunk and 32 by up
+# to 180 bytes, in the middle of the last atomic. RenderWare never notices, because it reads a
+# clump by the counts in its struct rather than by that size, so this reads them the same way and
+# writes the length back out correctly. It also gives every clump, atomic, geometry, material,
+# texture and frame the extension chunk RenderWare closes an object by reading, empty where the
+# object has nothing to hang off it.
+#
+# So this reads the clump tree apart and writes it back out in San Andreas' form, stamping
+# 0x1803FFFF on every header on the way through, exactly as convert_txd does for a dictionary.
+# Everything that is version-independent - the frame matrices, the vertices, normals, UVs, prelit
+# colours and triangles, the bin mesh, the material colours and the texture names - travels
+# through byte for byte, and the counts are checked against the source afterwards.
+
+RW_CLUMP, RW_FRAMELIST, RW_GEOMETRY, RW_GEOMETRYLIST = 0x10, 0x0E, 0x0F, 0x1A
+RW_MATLIST, RW_MATERIAL, RW_ATOMIC, RW_MATFX = 0x08, 0x07, 0x14, 0x120
+RW_LIGHT, RW_CAMERA = 0x12, 0x05
+
+RW_34 = 0x34000           # the version at which the geometry stream format changed
+RW_304 = 0x30400          # ... and at which a material grew surface properties of its own
+
+# rpGeometryFlag: the bits of the geometry struct's first word that change how the rest is read.
+GEOM_TEXTURED, GEOM_PRELIT, GEOM_TEXTURED2, GEOM_NATIVE = 0x04, 0x08, 0x80, 0x01000000
+
+# Plugin chunks GTA III and Vice City hang off their models that no San Andreas model carries:
+# 0x105, the morph plugin, on 2950 of III's geometries and 6118 of Vice City's, and 0x118 on 602
+# of III's atomics. Neither id appears once across the 16264 geometries and 12953 clumps of San
+# Andreas' own gta3.img, so San Andreas has nothing registered to read them and they could only
+# ever be skipped. Everything else is kept: the bin mesh (0x50E) San Andreas instances from, the
+# material effects (0x120), the skin (0x116) and animation hierarchy (0x11E), the frame names
+# (0x253F2FE), the right to render (0x1F) and the sky mipmap value (0x110) - San Andreas ships
+# models carrying every one of those. The one that would have to go, 2dfx (0x253F2F8), whose
+# entries are laid out per game, appears in neither source's models at all.
+DROP_PLUGINS = {0x105, 0x118}
+
+MATFX_BUMPMAP = 1
+
+
+class RwError(Exception):
+    """A clump this cannot make sense of. The importer passes the model through untouched."""
+
+
+def rw_version(library_id):
+    """The RenderWare version a chunk header's library id encodes.
+
+    0x1803FFFF -> 0x36003 (3.6.0.3) and 0x0800FFFF -> 0x32000 (3.2.0.0) in the packed form used
+    from 3.2 on, and 0x00000310 -> 0x31000 (3.1.0.0) in the shifted form that came before it.
+    """
+    if library_id & 0xFFFF0000:
+        return (((library_id >> 14) & 0x3FF00) + 0x30000) | ((library_id >> 16) & 0x3F)
+    return library_id << 8
+
+
+def rw_children(data, at, end, what):
+    """[(kind, version, body start, body end)] for the chunks that exactly fill at..end.
+
+    Exactly is the point. A chunk that overruns its parent, or a parent with bytes left over after
+    its last child, means the layout being assumed is the wrong one, and it is far better to leave
+    such a model alone than to write out a guess at it.
+    """
+    out = []
+    while at + 12 <= end:
+        kind, size, library_id = struct.unpack_from("<III", data, at)
+        if size > end - at - 12:
+            raise RwError("%s: a %#x chunk claims %d bytes with %d left"
+                          % (what, kind, size, end - at - 12))
+        out.append((kind, rw_version(library_id), at + 12, at + 12 + size))
+        at += 12 + size
+    if at != end:
+        raise RwError("%s: %d byte(s) after the last chunk" % (what, end - at))
+    return out
+
+
+def rw_chunk_at(data, at, limit, what, want=None):
+    """The one chunk starting at `at`, as (kind, version, body start, body end).
+
+    The counterpart to rw_children for the places RenderWare reads a stream by what it is expecting
+    rather than by a length - see convert_clump.
+    """
+    if at + 12 > limit:
+        raise RwError("%s: nothing left to read it from" % what)
+    kind, size, library_id = struct.unpack_from("<III", data, at)
+    if size > limit - at - 12:
+        raise RwError("%s: a %#x chunk claims %d bytes with %d left"
+                      % (what, kind, size, limit - at - 12))
+    if want is not None and kind != want:
+        raise RwError("%s: found a %#x chunk, expected %#x" % (what, kind, want))
+    return kind, rw_version(library_id), at + 12, at + 12 + size
+
+
+def rebuild(kind, children, extension):
+    """A container chunk from its already-converted children, with `extension` last.
+
+    RenderWare finishes reading every object by reading an extension chunk, so one is written even
+    where the source had none - see the note above.
+    """
+    body = b"".join(children) + (extension if extension is not None else rw_chunk(RW_EXTENSION, b""))
+    return rw_chunk(kind, body)
+
+
+def convert_matfx(data, s, e):
+    """A material effects plugin, with the texture chunks inside it re-stamped.
+
+    The payload is the enabled-effects word and then two effect slots, each a type word followed by
+    that type's own fields: a coefficient for a bump map and then a flag and a texture chunk for
+    each of the bump and height maps; a coefficient and a framebuffer-alpha flag for an environment
+    map, or the two blend modes for a dual pass, either followed by one flag and texture chunk.
+    Vice City writes 2960 of these, every one an environment map, and GTA III ten - seven
+    environment maps and three bump maps. The walk is checked against the chunk's length, and
+    anything that does not add up is refused rather than rewritten. The textures nested in here are
+    the only chunk headers in a clump that walking children does not reach, which is the whole
+    reason this function exists: without it every one of them would go out still carrying the
+    source game's library id.
+    """
+    out, at = [data[s:s + 4]], s + 4
+    for _slot in range(2):
+        kind = struct.unpack_from("<I", data, at)[0]
+        out.append(data[at:at + 4])
+        at += 4
+        if kind == 0:
+            continue
+        fields = 4 if kind == MATFX_BUMPMAP else 8
+        out.append(data[at:at + fields])
+        at += fields
+        for _ in range(2 if kind == MATFX_BUMPMAP else 1):
+            present = struct.unpack_from("<I", data, at)[0]
+            out.append(data[at:at + 4])
+            at += 4
+            if not present:
+                continue
+            tkind, tsize, _lib = struct.unpack_from("<III", data, at)
+            if tkind != RW_TEXTURE or at + 12 + tsize > e:
+                raise RwError("material effects: no texture where one is flagged")
+            out.append(convert_texture(data, at + 12, at + 12 + tsize))
+            at += 12 + tsize
+    if at != e:
+        raise RwError("material effects: %d bytes, the layout accounts for %d" % (e - s, at - s))
+    return b"".join(out)
+
+
+def convert_extension(data, s, e, what):
+    """An extension chunk with its plugins re-stamped, less the ones San Andreas cannot read."""
+    body = []
+    for kind, _ver, cs, ce in rw_children(data, s, e, what + " extension"):
+        if kind in DROP_PLUGINS:
+            continue
+        if kind == RW_MATFX and ce - cs > 4:
+            body.append(rw_chunk(kind, convert_matfx(data, cs, ce)))
+        else:
+            body.append(rw_chunk(kind, data[cs:ce]))
+    return rw_chunk(RW_EXTENSION, b"".join(body))
+
+
+def convert_texture(data, s, e):
+    """A material's texture reference: the filter/addressing word, the name, the mask, extension."""
+    out, extension = [], None
+    for kind, _ver, cs, ce in rw_children(data, s, e, "texture"):
+        if kind == RW_EXTENSION:
+            extension = convert_extension(data, cs, ce, "texture")
+        else:
+            out.append(rw_chunk(kind, data[cs:ce]))
+    return rebuild(RW_TEXTURE, out, extension)
+
+
+def convert_material(data, s, e, surface_props):
+    """One material.
+
+    Its struct is a flags word, the colour, an unused word and a textured flag, and from 3.0.4.0
+    three floats of surface properties behind them. Every material GTA III, Vice City and San
+    Andreas write has the 28-byte form, so this is a pass-through in practice; the shorter one is
+    filled in from the geometry, which is where a reader older than 3.0.4.0 took it from.
+    """
+    kids = rw_children(data, s, e, "material")
+    if not kids or kids[0][0] != RW_STRUCT:
+        raise RwError("material: no struct")
+    _kind, _ver, ss, se = kids[0]
+    if se - ss == 16:
+        body = data[ss:se] + surface_props
+    elif se - ss == 28:
+        body = data[ss:se]
+    else:
+        raise RwError("material struct: %d bytes, expected 16 or 28" % (se - ss))
+    out, extension = [rw_chunk(RW_STRUCT, body)], None
+    for kind, _ver, cs, ce in kids[1:]:
+        if kind == RW_EXTENSION:
+            extension = convert_extension(data, cs, ce, "material")
+        elif kind == RW_TEXTURE:
+            out.append(convert_texture(data, cs, ce))
+        else:
+            out.append(rw_chunk(kind, data[cs:ce]))
+    return rebuild(RW_MATERIAL, out, extension)
+
+
+def convert_material_list(data, s, e, surface_props):
+    """The material list: a count, then one index per material - negative where the material
+    follows, otherwise the earlier material it repeats - and then the materials themselves.
+    """
+    kids = rw_children(data, s, e, "material list")
+    if not kids or kids[0][0] != RW_STRUCT:
+        raise RwError("material list: no struct")
+    _kind, _ver, ss, se = kids[0]
+    count = struct.unpack_from("<i", data, ss)[0]
+    if se - ss != 4 + 4 * count:
+        raise RwError("material list struct: %d bytes for %d material(s)" % (se - ss, count))
+    out = [rw_chunk(RW_STRUCT, data[ss:se])]
+    for kind, _ver, cs, ce in kids[1:]:
+        if kind != RW_MATERIAL:
+            raise RwError("material list holds a %#x chunk" % kind)
+        out.append(convert_material(data, cs, ce, surface_props))
+    return rw_chunk(RW_MATLIST, b"".join(out)), count
+
+
+def convert_geometry_struct(data, s, e, version):
+    """An RpGeometry struct read in its own version's layout and written in 3.4 onwards'.
+
+    The layout is: the flags word, the triangle, vertex and morph-target counts, then - below
+    3.4.0.0 only - three floats of surface properties, then, unless the geometry is already
+    instanced for a platform (rpGEOMETRYNATIVE, which nothing in either source is), a prelit RGBA
+    per vertex if rpGEOMETRYPRELIT is set, two floats per vertex for each texture-coordinate set,
+    and two words per triangle holding its three vertex indices and its material. Each morph
+    target then adds a bounding sphere, a flag for vertices and one for normals, and three floats
+    per vertex for whichever of those two it says it has.
+
+    Only two things change on the way out: the surface properties go, and the number of texture-
+    coordinate sets is written into the flags' third byte the way 3.4 onwards expects to read it.
+    Everything from the prelit colours onwards is laid out identically in both versions and is
+    copied across as one block, which is what keeps the vertices, normals, UVs and triangles exact.
+
+    The parse is checked against the chunk's own length before anything is written, so a geometry
+    whose layout is not the one being assumed is refused rather than mangled. Across all 6050 of
+    GTA III's geometries, 6510 of Vice City's and 16264 of San Andreas' own, it accounts for every
+    byte of every struct.
+    """
+    flags, num_tri, num_vert, num_morph = struct.unpack_from("<IiiI", data, s)
+    at = s + 16
+    if version < RW_34:
+        at += 12
+    sets = (flags >> 16) & 0xFF
+    if sets == 0:
+        sets = 1 if flags & GEOM_TEXTURED else (2 if flags & GEOM_TEXTURED2 else 0)
+    tail = at
+    if not flags & GEOM_NATIVE:
+        at += (4 * num_vert if flags & GEOM_PRELIT else 0) + sets * 8 * num_vert + 8 * num_tri
+    for _ in range(num_morph):
+        at += 16
+        has_vertices, has_normals = struct.unpack_from("<ii", data, at)
+        at += 8
+        if not flags & GEOM_NATIVE:
+            at += (12 * num_vert if has_vertices else 0) + (12 * num_vert if has_normals else 0)
+    if at != e:
+        raise RwError("geometry struct: %d bytes, its %s layout accounts for %d"
+                      % (e - s, "3.4+" if version >= RW_34 else "pre-3.4", at - s))
+    head = struct.pack("<IiiI", (flags & 0xFF00FFFF) | (sets << 16), num_tri, num_vert, num_morph)
+    return rw_chunk(RW_STRUCT, head + data[tail:e]), (num_tri, num_vert)
+
+
+def convert_geometry(data, s, e, version):
+    """One geometry: its struct, its material list, and its extension."""
+    kids = rw_children(data, s, e, "geometry")
+    if not kids or kids[0][0] != RW_STRUCT:
+        raise RwError("geometry: no struct")
+    _kind, _ver, ss, se = kids[0]
+    # A material older than 3.0.4.0 has no surface properties of its own and takes the geometry's,
+    # which is the only thing the twelve bytes being dropped here are ever read for.
+    surface_props = data[ss + 16:ss + 28] if version < RW_34 else struct.pack("<fff", 1.0, 1.0, 1.0)
+    chunk, counts = convert_geometry_struct(data, ss, se, version)
+    out, extension, materials = [chunk], None, 0
+    for kind, _ver, cs, ce in kids[1:]:
+        if kind == RW_MATLIST:
+            piece, materials = convert_material_list(data, cs, ce, surface_props)
+            out.append(piece)
+        elif kind == RW_EXTENSION:
+            extension = convert_extension(data, cs, ce, "geometry")
+        else:
+            out.append(rw_chunk(kind, data[cs:ce]))
+    return rebuild(RW_GEOMETRY, out, extension), counts + (materials,)
+
+
+def convert_geometry_list(data, s, e, version):
+    """The clump's geometry list: a count, and then that many geometries."""
+    kids = rw_children(data, s, e, "geometry list")
+    if not kids or kids[0][0] != RW_STRUCT:
+        raise RwError("geometry list: no struct")
+    _kind, _ver, ss, se = kids[0]
+    out, counts = [rw_chunk(RW_STRUCT, data[ss:se])], []
+    for kind, _ver, cs, ce in kids[1:]:
+        if kind != RW_GEOMETRY:
+            raise RwError("geometry list holds a %#x chunk" % kind)
+        piece, count = convert_geometry(data, cs, ce, version)
+        out.append(piece)
+        counts.append(count)
+    return rw_chunk(RW_GEOMETRYLIST, b"".join(out)), counts
+
+
+def convert_atomic(data, s, e, version):
+    """One atomic: which frame it hangs on, which geometry it draws, its flags, and its extension.
+
+    Below 3.0.4.0 the geometry sits inside the atomic rather than in the clump's geometry list.
+    Nothing in either source is that old - GTA III's oldest clump is exactly 3.0.4.0 - but the
+    case costs one branch to carry.
+    """
+    kids = rw_children(data, s, e, "atomic")
+    if not kids or kids[0][0] != RW_STRUCT:
+        raise RwError("atomic: no struct")
+    _kind, _ver, ss, se = kids[0]
+    if se - ss != 16:
+        raise RwError("atomic struct: %d bytes, expected 16" % (se - ss))
+    out, extension, counts = [rw_chunk(RW_STRUCT, data[ss:se])], None, []
+    for kind, _ver, cs, ce in kids[1:]:
+        if kind == RW_EXTENSION:
+            extension = convert_extension(data, cs, ce, "atomic")
+        elif kind == RW_GEOMETRY:
+            piece, count = convert_geometry(data, cs, ce, version)
+            out.append(piece)
+            counts.append(count)
+        else:
+            out.append(rw_chunk(kind, data[cs:ce]))
+    return rebuild(RW_ATOMIC, out, extension), counts
+
+
+def convert_frame_list(data, s, e):
+    """The frame list.
+
+    A count, then a 3x3 rotation, a position, a parent index and a flags word for each frame, and
+    then one extension chunk per frame carrying its name and its animation hierarchy. The frame
+    struct is the same in every version this deals with; what is rebuilt is the run of extensions,
+    so that there is exactly one for every frame the struct declares - RenderWare reads them by
+    count, so a missing one would be taken out of whatever chunk came next.
+    """
+    kids = rw_children(data, s, e, "frame list")
+    if not kids or kids[0][0] != RW_STRUCT:
+        raise RwError("frame list: no struct")
+    _kind, _ver, ss, se = kids[0]
+    count = struct.unpack_from("<i", data, ss)[0]
+    if se - ss != 4 + 56 * count:
+        raise RwError("frame list struct: %d bytes for %d frame(s)" % (se - ss, count))
+    out = [rw_chunk(RW_STRUCT, data[ss:se])]
+    frames = [k for k in kids[1:] if k[0] == RW_EXTENSION]
+    for i in range(count):
+        if i < len(frames):
+            out.append(convert_extension(data, frames[i][2], frames[i][3], "frame"))
+        else:
+            out.append(rw_chunk(RW_EXTENSION, b""))
+    return rw_chunk(RW_FRAMELIST, b"".join(out))
+
+
+def convert_clump(data, s, limit, version):
+    """The clump itself: its counts, frame list, geometry list, atomics, any lights, and extension.
+
+    Read the way RpClumpStreamRead reads it - by the counts in the struct rather than by the size
+    in the header - because 32 of GTA III's models need that: their clump header stops short of
+    their own last atomic, by 180 bytes on chunky.dff, and RenderWare never notices because it takes
+    each child in turn and stops when it has the number the struct asked for. The header is written
+    back out with the length it should have had. `limit` is the end of the blob, not of the clump.
+
+    A light or a camera is streamed as a bare struct naming the frame it hangs on followed by the
+    object itself, and 130 of Vice City's clumps carry 759 lights between them. Both pass through
+    untouched.
+    """
+    _kind, _ver, ss, se = rw_chunk_at(data, s, limit, "clump struct", RW_STRUCT)
+    if se - ss == 4:
+        counts = struct.unpack_from("<I", data, ss) + (0, 0)
+    elif se - ss >= 12:
+        counts = struct.unpack_from("<III", data, ss)
+    else:
+        raise RwError("clump struct: %d bytes, expected 4 or 12" % (se - ss))
+    atomics, lights, cameras = counts
+    out, geometries, at = [rw_chunk(RW_STRUCT, struct.pack("<III", *counts))], [], se
+
+    _kind, _ver, cs, ce = rw_chunk_at(data, at, limit, "frame list", RW_FRAMELIST)
+    out.append(convert_frame_list(data, cs, ce))
+    at = ce
+
+    if version >= RW_304:       # older than that and each atomic carries its own geometry instead
+        _kind, _ver, cs, ce = rw_chunk_at(data, at, limit, "geometry list", RW_GEOMETRYLIST)
+        piece, found = convert_geometry_list(data, cs, ce, version)
+        out.append(piece)
+        geometries += found
+        at = ce
+
+    for i in range(atomics):
+        _kind, _ver, cs, ce = rw_chunk_at(data, at, limit, "atomic %d" % i, RW_ATOMIC)
+        piece, found = convert_atomic(data, cs, ce, version)
+        out.append(piece)
+        geometries += found
+        at = ce
+
+    for kind, count in ((RW_LIGHT, lights), (RW_CAMERA, cameras)):
+        for i in range(count):
+            _k, _ver, cs, ce = rw_chunk_at(data, at, limit, "frame of %#x %d" % (kind, i), RW_STRUCT)
+            out.append(rw_chunk(RW_STRUCT, data[cs:ce]))
+            _k, _ver, cs, ce = rw_chunk_at(data, ce, limit, "%#x %d" % (kind, i), kind)
+            out.append(rw_chunk(kind, data[cs:ce]))
+            at = ce
+
+    extension = None
+    if at + 12 <= limit:
+        kind, _ver, cs, ce = rw_chunk_at(data, at, limit, "clump extension")
+        if kind == RW_EXTENSION:
+            extension = convert_extension(data, cs, ce, "clump")
+    return rebuild(RW_CLUMP, out, extension), geometries
+
+
+def dff_geometry_counts(data):
+    """[(triangles, vertices, materials)] for every geometry of a clump.
+
+    Reads without rewriting anything and does not care which version wrote it, so a converted model
+    can be held against its source - see tools/check_dff.py.
+    """
+    kind, _size, library_id = struct.unpack_from("<III", data, 0)
+    if kind != RW_CLUMP:
+        raise RwError("not a clump")
+    version, limit, counts = rw_version(library_id), len(data), []
+    _k, _v, _ss, se = rw_chunk_at(data, 12, limit, "clump struct", RW_STRUCT)
+    _k, _v, _cs, ce = rw_chunk_at(data, se, limit, "frame list", RW_FRAMELIST)
+    if version < RW_304:
+        return counts                # older than that and the geometries hang off the atomics
+    _k, _v, cs, ce = rw_chunk_at(data, ce, limit, "geometry list", RW_GEOMETRYLIST)
+    for k2, _v2, s2, e2 in rw_children(data, cs, ce, "geometry list"):
+        if k2 != RW_GEOMETRY:
+            continue
+        kids = rw_children(data, s2, e2, "geometry")
+        _flags, num_tri, num_vert, _morph = struct.unpack_from("<IiiI", data, kids[0][2])
+        materials = 0
+        for k3, _v3, s3, e3 in kids[1:]:
+            if k3 == RW_MATLIST:
+                head = rw_children(data, s3, e3, "material list")[0]
+                materials = struct.unpack_from("<i", data, head[2])[0]
+        counts.append((num_tri, num_vert, materials))
+    return counts
+
+
+def convert_dff(data):
+    """A GTA III / Vice City model rebuilt as a San Andreas one. Returns (bytes, converted).
+
+    (data, False) comes back when the blob is not a clump at all - the source archives hold a
+    handful of those - and an RwError is raised when it is one but cannot be read, so that the
+    importer can name the model it left alone rather than quietly writing out a guess.
+    """
+    if len(data) < 12:
+        return data, False
+    kind, _size, library_id = struct.unpack_from("<III", data, 0)
+    if kind != RW_CLUMP:
+        return data, False
+    try:
+        out, _counts = convert_clump(data, 12, len(data), rw_version(library_id))
+    except (struct.error, IndexError, ValueError) as err:
+        raise RwError("%s: %s" % (type(err).__name__, err))
+    return out, True
+
+
 def write_png(path, width, height, rgba):
     try:
         from PIL import Image
@@ -893,7 +1367,9 @@ def main():
     txd_parts = {}
     dff_refs = {}
     tex_done, tex_failed, txds = 0, 0, 0
+    dff_done, dffs = 0, 0
     failed_txds = []
+    failed_dffs = []
     dropped_dups = []
 
     def blobs():
@@ -940,6 +1416,15 @@ def main():
         elif ext == ".dff":
             key = renamed(name)
             dff_refs[key.lower().rsplit(".", 1)[0]] = dff_texture_names(blob)
+            dffs += 1
+            try:
+                blob, done = convert_dff(blob)
+                dff_done += done
+            except RwError as err:
+                # One model San Andreas may not be able to read is a model that does not draw;
+                # a whole import that stops on it is a region that does not exist. Pass it
+                # through as it came and say which one it was.
+                failed_dffs.append("%s (%s)" % (name, err))
             packed.append((key, blob))
         else:
             skipped += 1
@@ -1046,6 +1531,11 @@ def main():
                  "; %d raster(s) in %d dictionar%s left alone and will render white (%s)"
                  % (tex_failed, len(failed_txds), "y" if len(failed_txds) == 1 else "ies",
                     ", ".join(sorted(failed_txds)[:6]))))
+        print("models: %d of %d clump(s) rebuilt as San Andreas RenderWare 3.6.0.3%s"
+              % (dff_done, dffs, "" if not failed_dffs else
+                 "; %d could not be read and went through as %s came (%s)"
+                 % (len(failed_dffs), "it" if len(failed_dffs) == 1 else "they",
+                    "; ".join(sorted(failed_dffs)[:6]))))
     if dropped_dups:
         print("dropped %d later cop%s of a .dff name the archive already carries (the source game "
               "binds only the first): %s" % (len(dropped_dups), "y" if len(dropped_dups) == 1 else "ies",
