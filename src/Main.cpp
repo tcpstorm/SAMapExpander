@@ -18,6 +18,7 @@
 #include "RenderGuard.h"
 #include "Gxt.h"
 #include "Zones.h"
+#include "Interiors.h"
 #include "ModelLimits.h"
 
 using namespace plugin;
@@ -42,6 +43,7 @@ public:
             // the objects and already handles distant ones, so the world grid is left alone.
             if (CityLoader::PlacesOwnEntities() && Settings::world.extendWorldSectors)
                 WorldSectors::Install();
+            Interiors::Install();
         }
         if (Settings::world.fixPickupPositions || Settings::world.fixCarGeneratorPositions) PickupFix::Install();
         if (Settings::world.fixMeleeBeyondMap) MeleeFix::Install();

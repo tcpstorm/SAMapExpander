@@ -2,6 +2,23 @@
 #include <string>
 #include <vector>
 
+// One box, in the region's OWN coordinates, that means "the player is standing in this interior".
+//
+// Vice City and San Andreas hide interiors the same way: every entity carries an area code (the
+// third column of an IPL inst line) and the renderer only draws entities whose code equals
+// CGame::currArea, or is 13, which both games read as "everywhere". Vice City's interiors are
+// built inside the real buildings at real world coordinates, so once the area codes are carried
+// across - which they already are - the geometry is correctly hidden and there is nothing to
+// relocate. What is missing is the other half: Vice City switched the area from its own mission
+// script when the player walked through a door, and that script is not here. These boxes are that
+// switch, one per room, written out because VC's data does not record where its doorways are.
+struct InteriorVolume {
+    int area;                 // the area code its entities carry, i.e. the IPL "interior" column
+    float minX, minY, minZ;
+    float maxX, maxY, maxZ;
+    std::string name;         // shown in the log and by the F8 read-out; nothing reads it
+};
+
 // A custom map (e.g. Vice City) placed somewhere in the SA world.
 // Tiles are addressed in the map's OWN coordinate system; originX/Y say where its (0,0) sits in SA.
 struct MapRegion {
@@ -32,6 +49,11 @@ struct MapRegion {
 
     std::vector<std::string> zoneFiles;  // III/VC .zon or SA IPL files, in the region's own coords
     std::string zoneNamesFile;           // "GXTKEY = Display Name" lines; empty if none
+
+    // Interior<N> lines from this region's ini section, in the region's own coordinates. Several
+    // may name the same area: an interior split over rooms that are not one box (Vercetti's house
+    // and its tower) needs one box each, and any of them makes the whole area visible.
+    std::vector<InteriorVolume> interiors;
 
     float TileWest(int col) const  { return originX + gridMinX + col * tileSize; }
     float TileNorth(int row) const { return originY + gridMaxY - row * tileSize; }

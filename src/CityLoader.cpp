@@ -587,6 +587,8 @@ struct IplStats {
     int districtLods = 0; // of those, the island-sized ones
     int scaled = 0;
     int interior = 0;
+    int badInterior = 0;
+    std::map<unsigned, int> areas;   // area code -> how many lines carry it
 };
 
 // GTA III (12 fields), Vice City (13, with an interior column) and San Andreas (11, with an
@@ -606,7 +608,21 @@ bool ParseInst(const std::string& line, Inst& inst, IplStats& stats) {
 
     inst.model = atoi(t[0].c_str());
     inst.name = t[1];
-    inst.interior = t.size() == 12 ? 0u : (unsigned)strtoul(t[2].c_str(), nullptr, 10);
+    // The interior column is San Andreas' area code, and Vice City's is the same thing: III, VC and
+    // SA all keep it in one byte on the entity (CFileLoader::LoadObjectInstance, 0x538353, stores
+    // only the low byte at CEntity + 0x2F) and all three read 13 as "everywhere". So the number
+    // carries across as it stands - VC's 4 really is the North Point Mall in San Andreas too.
+    // What does not carry across is a value that will not fit: Vice City's club.ipl writes -1 for
+    // club_exterior07, which through strtoul would be written back out as 4294967295 for SA's
+    // "%d %s %d ..." to choke on. Anything outside a byte becomes 0, the outside world, which is
+    // what a shell piece like that wants to be anyway.
+    long interior = t.size() == 12 ? 0 : strtol(t[2].c_str(), nullptr, 10);
+    if (interior < 0 || interior > 255) {
+        stats.badInterior++;
+        interior = 0;
+    }
+    inst.interior = (unsigned)interior;
+    if (t.size() != 12) stats.areas[inst.interior]++;
     inst.x = (float)atof(t[pos].c_str());
     inst.y = (float)atof(t[pos + 1].c_str());
     inst.z = (float)atof(t[pos + 2].c_str());
@@ -1498,10 +1514,27 @@ void PlaceInstances() {
         if (refused)
             Log::Write("[%s] inst: %d line(s) dropped - the building pool has no room left; raise "
                        "BuildingPoolLimit", rs.region->name.c_str(), refused);
-        if (stats.interior)
-            Log::Write("[%s] inst: %d line(s) name an interior; the number is kept as written, and "
-                       "the source game's interior numbering is not San Andreas'",
-                       rs.region->name.c_str(), stats.interior);
+        // The interior column is San Andreas' own area code and needs no translation (see
+        // ParseInst). Listing what came through is how you find out which areas a region has, and
+        // therefore which Interior<N> boxes its ini wants - see Interiors.cpp.
+        if (stats.interior) {
+            std::string areas;
+            char buffer[32];
+            for (auto& a : stats.areas) {
+                if (!a.first || a.first == 13u) continue;   // outside world, and "everywhere"
+                snprintf(buffer, sizeof(buffer), "%s%u (%d)", areas.empty() ? "" : ", ", a.first, a.second);
+                areas += buffer;
+            }
+            Log::Write("[%s] inst: %d line(s) carry an area code, which is San Andreas' own interior "
+                       "mechanism and passes through unchanged: %s; %d line(s) are area 13 "
+                       "(\"everywhere\", visible from every interior)",
+                       rs.region->name.c_str(), stats.interior, areas.empty() ? "none" : areas.c_str(),
+                       stats.areas.count(13u) ? stats.areas[13u] : 0);
+        }
+        if (stats.badInterior)
+            Log::Write("[%s] inst: %d line(s) had an area code outside 0..255 (Vice City writes -1 "
+                       "for one Malibu Club shell piece); placed in the outside world instead",
+                       rs.region->name.c_str(), stats.badInterior);
     }
     ReportIplEntityArrayUse();
 }

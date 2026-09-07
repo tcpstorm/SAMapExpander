@@ -2,6 +2,8 @@
 #include <windows.h>
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include "Settings.h"
 #include "Ini.h"
@@ -63,6 +65,45 @@ namespace Settings {
             for (const std::string& m : matches) AddPath(out, m);
         }
         return out;
+    }
+
+    // "Interior<N> = area, minX, minY, minZ, maxX, maxY, maxZ [, name]" - seven numbers and an
+    // optional label, the numbers in the region's own coordinates. Parsed by hand rather than
+    // through GetFloat because the whole box is one ini value; a line that does not hold seven
+    // numbers is reported and dropped instead of silently becoming a box at the origin.
+    static bool ReadInteriorVolume(const std::string& value, InteriorVolume& out) {
+        std::vector<std::string> fields;
+        size_t at = 0;
+        while (true) {
+            size_t end = value.find(',', at);
+            fields.push_back(value.substr(at, end == std::string::npos ? std::string::npos : end - at));
+            if (end == std::string::npos) break;
+            at = end + 1;
+        }
+        if (fields.size() < 7) return false;
+        float n[7];
+        for (int i = 0; i < 7; i++) {
+            const char* start = fields[i].c_str();
+            char* stop = nullptr;
+            n[i] = strtof(start, &stop);
+            if (stop == start) return false;
+        }
+        out.area = (int)n[0];
+        out.minX = n[1]; out.minY = n[2]; out.minZ = n[3];
+        out.maxX = n[4]; out.maxY = n[5]; out.maxZ = n[6];
+        out.name.clear();
+        if (fields.size() > 7) {
+            for (size_t i = 7; i < fields.size(); i++) out.name += (i > 7 ? "," : "") + fields[i];
+            size_t a = out.name.find_first_not_of(" \t");
+            size_t b = out.name.find_last_not_of(" \t");
+            out.name = a == std::string::npos ? std::string() : out.name.substr(a, b - a + 1);
+        }
+        // A box written back to front would never contain anything; sort the corners rather than
+        // making the reader remember which end goes first.
+        if (out.minX > out.maxX) std::swap(out.minX, out.maxX);
+        if (out.minY > out.maxY) std::swap(out.minY, out.maxY);
+        if (out.minZ > out.maxZ) std::swap(out.minZ, out.maxZ);
+        return true;
     }
 
     void Load() {
@@ -155,6 +196,30 @@ namespace Settings {
             if (s.Has("ZoneNames")) r.zoneNamesFile = ResolveGamePath(s.GetString("ZoneNames", ""));
             r.zoneInfoLabel = s.GetString("ZoneInfoLabel", "SAN_AND");
             r.regionName = s.GetString("RegionName", "");
+
+            // Interior1, Interior2, ... An ini section is a map, so a gap in the numbering must not
+            // stop the scan; go on to a fixed ceiling and take every key that is actually there.
+            for (int i = 1; i <= 256; i++) {
+                char key[32];
+                snprintf(key, sizeof(key), "Interior%d", i);
+                if (!s.Has(key)) continue;
+                InteriorVolume v;
+                if (!ReadInteriorVolume(s.GetString(key, ""), v)) {
+                    Log::Write("[%s] %s: expected \"area, minX, minY, minZ, maxX, maxY, maxZ [, name]\"; skipped",
+                               s.name.c_str(), key);
+                    continue;
+                }
+                // 0 is the outside world and 13 is San Andreas' and Vice City's shared "everywhere"
+                // code; neither is an interior, and switching to either would be a way to make the
+                // whole map vanish. The area code itself is one byte (CEntity + 0x2F).
+                if (v.area <= 0 || v.area > 255 || v.area == 13) {
+                    Log::Write("[%s] %s: area %d is not an interior (0 is the outside world, 13 is "
+                               "\"everywhere\", and the code is one byte); skipped",
+                               s.name.c_str(), key, v.area);
+                    continue;
+                }
+                r.interiors.push_back(v);
+            }
 
             bool hasOrigin = s.Has("WorldOriginX") && s.Has("WorldOriginY");
             bool hasExtent = s.Has("WorldMinX") && s.Has("WorldMaxX") && s.Has("WorldMinY") && s.Has("WorldMaxY");
