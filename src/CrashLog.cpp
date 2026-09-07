@@ -7,6 +7,7 @@
 #include <cstring>
 #include <safetyhook.hpp>
 #include "CrashLog.h"
+#include "RenderGuard.h"
 #include "Log.h"
 
 static LONG gLogged = 0;
@@ -104,6 +105,9 @@ static LONG CALLBACK OnException(EXCEPTION_POINTERS* info) {
     Log::Write("CRASH: eax %08X ebx %08X ecx %08X edx %08X esi %08X edi %08X ebp %08X esp %08X",
                (unsigned)c.Eax, (unsigned)c.Ebx, (unsigned)c.Ecx, (unsigned)c.Edx,
                (unsigned)c.Esi, (unsigned)c.Edi, (unsigned)c.Ebp, (unsigned)c.Esp);
+    const int rendering = RenderGuard::LastRenderedModel();
+    if (rendering >= 0)
+        Log::Write("CRASH: RenderEntity was drawing model %d when this happened", rendering);
 
     const DWORD* stack = reinterpret_cast<const DWORD*>(c.Esp);
     for (int row = 0; row < 12; row++) {

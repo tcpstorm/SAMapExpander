@@ -30,6 +30,7 @@ typedef void(__cdecl* RenderEntityFn)(void* entity, float distance);
 static SafetyHookInline& Hook() { static SafetyHookInline h; return h; }
 int gReports = 0;
 long gSkipped = 0;
+volatile int gLastModel = -1;   // model of the entity RenderEntity is drawing right now
 
 // A CEntity: readable, a vtable somewhere in the executable's .rdata, a model index in range, and a
 // type in the valid set. The vtable range has to be wide enough to hold every entity kind, not just
@@ -68,12 +69,20 @@ void __cdecl Hooked_RenderEntity(void* entity, float distance) {
         }
         return;
     }
+    // A valid entity can still carry a stale RwObject - a model streamed out from under a fade -
+    // and RenderEntity dereferences it past where this hook sits. Leave a breadcrumb so the crash
+    // log names the model, and clear it after, so a model that renders cleanly is not blamed for a
+    // later crash outside RenderEntity.
+    gLastModel = *(const uint16_t*)((const uint8_t*)entity + 0x22);
     Hook().ccall<void>(entity, distance);
+    gLastModel = -1;
 }
 
 }  // namespace
 
 namespace RenderGuard {
+
+int LastRenderedModel() { return gLastModel; }
 
 void Install() {
     if (!Settings::world.debug) return;
