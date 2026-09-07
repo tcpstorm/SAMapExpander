@@ -92,47 +92,11 @@ static LONG CALLBACK OnException(EXCEPTION_POINTERS* info) {
                 return EXCEPTION_CONTINUE_SEARCH;
         }
     }
-    // Survive drawing a model whose RpAtomic was freed while an entity still fades to it: the render
-    // jumps to a garbage callback and faults with eip = FFFFFFFF. Recovery is to abandon that one
-    // entity's render and carry on. The junk was reached from deep inside RenderWare, sometimes by a
-    // jump rather than a call, so esp does not point at a usable return - the first attempt assumed
-    // it did and never fired. Instead scan up the stack for the return address back into
-    // CVisibilityPlugins::RenderEntity (0x732B40..0x732C80), which every path here passes through,
-    // and unwind to it: set eip to that return and esp just past its slot, exactly as if the entity
-    // render had returned. RenderEntity's own epilogue then cleans up. Guarded to the render fault
-    // (eip junk) so nothing else is masked, and rate-limited.
-    //
-    // A net over a streaming-lifetime bug, not its cure - it turns the crash into one entity not
-    // drawn for a frame. Anything else falls through to the report below.
-    // Survive the render crash by returning into RenderEntity as if the entity had finished drawing.
-    // The model's data is provably clean - entity, atomic, geometry, all 165 materials, textures and
-    // rasters all valid - so the FFFFFFFF is a runtime-corrupted mesh instance, reached by a jump
-    // that pushes no usable return (esp holds FFFFFFFF, not an address). But RenderEntity's own
-    // return sits a little further up the stack and is one of exactly two addresses - 0x732BDC after
-    // its RenderFadingAtomic call, 0x732BE3 after the clump one. Find that exact value (an earlier
-    // build scanned a range and matched stale data, which corrupted esp; matching the precise
-    // address does not), set eip to it and esp just past its slot, and RenderEntity's epilogue runs
-    // as though the draw returned. One model is not drawn for one frame; the game lives.
-    CONTEXT* ctx = info->ContextRecord;
-    const bool wildCall = code == EXCEPTION_ACCESS_VIOLATION &&
-                          (ctx->Eip == 0xFFFFFFFF || ctx->Eip < 0x10000);
-    if (wildCall) {
-        for (unsigned off = 0; off <= 0x40; off += 4) {
-            const DWORD slot = ctx->Esp + off;
-            if (IsBadReadPtr((void*)slot, 4)) break;
-            const DWORD ret = *(const DWORD*)slot;
-            if (ret == 0x732BDC || ret == 0x732BE3) {
-                static LONG recovered = 0;
-                if (InterlockedIncrement(&recovered) <= 20)
-                    Log::Write("CRASH: recovered from a render call through %08X (model %d not drawn "
-                               "this frame; a runtime-corrupted mesh instance)",
-                               (unsigned)ctx->Eip, RenderGuard::LastRenderedModel());
-                ctx->Eip = ret;
-                ctx->Esp = slot + 4;
-                return EXCEPTION_CONTINUE_EXECUTION;
-            }
-        }
-    }
+    // (Two builds tried to recover from this render fault here by unwinding the stack to RenderEntity.
+    // Neither held: the first assumed a return address at esp and never fired, the second matched the
+    // exact return, fired once, and then the frame faulted again inside this module. VEH stack surgery
+    // over a live RenderWare frame is not survivable, so this handler only reports. The cure is to
+    // convert the geometry into San Andreas RenderWare form in the importer, not to catch the fault.)
 
     if (InterlockedCompareExchange(&gLogged, 1, 0) != 0) return EXCEPTION_CONTINUE_SEARCH;
 

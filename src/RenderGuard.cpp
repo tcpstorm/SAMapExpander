@@ -31,7 +31,6 @@ static SafetyHookInline& Hook() { static SafetyHookInline h; return h; }
 int gReports = 0;
 long gSkipped = 0;
 long gStaleSkipped = 0;
-long gDumpCount = 0;
 volatile int gLastModel = -1;   // model of the entity RenderEntity is drawing right now
 
 // A CEntity: readable, a vtable somewhere in the executable's .rdata, a model index in range, and a
@@ -101,69 +100,11 @@ void __cdecl Hooked_RenderEntity(void* entity, float distance) {
         }
     }
 
-    // Dump the RwObject of a model under investigation, each render, so the last line written before
-    // it faults shows the corrupt atomic - which field holds FFFFFFFF names what to trace. Capped so
-    // a model that renders fine for a while does not fill the log.
-    if (model == Settings::world.dumpRenderModel && gDumpCount < 240) {
-        gDumpCount++;
-        if (rwObject && !IsBadReadPtr(rwObject, 0xA0)) {
-            // The whole RpAtomic (~0x74) plus a little past, so the pipeline pointer near its end -
-            // where an instance failure leaves FFFFFFFF - is not cut off as an earlier dump did. Each
-            // word is labelled by byte offset for tracing.
-            const unsigned* w = (const unsigned*)rwObject;
-            for (int base = 0; base < 0x28; base += 8)
-                Log::Write("dump: model %u rwobj+%02X: %08X %08X %08X %08X %08X %08X %08X %08X",
-                           model, base * 4, w[base], w[base + 1], w[base + 2], w[base + 3],
-                           w[base + 4], w[base + 5], w[base + 6], w[base + 7]);
-            // The geometry is at RpAtomic+0x18 (0x14 is repEntry, null until instanced). RpGeometry
-            // holds RpMaterialList at +0x18: the material array pointer and count. Dump the geometry
-            // head, then each material's texture (+0x00) and pipeline (+0x0C) - a corrupt one of those
-            // is where the render calls through FFFFFFFF.
-            const void* geom = *(void* const*)((const uint8_t*)rwObject + 0x18);
-            if (geom && !IsBadReadPtr(geom, 0x60)) {
-                const unsigned* g = (const unsigned*)geom;
-                for (int base = 0; base < 0x18; base += 8)
-                    Log::Write("dump: model %u geom+%02X: %08X %08X %08X %08X %08X %08X %08X %08X",
-                               model, base * 4, g[base], g[base + 1], g[base + 2], g[base + 3],
-                               g[base + 4], g[base + 5], g[base + 6], g[base + 7]);
-                // Find the material list: the count 165 (0xA5) with a readable pointer just before it.
-                for (int i = 3; i < 0x16; i++) {
-                    if (g[i] == 165 && !IsBadReadPtr((void*)g[i - 1], 4)) {
-                        void** mats = (void**)g[i - 1];
-                        Log::Write("dump: model %u material array at geom+%02X = %08X, %u materials",
-                                   model, (i - 1) * 4, g[i - 1], g[i]);
-                        for (int m = 0; m < 165; m++) {
-                            void* mat = mats[m];
-                            if (IsBadReadPtr(mat, 0x1C)) {
-                                Log::Write("dump:   material %d ptr %08X UNREADABLE", m, (unsigned)(uintptr_t)mat);
-                                continue;
-                            }
-                            const unsigned tex = *(const unsigned*)mat;                                // RwTexture* at 0x00
-                            const unsigned pipe = *(const unsigned*)((const uint8_t*)mat + 0x08);       // RxPipeline* at 0x08
-                            // The texture's raster (RwTexture+0x00), where the D3D9 data hangs.
-                            unsigned raster = 0;
-                            if (tex && !IsBadReadPtr((void*)tex, 4)) raster = *(const unsigned*)tex;
-                            const bool badPipe = pipe == 0xFFFFFFFF || (pipe && IsBadReadPtr((void*)pipe, 4));
-                            const bool badTex = tex && (tex == 0xFFFFFFFF || IsBadReadPtr((void*)tex, 0x10));
-                            const bool badRaster = raster == 0xFFFFFFFF || (raster && IsBadReadPtr((void*)raster, 4));
-                            if (badPipe || badTex || badRaster || m < 2)
-                                Log::Write("dump:   material %d %08X: texture %08X raster %08X pipeline %08X%s%s%s",
-                                           m, (unsigned)(uintptr_t)mat, tex, raster, pipe,
-                                           badPipe ? " PIPE-BAD" : "", badTex ? " TEX-BAD" : "",
-                                           badRaster ? " RASTER-BAD" : "");
-                        }
-                        break;
-                    }
-                }
-            } else {
-                Log::Write("dump: model %u geometry pointer %08X is %s", model,
-                           (unsigned)(uintptr_t)geom, geom ? "unreadable" : "NULL");
-            }
-        } else {
-            Log::Write("dump: model %u rwobj %08X unreadable", model, (unsigned)(uintptr_t)rwObject);
-        }
-    }
-
+    // (A dump of this entity's RwObject, geometry and every material used to sit here, to find the
+    // FFFFFFFF the render calls through. It cleared every one of them - atomic, geometry counts, all
+    // 165 materials, their textures and rasters - proving the corruption is built at instance time,
+    // not present in the data. It then became the crash itself: walking the material array while it
+    // was corrupt faulted inside this module. Removed; the finding it produced stands.)
     // Breadcrumb for the crash log: which model was drawing if something still faults past here.
     gLastModel = model;
     Hook().ccall<void>(entity, distance);
