@@ -319,10 +319,16 @@ All run in throwaway containers; nothing is installed on the host.
   - *Still wrong.* `Events::ComputeDamageResponse` (0x4C0327) and `Events::ComputeDamageAnim` (0x4B44BB) branch on
     `type >= 47` into the arm for the pseudo weapons, and that bound cannot be raised without sending `RAMMEDBYCAR`
     with it — so a ped shot with a new gun takes the right damage but plays the generic reactions. `CHud::DrawWeaponIcon`
-    (0x58D7D0) draws the HUD icon from a texture in the weapon model's own TXD named *model name* + `ICON` — SA's
-    `desert_eagle.txd` holds `desert_eagleicon`, and an imported `v_python.txd` holds only `python` and `gun_python`,
-    so the new guns show no icon in the wheel. Fixing it means the importer adding a `<model>icon` texture to each
-    weapon TXD it copies. `CDarkel` (0x43D7B6) will not hand a new gun back after a rampage. A savegame carrying one
+    (0x58D7D0) finds the HUD icon by *key*, not by name: it takes `CBaseModelInfo::m_nKey` — the model name folded
+    through `CKeyGen::GetUppercaseKey` (0x53CF30, `toupper` into a standard reflected CRC-32) — appends the literal
+    `"ICON"` with `CKeyGen::AppendStringToKey` (0x53CF70, the same fold without the `toupper`), and looks that key up
+    in the dictionary bound to the weapon's model. So the texture is `<model name>icon` in any case, which is how SA
+    gets away with `desert_eagleicon` in one dictionary and `SNIPERicon` in another. `CHud::DrawCrossHairs` (0x58E888)
+    does the same with `"CROSSHAIR"` for a scoped weapon's reticle. **`tools/import_city.py` now writes both**: Vice
+    City already ships the icon in the weapon's own dictionary under the weapon's plain name (`python.txd` holds
+    `python`, 64×64 with alpha, beside the skin `gun_python`), so a second copy goes in under the name SA will ask
+    for; where the source has none — the reticle, which neither III nor VC keeps there — the donor's own SA art is
+    copied instead. `CDarkel` (0x43D7B6) will not hand a new gun back after a rampage. A savegame carrying one
     expects the mod to still be installed.
 - All 13 of `CPed`'s weapon slots (`m_aWeapons` at +0x5A0, `0x1C` each) are used, and `Ped::GiveWeapon` indexes them
   without a bounds check — but a slot *groups* weapons rather than naming one (slot 2 already holds the pistol, the
