@@ -108,7 +108,9 @@ constexpr int kEntityPoolMargin = 256;
 // region's buildings need their own nodes on top of the ones San Andreas' map already holds, and a
 // building spans a few 50-unit sectors, so budget several per inst line.
 constexpr uintptr_t kPtrNodePoolSizeOperand = 0x550F46;  // imm32 of `push 70000` in CPools::Initialise
+constexpr uintptr_t kPtrNodeDoubleLinkPoolSizeOperand = 0x550F82;  // imm32 of `push 3200` in CPools::Initialise
 constexpr int kVanillaPtrNodePool = 70000;
+constexpr int kVanillaPtrNodeDoubleLinkPool = 3200;
 constexpr int kPtrNodesPerInstLine = 8;
 constexpr int kPtrNodePoolMargin = 1024;
 
@@ -1023,6 +1025,43 @@ void RaiseEntityPools() {
         patch::SetUInt(kPtrNodePoolSizeOperand, (unsigned)wantNodes);
         Log::Write("inst: sector pointer-node pool %d -> %d entries (a building takes one per "
                    "50-unit sector it covers)", nodes, wantNodes);
+    }
+
+    // And the other pointer-node pool, which is a different pool entirely.
+    //
+    // A building is filed into its sectors through CPtrListSingleLink, out of the 70000-entry pool
+    // raised above. Anything that can move - and a dummy object promoted to a real CObject can -
+    // is filed through CPtrListDoubleLink instead, out of a pool of 3200. San Andreas sizes that
+    // for its own handful of dynamic props, and until the regions had object data none of their
+    // models qualified, so nothing here ever touched it.
+    //
+    // Importing object.dat changed that: it is what gives a model a row in ms_aObjectInfo, and a
+    // model with a row is loaded as a dummy object rather than a building. 4672 of the two regions'
+    // placements now qualify - 2336 in each, as it happens - against a pool of 3200 shared with the
+    // whole of San Andreas. CPtrListDoubleLink::AddItem does not check whether the pool gave it
+    // anything, so the first placement past the end wrote through a null node and took the game
+    // down during the DAT load screen, before anything was on screen to see.
+    //
+    // Sized off the inst-line count like the pool above rather than off how many lines have object
+    // data, which is not known this early - CPools::Initialise runs long before any region file is
+    // read. That over-allocates, since only the dynamic ones draw on this pool, but a node is small
+    // and running out is fatal where a spare megabyte is not.
+    int dnodes = (int)patch::GetUInt(kPtrNodeDoubleLinkPoolSizeOperand);
+    if (dnodes != kVanillaPtrNodeDoubleLinkPool) {
+        // Not the push this expects, so the address is wrong or something else has already moved
+        // it. Leave it alone rather than writing a size into whatever is actually there.
+        Log::Write("inst: the double-link pointer-node pool size reads %d, not the expected %d; "
+                   "leaving it alone (dynamic objects may run out of sector nodes)",
+                   dnodes, kVanillaPtrNodeDoubleLinkPool);
+        return;
+    }
+    int wantDnodes = Settings::world.ptrNodePoolLimit;
+    if (wantDnodes < 0) wantDnodes = dnodes + lines * kPtrNodesPerInstLine + kPtrNodePoolMargin;
+    if (wantDnodes > dnodes) {
+        patch::SetUInt(kPtrNodeDoubleLinkPoolSizeOperand, (unsigned)wantDnodes);
+        Log::Write("inst: double-link pointer-node pool %d -> %d entries (every object.dat model "
+                   "is placed as a dynamic object and files itself through this one)",
+                   dnodes, wantDnodes);
     }
 }
 
