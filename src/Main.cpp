@@ -22,6 +22,7 @@
 #include "ModelLimits.h"
 #include "RegionWeapons.h"
 #include "RegionPickups.h"
+#include "PickupSlots.h"
 
 using namespace plugin;
 
@@ -43,6 +44,9 @@ public:
             // Before CityLoader, which budgets a region's weap IDE lines against the weapon model
             // store this has just moved out of the way.
             RegionWeapons::Install();
+            // Before RegionPickups, which counts free slots the moment it is asked to place:
+            // the array has to be the longer one by then or it sees only San Andreas.
+            PickupSlots::Install();
             RegionPickups::Install();
             CityLoader::Install();
             // Only when this process is the one placing the region: under SA-MP the server owns

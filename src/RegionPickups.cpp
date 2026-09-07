@@ -43,6 +43,7 @@
 #include <string>
 #include <vector>
 #include "RegionPickups.h"
+#include "PickupSlots.h"
 #include "RegionWeapons.h"
 #include "Settings.h"
 #include "Log.h"
@@ -51,9 +52,13 @@ using namespace plugin;
 
 namespace {
 
-constexpr uintptr_t kPickupArray = 0x9788C0;   // CPickups::aPickUps[620]
+// Where the array is and how long it is. PickupSlots moves it to the heap and lengthens it
+// before this runs, because San Andreas' own script fills 551 of the vanilla 620 and a region
+// would never fit beside that. When it has left the array alone these give the vanilla pair,
+// so nothing below needs to know which of the two happened.
+#define kPickupArray (PickupSlots::Array())
 constexpr unsigned kPickupStride = 0x20;
-constexpr int kPickupCount = 620;
+#define kPickupCount (PickupSlots::Count() ? PickupSlots::Count() : 620)
 constexpr unsigned kPickupTypeOffset = 0x1C;   // 0 is PICKUP_NONE, i.e. a free slot
 constexpr unsigned kPickupModelOffset = 0x18;  // uint16, written by GenerateNewOne at 0x45729A
 

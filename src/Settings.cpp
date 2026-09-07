@@ -152,6 +152,7 @@ namespace Settings {
         world.linkRegionLods = true;
         world.dropUnlinkedLods = true;
         world.regionWeapons = true;
+        world.regionWeaponMode = 0;        // Add: new weapon types, San Andreas' own left alone
         world.regionPickups = true;
         world.pickupReserve = 200;
 
@@ -189,6 +190,11 @@ namespace Settings {
             world.linkRegionLods = w->GetBool("LinkRegionLods", true);
             world.dropUnlinkedLods = w->GetBool("DropUnlinkedLods", true);
             world.regionWeapons = w->GetBool("RegionWeapons", true);
+            // Add gives the region's guns weapon types of their own and leaves San Andreas' alone;
+            // Replace writes them over the nearest San Andreas weapon, which changes that weapon
+            // everywhere. Anything else reads as Add, because Add is the one that cannot surprise.
+            world.regionWeaponMode =
+                _stricmp(w->GetString("RegionWeaponMode", "Add").c_str(), "Replace") == 0 ? 1 : 0;
             world.regionPickups = w->GetBool("RegionPickups", true);
             world.pickupReserve = w->GetInt("PickupReserve", 200);
             for (const std::string& s : SplitPaths(w->GetString("DebugSkipModels", ""))) world.skipRenderModels.push_back(atoi(s.c_str()));

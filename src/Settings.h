@@ -84,7 +84,8 @@ struct WorldSettings {
     bool linkRegionLods;                   // rebuild HD->LOD links from the source game's naming rule; off = LODs draw as plain objects
     bool dropUnlinkedLods;                 // leave out LODs no HD hides - orphans and whole-district island meshes - which SA would draw through the real geometry
     std::vector<int> skipRenderModels;     // remapped model ids the render guard refuses to draw (a crash workaround while a model is diagnosed)
-    bool regionWeapons;                    // let a region's weapons.dat take over San Andreas weapon types
+    bool regionWeapons;                    // let a region's weapons.dat give San Andreas its guns
+    int regionWeaponMode;                  // 0 Add: new weapon types, SA's own untouched; 1 Replace: written over SA's
     bool regionPickups;                    // place the world pickups a region's pickups.dat lists
     int pickupReserve;                     // CPickup slots left for San Andreas' own script, of its 620
     bool debug;                      // verbose log, F8 diagnostics, water render statistics

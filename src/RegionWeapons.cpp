@@ -1,34 +1,31 @@
 // Gives San Andreas the guns Vice City and Liberty City had and it does not - the Python, the
-// Ruger, the M60 - by handing their models and their numbers to weapon types San Andreas already
-// knows, rather than by inventing new ones.
+// Ruger, the M60 - in one of two ways, and the difference between them is the whole point of the
+// [World] RegionWeaponMode key.
 //
-// The reason it has to be that way is that a San Andreas weapon is not an open-ended data file the
-// way text is. CWeaponInfo::LoadWeaponData (0x5BE670) does parse data/weapon.dat, but the name in
-// column A is looked up in a fixed table of 49 char* at 0x8D6150 by CWeaponInfo::FindWeaponType
-// (0x743D10), whose loop ends at `cmp esi, 0x30`; a name the table does not hold returns 0, so a
-// line for a weapon San Andreas never had is not ignored - it silently overwrites UNARMED. The
-// records themselves are aWeaponInfo[80] at 0xC8AAB8, 0x70 bytes each, and CWeaponInfo::GetWeaponInfo
-// (0x743C60) indexes it as `type + {POOR 25, STD 0, PRO 36, COP 47}` with no bounds check at all,
-// which packs the eleven skill-varied weapons in immediately behind the 47 real ones and leaves no
-// free type index.
+//   Add      (the default, and what you want) - the gun becomes a weapon type of its own,
+//            alongside San Andreas' forty-seven. The Desert Eagle stays a Desert Eagle; the Python
+//            is a new gun that happens to take the Desert Eagle's code paths. WeaponTypes.cpp does
+//            the widening that makes this possible and explains exactly what it patches.
 //
-// Growing all of that is not the hard part - only 54 instructions name the array, against the 1407
-// ModelLimits rewrites for the model id space. The hard part is that every switch keyed on weapon
-// type - CWeapon::Fire (0x742880), CWeapon::FireInstantHit (0x740C85), the firing audio at
-// 0x504F9F - is a `cmp` against the vanilla maximum followed by `ja default`. A genuinely new type
-// would therefore be a gun that draws in the player's hand, appears in the HUD, and does nothing
-// when the trigger is pulled, in silence, until each of those functions is reimplemented. That is
-// the trade this file refuses to make.
+//   Replace  the older behaviour, kept because it is what shipped: the gun is written over the San
+//            Andreas weapon nearest to it. There is one weapon table and it is global, so this
+//            changes that weapon in Los Santos too. Off unless you ask for it.
 //
-// So a region's weapons.dat says, per line, which San Andreas weapon type it takes over, and this
-// writes the source game's model, range, clip, damage and fire offset into every skill variant of
-// that type. The cost is stated plainly in MapExpander.ini and the file ships commented out: the
-// Desert Eagle becomes a Python in Los Santos as well as in Vice City, because there is one
-// weapon table and it is global.
+// In both modes a region's weapons.dat names, per line, the San Andreas weapon involved. Under
+// Replace that weapon's records are overwritten. Under Add it is only a donor: the new type's
+// record starts as a copy of the donor's STD record - which is where its target range, weapon slot,
+// animation group, skill levels and animation frame numbers come from, none of which the source
+// game has a column for - and then the file's own columns are written on top. The donor is also
+// what tells WeaponTypes which case to route the new type to in each of the game's five switches on
+// weapon type, so a Python fires down the Desert Eagle's path and sounds like one until its own
+// record says otherwise.
 //
-// Everything the source game has no column for - San Andreas' target range, weapon slot, animation
-// group, skill levels, accuracy, move speed and animation frame numbers - is left as San Andreas
-// wrote it, spelled `*` in the file. The animation numbers in particular index San Andreas' own
+// A line may name the new gun explicitly, as `PYTHON/DESERT_EAGLE`; a bare `DESERT_EAGLE` still
+// works and Add mode then makes a name up from the model, which is how a weapons.dat written before
+// this existed keeps working.
+//
+// Everything spelled `*` in the file is left alone: under Replace that means San Andreas' own
+// value, under Add it means the donor's. The animation numbers in particular index San Andreas' own
 // IFP animations, which the source game's numbers do not address.
 //
 // The models come in as ordinary `weap` IDE lines through CityLoader, which needs somewhere to put
@@ -37,8 +34,9 @@
 // moved to the heap with room to spare first, in the same style as ModelLimits' time store - eight
 // instructions name it, and none of them is written unless all eight still hold the vanilla value.
 //
-// None of this runs under SA-MP. The server owns weapon behaviour there, and a client that quietly
-// turned its Desert Eagle into a Python would be desynchronised from everyone else.
+// None of this runs under SA-MP. The server owns weapon behaviour there: a client whose Desert
+// Eagle had quietly become a Python, or which knew about a gun nobody else has, would be
+// desynchronised from everyone else.
 #include <plugin.h>
 #include <CModelInfo.h>
 #include <safetyhook.hpp>
@@ -50,6 +48,7 @@
 #include <string>
 #include <vector>
 #include "RegionWeapons.h"
+#include "WeaponTypes.h"
 #include "Settings.h"
 #include "Log.h"
 
@@ -126,6 +125,7 @@ const StoreSite kStoreSites[] = {
 uint8_t* gStore = nullptr;
 int gStoreCapacity = kVanillaStoreCapacity;
 bool gActive = false;
+bool gAdding = false;   // Add mode: new weapon types, San Andreas' own left alone
 
 bool RelocateStore() {
     for (const StoreSite& s : kStoreSites) {
@@ -208,6 +208,11 @@ int AnimGroupByName(const std::string& name) {
 }
 
 uintptr_t WeaponInfoAt(int type, int skill) {
+    // A type WeaponTypes handed out is a record of its own at the end of the array and has no skill
+    // variants: nothing in San Andreas would ever ask for one, because CPed::GetWeaponSkill
+    // (0x5E3B60) answers STD for anything outside PISTOL..TEC9.
+    if (type >= WeaponTypes::FirstType() && type <= WeaponTypes::LastType())
+        return skill == 1 ? kWeaponInfoArray + (uintptr_t)type * kWeaponInfoStride : 0;
     if (type < 0 || type > kLastWeaponType) return 0;
     if (skill != 1 && (type < kFirstSkilledWeapon || type > kLastSkilledWeapon)) return 0;
     int index = type + kSkillOffset[skill];
@@ -230,7 +235,9 @@ unsigned char ModelType(void* modelInfo) {
 
 struct Line {
     std::string sourceName;   // what the source game called this gun, for the log only
-    int type = -1;
+    std::string newName;      // what Add mode will call it; empty means "make one up from the model"
+    int donor = -1;           // the San Andreas weapon type: overwritten in Replace, borrowed in Add
+    int type = -1;            // where this line's numbers actually go - the donor, or a new type
     std::vector<std::string> field;
 };
 
@@ -290,15 +297,24 @@ bool ReadWeaponFile(RegionArms& arms) {
         if (t.size() < kFieldsMin || t.size() > kFieldsMax) { malformed++; continue; }
 
         Line entry;
-        entry.type = WeaponTypeByName(t[0]);
-        if (entry.type < 0) {
+        // `PYTHON/DESERT_EAGLE` names the new gun and its donor; a bare name is the donor alone,
+        // which is all Replace mode ever needed and all a weapons.dat written before Add mode has.
+        std::string donorName = t[0];
+        size_t slash = donorName.find('/');
+        if (slash != std::string::npos) {
+            entry.newName = Trim(donorName.substr(0, slash));
+            donorName = Trim(donorName.substr(slash + 1));
+        }
+        entry.donor = WeaponTypeByName(donorName);
+        if (entry.donor < 0) {
             if (unknown < 5)
                 Log::Write("[%s] weapons: San Andreas has no weapon type called %s; the line is "
                            "dropped rather than written over UNARMED, which is where its own parser "
-                           "would have put it", arms.region->name.c_str(), t[0].c_str());
+                           "would have put it", arms.region->name.c_str(), donorName.c_str());
             unknown++;
             continue;
         }
+        entry.type = entry.donor;
         entry.sourceName = comment;
         entry.field.assign(t.begin() + 1, t.end());
         arms.lines.push_back(entry);
@@ -313,6 +329,9 @@ bool ReadWeaponFile(RegionArms& arms) {
 // ---------------------------------------------------------------- applying it
 
 int ApplyLine(const RegionArms& arms, const Line& line) {
+    // Add mode leaves a line it could not give a type of its own at -1 rather than at the donor,
+    // precisely so that it cannot be written over San Andreas' weapon by accident.
+    if (line.type < 0) return 0;
     const std::vector<std::string>& f = line.field;
 
     // The model is named, not numbered: the importer renames every asset into the region's own
@@ -345,10 +364,33 @@ int ApplyLine(const RegionArms& arms, const Line& line) {
         Log::Write("[%s] weapons: animation group %s is not one San Andreas knows; its own is kept",
                    arms.region->name.c_str(), f[6].c_str());
 
+    // Add mode gave this line a type of its own; Replace mode left it pointing at the donor.
+    const bool adding = line.type != line.donor;
+
     int written = 0;
     for (int skill = 0; skill < 4; skill++) {
         uintptr_t record = WeaponInfoAt(line.type, skill);
-        if (!record || !RecordInUse(record)) continue;
+        if (!record) continue;
+        if (adding) {
+            // The record has to still be the empty one CWeaponInfo::Initialise leaves behind. A
+            // weapon.dat that gives some weapon other than the pistol a $COP line would have
+            // written this far up the array, and taking it would break that weapon silently.
+            if (!WeaponTypes::RecordIsFree(line.type)) {
+                Log::Write("[%s] weapons: aWeaponInfo[%d] has been claimed by a weapon.dat line of "
+                           "its own, so %s is left out rather than written over it",
+                           arms.region->name.c_str(), line.type, line.newName.c_str());
+                return 0;
+            }
+            // Start from the donor, so that everything the source game has no column for - the
+            // target range, the slot, the animation group and its frame numbers, the skill
+            // thresholds, the accuracy and move speed - is a working San Andreas weapon's rather
+            // than a zeroed record. The columns below then say where the new gun differs.
+            const uintptr_t from = WeaponInfoAt(line.donor, 1);
+            if (!from) return 0;
+            memcpy((void*)record, (const void*)from, kWeaponInfoStride);
+        } else if (!RecordInUse(record)) {
+            continue;
+        }
 
         if (fireType >= 0) *(int32_t*)(record + kFireType) = fireType;
         if (!Keep(f[1])) *(float*)(record + kTargetRange) = (float)atof(f[1].c_str());
@@ -384,14 +426,90 @@ void ApplyAll() {
             int n = ApplyLine(arms, line);
             if (n) { weapons++; records += n; }
         }
-        Log::Write("[%s] weapons: %d San Andreas weapon type(s) taken over, %d skill record(s) "
-                   "written - these apply to the whole game, not only inside the region",
-                   arms.region->name.c_str(), weapons, records);
+        if (gAdding)
+            Log::Write("[%s] weapons: %d gun(s) added as weapon types of their own; San Andreas' "
+                       "own weapons are exactly as they were", arms.region->name.c_str(), weapons);
+        else
+            Log::Write("[%s] weapons: %d San Andreas weapon type(s) taken over, %d skill record(s) "
+                       "written - these apply to the whole game, not only inside the region",
+                       arms.region->name.c_str(), weapons, records);
         for (const Line& line : arms.lines)
-            Log::Debug("[%s] weapons: %s now %s", arms.region->name.c_str(),
-                       *(const char* const*)(kWeaponNames + (uintptr_t)line.type * 4),
+            Log::Debug("[%s] weapons: %s is %s", arms.region->name.c_str(),
+                       gAdding ? line.newName.c_str()
+                               : *(const char* const*)(kWeaponNames + (uintptr_t)line.type * 4),
                        line.sourceName.empty() ? "from the region" : line.sourceName.c_str());
     }
+}
+
+// ---------------------------------------------------------------- claiming the new types
+
+bool StartsWithNoCase(const std::string& s, const char* prefix) {
+    size_t n = strlen(prefix);
+    if (s.size() <= n) return false;
+    for (size_t i = 0; i < n; i++)
+        if (tolower((unsigned char)s[i]) != tolower((unsigned char)prefix[i])) return false;
+    return true;
+}
+
+// A line that did not name its gun is named after its mesh instead - v_python becomes PYTHON -
+// stripping the prefix the importer puts on every asset it renames. That is what makes a
+// weapons.dat written before Add mode existed still add rather than replace.
+std::string NameFromModel(const std::string& model) {
+    std::string s = model;
+    for (const char* p : { "v_", "vc_", "lc_", "w_" })
+        if (StartsWithNoCase(s, p)) { s = s.substr(strlen(p)); break; }
+    for (char& c : s) c = (char)toupper((unsigned char)c);
+    return s;
+}
+
+// Ask WeaponTypes to widen the game, then hand every line a weapon type of its own. This runs while
+// the ASI loads, which is early enough that CWeaponInfo::FindWeaponType will already know the new
+// names by the time data/weapon.dat is parsed, and long before anything can be fired.
+bool ClaimNewTypes() {
+    if (!WeaponTypes::Install()) return false;
+
+    int added = 0;
+    for (RegionArms& arms : Arms()) {
+        for (Line& line : arms.lines) {
+            // Until a type of its own has been claimed the line points at the donor, and a line
+            // left pointing at the donor is a line that would overwrite San Andreas' own weapon.
+            // Nothing here may end that way: a gun that cannot be added is dropped, not swapped.
+            line.type = -1;
+            if (line.field.size() <= 3 || Keep(line.field[3]) || line.field[3] == "-1") {
+                Log::Write("[%s] weapons: a line with no mesh of its own cannot be a new weapon - "
+                           "there would be nothing to hold; skipped", arms.region->name.c_str());
+                continue;
+            }
+            std::string name = line.newName.empty() ? NameFromModel(line.field[3]) : line.newName;
+            if (name.empty()) continue;
+            // A new gun must not answer to a name San Andreas already uses, or FindWeaponType would
+            // hand out whichever came first and a weapon.dat line meant for one would land on the
+            // other. Namespacing it by region is the same rule the imported assets follow.
+            if (WeaponTypeByName(name) >= 0) {
+                std::string qualified = arms.region->name + "_" + name;
+                for (char& c : qualified) c = (char)toupper((unsigned char)c);
+                Log::Write("[%s] weapons: San Andreas already has a weapon called %s, so the new "
+                           "one is called %s", arms.region->name.c_str(), name.c_str(),
+                           qualified.c_str());
+                name = qualified;
+            }
+            // Deliberately leaked: the game's name table holds the pointer for as long as it runs,
+            // and there is nowhere sensible to free it that is not after the game has stopped.
+            char* owned = strdup(name.c_str());
+            if (!owned) continue;
+            const int type = WeaponTypes::Add(owned, line.donor);
+            if (type < 0) { free(owned); continue; }
+            line.type = type;
+            line.newName = name;
+            added++;
+        }
+    }
+    if (!added) {
+        Log::Write("weapons: no line could be given a weapon type of its own");
+        return false;
+    }
+    gAdding = true;
+    return true;
 }
 
 // ---------------------------------------------------------------- the hook
@@ -417,7 +535,18 @@ bool Active() { return gActive && !Arms().empty(); }
 uintptr_t Store() { return gActive ? (uintptr_t)gStore : kStoreCount; }
 int Capacity() { return gStoreCapacity; }
 
-int WeaponType(const char* name) { return WeaponTypeByName(name); }
+// A region's pickups.dat names the San Andreas weapon each of its street pickups stood for, because
+// that is all there was to name when the importer wrote it. Under Add mode that name is the donor,
+// and what should really lie in Vice City's street is the gun that borrowed it - the Python, not
+// the Desert Eagle. Only this lookup is redirected: San Andreas' own code never comes through here.
+int WeaponType(const char* name) {
+    const int donor = WeaponTypeByName(name);
+    if (donor < 0 || !gAdding) return donor;
+    for (const RegionArms& arms : Arms())
+        for (const Line& line : arms.lines)
+            if (line.donor == donor && line.type != donor) return line.type;
+    return donor;
+}
 
 int WeaponModel(int weaponType) {
     uintptr_t record = WeaponInfoAt(weaponType, 1);   // the STD record, which every weapon has
@@ -429,8 +558,9 @@ void Install() {
     for (const MapRegion& r : Settings::regions) any |= !r.weaponFile.empty();
     if (!any || !Settings::world.regionWeapons) return;
 
-    // Under SA-MP the server owns what every weapon is and does, and a client whose Desert Eagle
-    // had quietly become a Python would be shooting a different gun from everyone else.
+    // Under SA-MP the server owns what every weapon is and does. A client whose Desert Eagle had
+    // quietly become a Python, or which knew about a gun the server has never heard of, would be
+    // shooting something nobody else can see.
     if (Settings::RunningUnderSaMp()) {
         Log::Write("SA-MP: the region weapon import is off, the server owns the weapon table");
         return;
@@ -447,6 +577,17 @@ void Install() {
     }
     if (Arms().empty()) return;
 
+    if (Settings::world.regionWeaponMode == 0 && !ClaimNewTypes()) {
+        // Adding is what was asked for and adding is not possible. Quietly falling back on Replace
+        // would change San Andreas' own guns behind the player's back, which is the one thing this
+        // must never do, so the region's weapons are simply left out.
+        Log::Write("weapons: the region's guns are left out. Set [World] RegionWeaponMode = Replace "
+                   "if you would rather have them written over San Andreas' own weapons, which "
+                   "changes those weapons for the whole game");
+        Arms().clear();
+        return;
+    }
+
     LoadWeaponDataOriginal() = safetyhook::create_inline(reinterpret_cast<void*>(0x5BE670),
                                                         reinterpret_cast<void*>(&LoadWeaponDataHook));
     if (!LoadWeaponDataOriginal()) {
@@ -457,8 +598,11 @@ void Install() {
     }
     int lines = 0;
     for (const RegionArms& arms : Arms()) lines += (int)arms.lines.size();
-    Log::Write("weapons: %d line(s) from %u region file(s) will be written over San Andreas' own "
-               "weapon table after it loads", lines, (unsigned)Arms().size());
+    Log::Write(gAdding ? "weapons: %d line(s) from %u region file(s) will be added to San Andreas' "
+                         "weapon table after it loads, as types of their own"
+                       : "weapons: %d line(s) from %u region file(s) will be written over San "
+                         "Andreas' own weapon table after it loads",
+               lines, (unsigned)Arms().size());
 }
 
 }
