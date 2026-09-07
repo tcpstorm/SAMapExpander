@@ -19,6 +19,12 @@ namespace WeaponTypes {
     // The San Andreas weapon a new type borrows its code paths from, or -1 for anything else.
     int DonorOf(int type);
 
+    // Remember where a new weapon's model info lives, which the caller has just looked up by name.
+    // Two of the game's functions read CWeaponModelInfo::m_nWeaponType and compare it against a
+    // fixed list, and this is how they are answered for; the array those pointers usually come from
+    // has been moved by ModelLimits, so the pointer has to be handed over rather than computed.
+    void SetModelInfo(int type, void* modelInfo);
+
     // True when aWeaponInfo[type] is still the record CWeaponInfo::Initialise left behind - a slot
     // of -1, which no weapon.dat line has overwritten. Only meaningful once the weapon table has
     // loaded, which is why claiming a type and writing its record are two separate steps.

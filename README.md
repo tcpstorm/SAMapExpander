@@ -316,6 +316,16 @@ All run in throwaway containers; nothing is installed on the host.
     weapon pickup whose type is 47 or above, and `CWeapon::IsType2Handed` (0x73B1E0) is a hardcoded list of seven
     types, so it is hooked rather than patched. Every site is verified against the exact bytes 1.0 US ships before
     anything is written; one mismatch and nothing at all is changed.
+  - *The equality tests.* Not everything keyed on a weapon type is a switch. Sweeping the camera, HUD and player code
+    for `cmp` against the sniper constants 33/34 turns up fifteen sites, and **eleven of them are camera modes, not
+    weapon types** — `TheCamera+0x830`, the global at 0xB6F858, the active cam's `m_nMode` at 0xB6F1A8 — so they come
+    right by themselves once `UpdateCameraWeaponModes` hands the new type its donor's camera mode. Two more
+    (`Camera::Process_AimWeapon` 0x52163D, `CHud::DrawCrossHairs` 0x58E1BD) are real type tests that `SNIPERRIFLE`
+    misses too, so the donor and the new type behave identically. That leaves two, and both are answered by lending
+    the function the donor's number for the length of the call and putting ours back on the way out — no
+    hand-assembled code: `CHud::DrawCrossHairs` (0x58E703, the branch that draws the scope's reticle; the
+    fall-through at 0x58E719 jumps past the `CROSSHAIR` lookup entirely) and `CPlayerPed::ProcessAnimGroups`
+    (0x6099D4/D9, which walk and run animations the player uses while holding it).
   - *Still wrong.* `Events::ComputeDamageResponse` (0x4C0327) and `Events::ComputeDamageAnim` (0x4B44BB) branch on
     `type >= 47` into the arm for the pseudo weapons, and that bound cannot be raised without sending `RAMMEDBYCAR`
     with it — so a ped shot with a new gun takes the right damage but plays the generic reactions. `CHud::DrawWeaponIcon`

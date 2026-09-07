@@ -335,6 +335,119 @@ void RouteDispatch(const Dispatch& d, const Widened& w, int type, int donor) {
                               : (uint32_t)d.expectedDefault;
 }
 
+// ---------------------------------------------------------------- standing in for the donor
+//
+// Not everything San Andreas keys on a weapon type is a jump table. A handful of places are plain
+// equality tests against one constant - `cmp edx, 0x22` and the branch that reads it - and those
+// cannot be lengthened, only rewritten, which would mean hand-assembled code dropped into the
+// middle of two functions that cannot be tested here. Where the whole of what such a function does
+// with the type is cosmetic and self-contained, there is a safer way with no assembly in it: hand
+// it the donor's number for the length of the call and put ours back on the way out. It is the same
+// trick as CWeapon::IsType2Handed below, and it is only used where nothing outside the call can see
+// the swap.
+//
+// Sweeping the camera, HUD and player code for `cmp` against the sniper constants 0x21 and 0x22
+// turns up fifteen sites, and eleven of them are not weapon types at all: they compare a CAMERA
+// mode, read from TheCamera's PlayerWeaponMode at +0x830, from the global at 0xB6F858, or from the
+// active cam's m_nMode at 0xB6F1A8. Those come right by themselves as soon as
+// CPed::UpdateCameraWeaponModes hands the new type its donor's camera mode, which the switch above
+// now does. Two more - Camera::Process_AimWeapon (0x52163D) and CHud::DrawCrossHairs (0x58E1BD) -
+// are real weapon-type tests, but SNIPERRIFLE is not in either list, so the donor misses them too
+// and a new type behaves identically without any help. That leaves exactly two:
+//
+//   CHud::DrawCrossHairs   0x58E703  `cmp edx, 0x22`  the branch that draws the scope's reticle;
+//                                    the fall-through at 0x58E719 jumps past the CROSSHAIR texture
+//                                    lookup entirely, so a scoped weapon that misses this test
+//                                    zooms in and shows nothing in the middle of the screen.
+//   CPlayerPed::ProcessAnimGroups     0x6099D4/0x6099D9 - which walk and run animations the player
+//                                    uses while holding the weapon; rifles get group 0x3C.
+//
+// Both are hooked below and answered for the donor.
+
+constexpr uintptr_t kFindPlayerPed = 0x56E210;   // __cdecl CPed* FindPlayerPed(int)
+constexpr unsigned kPedActiveSlot = 0x718;       // CPed::m_nActiveWeaponSlot, a signed byte
+constexpr unsigned kPedWeapons = 0x5A0;          // CPed::m_aWeapons[13]
+constexpr unsigned kPedWeaponStride = 0x1C;
+constexpr int kPedWeaponSlots = 13;
+constexpr unsigned kWeaponModelType = 0x24;      // CWeaponModelInfo::m_nWeaponType
+
+void* gModelInfo[kNewTypeCount] = {};
+
+// ---------------------------------------------------------------- CHud::DrawCrossHairs
+
+constexpr uintptr_t kDrawCrossHairs = 0x58E020;
+const uint8_t kDrawCrossHairsOp[5] = { 0x83, 0xEC, 0x30, 0x0F, 0xB6 };
+
+SafetyHookInline& CrossHairsOriginal() { static SafetyHookInline h; return h; }
+
+void __cdecl DrawCrossHairsHook() {
+    // The function reads the player's own m_aWeapons[activeSlot].m_nType inline, three times, and
+    // does nothing with it but choose a reticle - no state of the game hangs off it - so lending it
+    // the donor's number for one frame's HUD is safe and gives exactly the donor's crosshair, out
+    // of the donor's own texture dictionary.
+    typedef void* (__cdecl* FindPlayerPedFn)(int);
+    void* ped = reinterpret_cast<FindPlayerPedFn>(kFindPlayerPed)(-1);
+    int32_t* held = nullptr;
+    int32_t mine = 0;
+    if (ped) {
+        const int slot = *(const int8_t*)((uintptr_t)ped + kPedActiveSlot);
+        if (slot >= 0 && slot < kPedWeaponSlots) {
+            int32_t* type = (int32_t*)((uintptr_t)ped + kPedWeapons +
+                                       (unsigned)slot * kPedWeaponStride);
+            if (*type >= kFirstNewType && *type <= kLastNewType) {
+                const int donor = gDonor[*type - kFirstNewType];
+                if (donor >= 0) { held = type; mine = *type; *type = donor; }
+            }
+        }
+    }
+    CrossHairsOriginal().ccall<void>();
+    if (held) *held = mine;
+}
+
+// ---------------------------------------------------------------- CPlayerPed::ProcessAnimGroups
+
+constexpr uintptr_t kProcessAnimGroups = 0x6098F0;
+const uint8_t kProcessAnimGroupsOp[5] = { 0x51, 0x55, 0x56, 0x8B, 0xF1 };
+
+SafetyHookInline& AnimGroupsOriginal() { static SafetyHookInline h; return h; }
+
+void __fastcall ProcessAnimGroupsHook(void* self, void*) {
+    // This one reads CWeaponModelInfo::m_nWeaponType off a model info rather than off the ped, and
+    // which model info it reaches depends on the branch it takes, so every new weapon's model wears
+    // its donor's number for the length of the call. Nothing else reads that field from in here -
+    // CPickups::WeaponForModel, the other reader, is nowhere near an animation function.
+    int32_t* field[kNewTypeCount];
+    int32_t saved[kNewTypeCount];
+    int held = 0;
+    for (int i = 0; i < kNewTypeCount; i++) {
+        if (gDonor[i] < 0 || !gModelInfo[i]) continue;
+        int32_t* p = (int32_t*)((uintptr_t)gModelInfo[i] + kWeaponModelType);
+        if (*p != kFirstNewType + i) continue;      // somebody else owns it now; leave it alone
+        field[held] = p;
+        saved[held] = *p;
+        *p = gDonor[i];
+        held++;
+    }
+    AnimGroupsOriginal().thiscall<void>(self);
+    for (int i = 0; i < held; i++) *field[i] = saved[i];
+}
+
+bool gStandIns = false;
+
+// One inline hook, installed only while the function still begins with the bytes San Andreas ships,
+// and never fatal: a hook that will not go on costs a cosmetic detail and is said so in the log.
+void HookStandIn(uintptr_t address, const uint8_t* expected, size_t length, void* replacement,
+                 SafetyHookInline& store, const char* what, const char* consequence) {
+    if (!BytesAre(address, expected, length)) {
+        Log::Write("weapon types: %s is not what San Andreas ships, so it is left alone; %s",
+                   what, consequence);
+        return;
+    }
+    store = safetyhook::create_inline(reinterpret_cast<void*>(address), replacement);
+    if (!store)
+        Log::Write("weapon types: %s could not be hooked; %s", what, consequence);
+}
+
 // ---------------------------------------------------------------- CWeapon::IsType2Handed
 
 SafetyHookInline& TwoHandedOriginal() { static SafetyHookInline h; return h; }
@@ -365,6 +478,11 @@ int Remaining() { return gReady ? kLastNewType - gNext + 1 : 0; }
 int DonorOf(int type) {
     if (type < kFirstNewType || type > kLastNewType) return -1;
     return gDonor[type - kFirstNewType];
+}
+
+void SetModelInfo(int type, void* modelInfo) {
+    if (type < kFirstNewType || type > kLastNewType) return;
+    gModelInfo[type - kFirstNewType] = modelInfo;
 }
 
 bool RecordIsFree(int type) {
@@ -429,6 +547,18 @@ int Add(const char* name, int donorType) {
     gNames[type] = name;
     for (int i = 0; i < kDispatchCount; i++)
         RouteDispatch(kDispatch[i], gWidened[i], type, donorType);
+
+    // The two functions that test the type against a fixed constant rather than switching on it.
+    // Installed on the first gun and not before, so a game with no new weapons carries no hooks.
+    if (!gStandIns) {
+        gStandIns = true;
+        HookStandIn(kDrawCrossHairs, kDrawCrossHairsOp, sizeof(kDrawCrossHairsOp),
+                    reinterpret_cast<void*>(&DrawCrossHairsHook), CrossHairsOriginal(),
+                    "CHud::DrawCrossHairs", "a scoped gun will zoom in and show no reticle");
+        HookStandIn(kProcessAnimGroups, kProcessAnimGroupsOp, sizeof(kProcessAnimGroupsOp),
+                    reinterpret_cast<void*>(&ProcessAnimGroupsHook), AnimGroupsOriginal(),
+                    "CPlayerPed::ProcessAnimGroups", "the player will walk with the wrong stance");
+    }
 
     // Only worth an inline hook if one of the guns actually is a rifle; a pistol answers the same
     // either way, and a hook not installed cannot go wrong.
