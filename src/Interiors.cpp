@@ -48,6 +48,8 @@
 #include <CPlayerPed.h>
 #include <CVehicle.h>
 #include <CWorld.h>
+#include <CStreaming.h>
+#include <CTimer.h>
 #include <safetyhook.hpp>
 #include <cstdint>
 #include <cstdio>
@@ -84,6 +86,13 @@ constexpr uintptr_t kEntryExitManagerUpdate = 0x440D10;
 // Entering uses the box as written and leaving uses the box plus this, so standing in a doorway
 // cannot flicker the whole world in and out.
 constexpr float kLeaveMargin = 2.0f;
+// How far inside a box the player has to be before the interior switches on. The boxes are the
+// extent of a room's placements plus slack, and a placement's coordinates are its model's origin,
+// so a box reaches a little past the wall it was measured from - far enough, in testing, to switch
+// the world off while the player was still outside the door. Requiring them to be properly inside
+// costs nothing at a doorway and is what keeps the street from going black. Together with the
+// margin above it also gives the transition hysteresis, so standing in a doorway cannot flicker.
+constexpr float kEnterShrink = 3.0f;
 
 SafetyHookInline& UpdateHook() { static SafetyHookInline h; return h; }
 
@@ -101,9 +110,28 @@ bool Inside(const MapRegion& r, const InteriorVolume& v, const CVector& p, float
            z >= v.minZ - grow && z <= v.maxZ + grow;
 }
 
-void SetArea(int area, CPlayerPed* player) {
+void SetArea(int area, CPlayerPed* player, const CVector& pos) {
     CurrArea = area;
     CallRemoveBuildingsNotInArea(area);
+
+    // Coming back out, put the world back before the frame is drawn.
+    //
+    // RemoveBuildingsNotInArea throws away everything that does not belong to the area being
+    // entered, which on the way out means the room goes and the street has to be fetched again. The
+    // streamer would get there on its own, but it fetches over several seconds and in the meantime
+    // the player is standing in an empty world watching their city arrive - which is what leaving
+    // an interior looked like. San Andreas' own transitions do not have this problem because
+    // CEntryExit::TransitionFinished ends in a blocking scene load, so do the same: ask for the
+    // collision first, then the scene, with the clock stopped so the pause does not land on the
+    // physics as one enormous time step. Only on the way out, and only on the frame of the
+    // transition, so the cost is one hitch where there was several seconds of empty ground.
+    if (!area) {
+        CTimer::Suspend();
+        CVector at = pos;
+        CStreaming::LoadSceneCollision(&at);
+        CStreaming::LoadScene(&at);
+        CTimer::Resume();
+    }
 
     // The player carries an area code of their own, and the game reads it as much as it reads
     // currArea. CEntryExit::TransitionFinished stamps it on the player and on whatever they are
@@ -144,7 +172,7 @@ void Update() {
         region = nullptr;
         for (const MapRegion& r : Settings::regions) {
             for (const InteriorVolume& v : r.interiors) {
-                if (!Inside(r, v, pos, 0.0f)) continue;
+                if (!Inside(r, v, pos, -kEnterShrink)) continue;
                 found = &v;
                 region = &r;
                 break;
@@ -160,7 +188,7 @@ void Update() {
     gRegion = region;
     if (want == gOurArea) return;   // a second box for the same interior; the area is already right
 
-    SetArea(want, player);
+    SetArea(want, player, pos);
     gOurArea = want;
     if (want)
         Log::Write("[%s] interior: area %d (%s) at SA (%.1f, %.1f, %.1f)", region->name.c_str(),
