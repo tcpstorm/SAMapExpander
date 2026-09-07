@@ -1,0 +1,146 @@
+# Vice City world pickups, mined from Vice City data/main.scm
+#
+# Every permanent pickup the source game's own main script places in the world:
+# the guns lying in the street, the health, armour, adrenaline and bribes.
+# Mission-owned pickups, rampages, hidden packages, save discs and Ammu-Nation
+# shop stock are deliberately not here.
+#
+# Source opcodes, verified against the script stream rather than assumed:
+#   0x0213 CREATE_PICKUP           (model, type, x, y, z)            -> handle
+#   0x032B CREATE_PICKUP_WITH_AMMO (model, type, ammo, x, y, z)      -> handle
+# Parameters are type-tagged: 01=int32 02=global 03=local 04=int8 05=int16
+# 06=float.  In Vice City a float is a 32-bit IEEE float (unlike GTA III).
+# A negative model id indexes the script's own object-name table (segment 2 of
+# the SCM), which is how HEALTH / BODYARMOUR / ADRENALINE / BRIBE are named;
+# a positive one indexes the game's IDE files, which is how weapons are named.
+#
+# Source pickup type -> San Andreas ePickupType:  15 ON_STREET_SLOW -> 15,  2 ON_STREET -> 2
+#
+# Columns: kind, what, pickupType, ammo, x, y, z
+#   kind        `weapon` (what = a San Andreas weapon.dat name) or
+#               `model`  (what = a San Andreas model id)
+#   pickupType  San Andreas ePickupType (2 = ON_STREET, 15 = ON_STREET_SLOW)
+#   x, y, z     Vice City's own coordinates; the region origin is NOT applied
+#
+# 121 placements.
+model, 1240, 15, 0, -1399.400, -865.900, 20.900   # HEALTH ON_STREET_SLOW @0x3841b
+model, 1240, 15, 0, -1290.900, 91.900, 26.900   # HEALTH ON_STREET_SLOW @0x383a3
+model, 1240, 15, 0, -1139.400, 55.400, 11.200   # HEALTH ON_STREET_SLOW @0x3838b
+model, 1240, 15, 0, -925.100, -638.300, 16.000   # HEALTH ON_STREET_SLOW @0x383d3
+model, 1240, 15, 0, -821.800, 1144.800, 26.100   # HEALTH ON_STREET_SLOW @0x38373
+model, 1240, 15, 0, -711.700, -501.700, 11.300   # HEALTH ON_STREET_SLOW @0x382fb
+model, 1240, 15, 0, -692.400, -1283.800, 11.100   # HEALTH ON_STREET_SLOW @0x383eb
+model, 1240, 15, 0, -675.000, 1263.300, 25.100   # HEALTH ON_STREET_SLOW @0x3835b
+model, 1240, 15, 0, -655.100, -1506.300, 8.100   # HEALTH ON_STREET_SLOW @0x38403
+model, 1240, 15, 0, -478.100, 1438.500, 16.100   # HEALTH ON_STREET_SLOW @0x38343
+model, 1240, 2, 0, -406.250, -566.495, 19.580   # HEALTH ON_STREET @0x3832b
+model, 1240, 15, 0, -404.000, -588.000, 11.600   # HEALTH ON_STREET_SLOW @0x38313
+model, 1240, 15, 0, -225.100, -1158.100, 9.100   # HEALTH ON_STREET_SLOW @0x3823b
+model, 1240, 15, 0, 10.700, 1099.000, 16.600   # HEALTH ON_STREET_SLOW @0x382cb
+model, 1240, 15, 0, 85.300, 402.700, 19.800   # HEALTH ON_STREET_SLOW @0x382e3
+model, 1240, 15, 0, 377.400, 467.700, 11.600   # HEALTH ON_STREET_SLOW @0x3826b
+model, 1240, 15, 0, 385.300, 1210.900, 19.400   # HEALTH ON_STREET_SLOW @0x3829b
+model, 1240, 15, 0, 456.200, -471.400, 16.600   # HEALTH ON_STREET_SLOW @0x38253
+model, 1241, 15, 0, -1095.100, 99.400, 12.300   # ADRENALINE ON_STREET_SLOW @0x3871b
+model, 1241, 15, 0, -1022.100, -547.000, 11.200   # ADRENALINE ON_STREET_SLOW @0x3874b
+model, 1241, 15, 0, -967.100, -62.600, 11.000   # ADRENALINE ON_STREET_SLOW @0x38733
+model, 1241, 15, 0, -882.000, 111.200, 9.300   # ADRENALINE ON_STREET_SLOW @0x38763
+model, 1241, 15, 0, -730.100, 1226.300, 24.200   # ADRENALINE ON_STREET_SLOW @0x38703
+model, 1241, 15, 0, -381.200, 1065.200, 13.000   # ADRENALINE ON_STREET_SLOW @0x386eb
+model, 1241, 15, 0, -366.600, -500.300, 11.300   # ADRENALINE ON_STREET_SLOW @0x386bb
+model, 1241, 15, 0, -342.200, -591.500, 36.900   # ADRENALINE ON_STREET_SLOW @0x386d3
+model, 1241, 15, 0, -37.700, -938.300, 10.500   # ADRENALINE ON_STREET_SLOW @0x3862b
+model, 1241, 15, 0, 425.600, 221.100, 16.200   # ADRENALINE ON_STREET_SLOW @0x38673
+model, 1241, 15, 0, 428.400, 947.500, 13.200   # ADRENALINE ON_STREET_SLOW @0x3868b
+model, 1241, 15, 0, 448.600, 16.600, 11.000   # ADRENALINE ON_STREET_SLOW @0x3865b
+model, 1241, 15, 0, 471.100, -444.100, 10.600   # ADRENALINE ON_STREET_SLOW @0x38643
+model, 1242, 15, 0, -1695.600, -289.400, 29.700   # BODYARMOUR ON_STREET_SLOW @0x3856b
+model, 1242, 15, 0, -1177.000, -915.300, 14.900   # BODYARMOUR ON_STREET_SLOW @0x385fb
+model, 1242, 15, 0, -1171.000, -457.400, 10.700   # BODYARMOUR ON_STREET_SLOW @0x38613
+model, 1242, 15, 0, -1058.900, -240.600, 18.200   # BODYARMOUR ON_STREET_SLOW @0x385b3
+model, 1242, 15, 0, -921.900, 722.900, 11.000   # BODYARMOUR ON_STREET_SLOW @0x3859b
+model, 1242, 15, 0, -813.100, 1344.700, 66.400   # BODYARMOUR ON_STREET_SLOW @0x2b14c
+model, 1242, 15, 0, -733.500, -1294.700, 12.400   # BODYARMOUR ON_STREET_SLOW @0x385e3
+model, 1242, 15, 0, -625.500, 622.200, 11.700   # BODYARMOUR ON_STREET_SLOW @0x385cb
+model, 1242, 15, 0, -567.600, 1370.360, 16.400   # BODYARMOUR ON_STREET_SLOW @0x38583
+model, 1242, 15, 0, -314.700, -551.200, 10.300   # BODYARMOUR ON_STREET_SLOW @0x2adc6
+model, 1242, 15, 0, -70.800, 510.600, 11.600   # BODYARMOUR ON_STREET_SLOW @0x38553
+model, 1242, 15, 0, 4.900, -1239.200, 19.200   # BODYARMOUR ON_STREET_SLOW @0x3847b
+model, 1242, 15, 0, 42.800, 951.100, 11.000   # BODYARMOUR ON_STREET_SLOW @0x3853b
+model, 1242, 15, 0, 148.800, -349.900, 8.700   # BODYARMOUR ON_STREET_SLOW @0x384ab
+model, 1242, 15, 0, 205.700, -885.700, 12.200   # BODYARMOUR ON_STREET_SLOW @0x38493
+model, 1242, 15, 0, 214.200, -1275.700, 19.200   # BODYARMOUR ON_STREET_SLOW @0x2af89
+model, 1242, 15, 0, 350.200, 884.800, 25.500   # BODYARMOUR ON_STREET_SLOW @0x3850b
+model, 1242, 15, 0, 416.100, 517.700, 11.200   # BODYARMOUR ON_STREET_SLOW @0x384f3
+model, 1242, 15, 0, 430.800, 162.100, 11.800   # BODYARMOUR ON_STREET_SLOW @0x384db
+model, 1242, 15, 0, 520.200, -171.200, 13.900   # BODYARMOUR ON_STREET_SLOW @0x384c3
+model, 1242, 15, 0, 535.300, 1214.100, 18.900   # BODYARMOUR ON_STREET_SLOW @0x38523
+model, 1247, 15, 0, -1015.900, -627.900, 11.200   # BRIBE ON_STREET_SLOW @0x9cae
+model, 1247, 15, 0, -973.700, 61.000, 10.400   # BRIBE ON_STREET_SLOW @0x9c7e
+model, 1247, 15, 0, -937.900, -114.100, 17.000   # BRIBE ON_STREET_SLOW @0x9c96
+model, 1247, 15, 0, -906.300, -834.000, 15.700   # BRIBE ON_STREET_SLOW @0x9cc6
+model, 1247, 15, 0, -900.690, 251.400, 17.100   # BRIBE ON_STREET_SLOW @0x9c66
+model, 1247, 15, 0, -822.700, 1304.500, 11.700   # BRIBE ON_STREET_SLOW @0x9c4e
+model, 1247, 15, 0, 89.100, 887.400, 10.500   # BRIBE ON_STREET_SLOW @0x9c36
+model, 1247, 15, 0, 116.000, -1313.100, 4.400   # BRIBE ON_STREET_SLOW @0x9bbe
+model, 1247, 15, 0, 382.700, 364.100, 10.800   # BRIBE ON_STREET_SLOW @0x9c06
+model, 1247, 15, 0, 393.700, -660.600, 10.700   # BRIBE ON_STREET_SLOW @0x9bd6
+model, 1247, 15, 0, 393.900, -60.200, 11.500   # BRIBE ON_STREET_SLOW @0x9ba6
+model, 1247, 15, 0, 422.400, 971.200, 12.100   # BRIBE ON_STREET_SLOW @0x9c1e
+model, 1247, 15, 0, 470.700, 70.100, 10.800   # BRIBE ON_STREET_SLOW @0x9bee
+weapon, AK47, 15, 60, 418.900, 589.900, 18.300   # ruger ON_STREET_SLOW @0x37f20
+weapon, BASEBALLBAT, 2, 0, 206.700, -1254.400, 12.000   # bat ON_STREET @0x37e4c
+weapon, BRASSKNUCKLE, 15, 0, 224.000, -1207.500, 11.000   # brassknuckle ON_STREET_SLOW @0x37f6d
+weapon, CHAINSAW, 15, 0, -817.100, 1344.700, 66.400   # chnsaw ON_STREET_SLOW @0x2b176
+weapon, CHAINSAW, 15, 0, -310.700, -551.200, 10.300   # chnsaw ON_STREET_SLOW @0x2adf0
+weapon, CHAINSAW, 2, 0, 30.000, -1330.900, 13.000   # chnsaw ON_STREET @0x37e33
+weapon, CHAINSAW, 15, 0, 210.200, -1274.700, 19.200   # chnsaw ON_STREET_SLOW @0x2afb3
+weapon, COUNTRYRIFLE, 15, 14, -1114.300, -602.000, 26.000   # laser ON_STREET_SLOW @0x38208
+weapon, COUNTRYRIFLE, 15, 28, -830.100, 1344.700, 66.400   # laser ON_STREET_SLOW @0x2b1fb
+weapon, COUNTRYRIFLE, 15, 28, -298.700, -551.200, 10.300   # laser ON_STREET_SLOW @0x2ae75
+weapon, COUNTRYRIFLE, 15, 28, 228.200, -1279.200, 19.200   # laser ON_STREET_SLOW @0x2b038
+weapon, DESERT_EAGLE, 15, 12, -1182.700, -61.100, 11.400   # python ON_STREET_SLOW @0x381d2
+weapon, DESERT_EAGLE, 15, 24, -821.100, 1344.700, 66.400   # python ON_STREET_SLOW @0x2b1a1
+weapon, DESERT_EAGLE, 15, 24, -306.700, -551.200, 10.300   # python ON_STREET_SLOW @0x2ae1b
+weapon, DESERT_EAGLE, 15, 24, 206.200, -1273.700, 19.200   # python ON_STREET_SLOW @0x2afde
+weapon, FTHROWER, 15, 300, -1015.100, -1392.900, 11.500   # flame ON_STREET_SLOW @0x38165
+weapon, FTHROWER, 15, 60, -825.100, 1344.700, 66.400   # flame ON_STREET_SLOW @0x2b1ce
+weapon, FTHROWER, 15, 300, -546.000, -418.900, 9.800   # flame ON_STREET_SLOW @0x38058
+weapon, FTHROWER, 15, 60, -302.700, -551.200, 10.300   # flame ON_STREET_SLOW @0x2ae48
+weapon, FTHROWER, 15, 60, 224.200, -1273.100, 19.200   # flame ON_STREET_SLOW @0x2b00b
+weapon, GOLFCLUB, 2, 0, 95.000, 279.200, 21.800   # golfclub ON_STREET @0x3803f
+weapon, GRENADE, 15, 4, -939.800, -464.900, 10.900   # grenade ON_STREET_SLOW @0x381b7
+weapon, GRENADE, 15, 4, 362.200, -500.500, 12.300   # grenade ON_STREET_SLOW @0x37eec
+weapon, KATANA, 15, 0, -554.110, -547.700, 10.700   # katana ON_STREET_SLOW @0x3808f
+weapon, KATANA, 15, 0, 56.600, -459.300, 11.400   # machete ON_STREET_SLOW @0x37f9f
+weapon, KATANA, 15, 0, 476.900, 1014.900, 19.200   # katana ON_STREET_SLOW @0x37f3b
+weapon, KNIFE, 15, 0, 118.700, -1546.100, 10.800   # knifecur ON_STREET_SLOW @0x37f86
+weapon, KNIFE, 15, 0, 402.600, 102.500, 11.400   # cleaver ON_STREET_SLOW @0x37f07
+weapon, M4, 15, 60, -1221.000, -641.600, 11.700   # m4 ON_STREET_SLOW @0x380f9
+weapon, M4, 15, 60, -980.400, 118.700, 9.300   # m4 ON_STREET_SLOW @0x380de
+weapon, M4, 15, 60, -32.800, 1019.200, 13.000   # m4 ON_STREET_SLOW @0x38009
+weapon, MICRO_UZI, 15, 60, -545.800, 694.600, 11.000   # uzi ON_STREET_SLOW @0x380c3
+weapon, MICRO_UZI, 15, 60, 5.400, -1277.000, 10.400   # uzi ON_STREET_SLOW @0x37fb8
+weapon, MICRO_UZI, 15, 60, 17.300, 1145.700, 23.500   # uzi ON_STREET_SLOW @0x38024
+weapon, MICRO_UZI, 15, 60, 157.000, -895.300, 12.300   # uzi ON_STREET_SLOW @0x37fd3
+weapon, MICRO_UZI, 15, 100, 287.900, 50.700, 10.800   # tec9 ON_STREET_SLOW @0x37ed1
+weapon, MINIGUN, 15, 100, -1744.900, -288.900, 29.700   # M60 ON_STREET_SLOW @0x3819c
+weapon, MINIGUN, 15, 500, -833.100, 1344.700, 66.400   # minigun ON_STREET_SLOW @0x2b228
+weapon, MINIGUN, 15, 500, -294.700, -551.200, 10.300   # minigun ON_STREET_SLOW @0x2aea2
+weapon, MINIGUN, 15, 500, 226.000, -1268.600, 20.100   # minigun ON_STREET_SLOW @0x2b065
+weapon, MOLOTOV, 15, 4, -755.700, 1347.500, 11.800   # molotov ON_STREET_SLOW @0x380a8
+weapon, NIGHTSTICK, 15, 0, 402.400, -488.300, 12.400   # nitestick ON_STREET_SLOW @0x37f54
+weapon, PISTOL, 15, 34, -228.400, -1318.200, 9.100   # colt45 ON_STREET_SLOW @0x37e65
+weapon, PISTOL, 15, 34, 340.500, -249.500, 12.500   # colt45 ON_STREET_SLOW @0x37e80
+weapon, RLAUNCHER, 15, 4, -995.100, -1178.100, 13.600   # rocketla ON_STREET_SLOW @0x3812f
+weapon, RLAUNCHER, 15, 8, -839.000, 1351.600, 66.400   # rocketla ON_STREET_SLOW @0x2b256
+weapon, RLAUNCHER, 15, 8, -290.700, -551.200, 10.300   # rocketla ON_STREET_SLOW @0x2aed0
+weapon, RLAUNCHER, 15, 8, 231.700, -1264.400, 20.100   # rocketla ON_STREET_SLOW @0x2b093
+weapon, SATCHEL_CHARGE, 15, 4, 556.600, 207.400, 14.500   # bomb ON_STREET_SLOW @0x37fee
+weapon, SAWNOFF, 15, 10, -1305.200, 177.100, 11.400   # buddyshot ON_STREET_SLOW @0x381ed
+weapon, SHOTGUN, 15, 16, 42.300, -959.200, 21.800   # chromegun ON_STREET_SLOW @0x37e9b
+weapon, SHOTGUN, 15, 16, 568.900, -449.300, 11.100   # chromegun ON_STREET_SLOW @0x37eb6
+weapon, SNIPERRIFLE, 15, 20, -742.100, -949.900, 9.900   # sniper ON_STREET_SLOW @0x38114
+weapon, SNIPERRIFLE, 15, 20, -476.400, -571.200, 12.900   # sniper ON_STREET_SLOW @0x38074
+weapon, SPAS12, 15, 14, -1359.000, -742.200, 14.900   # shotgspa ON_STREET_SLOW @0x38181
+weapon, TEC9, 15, 60, -713.300, -1466.000, 11.200   # ingramsl ON_STREET_SLOW @0x3814a

@@ -14,6 +14,10 @@ Writes <SA game dir>/MapExpander/<region>/ with
                    scenery; a model with no line here is placed as a building and never reacts
     american.gxt, waterpro.dat, and the source's zone file (navig.zon/info.zon, or III's gta3.zon)
     zone_names.txt the display name of every zone the region creates, under its namespaced key
+    weapons.dat    the guns the source game has and San Andreas does not, each over the San Andreas
+                   weapon nearest to it, with ide/weapons.ide carrying their meshes (Vice City only)
+    pickups.dat    the world pickups the source game's main script places, copied from
+                   tools/pickups_<region>.dat beside this script
     region.ini     the [region] keys to paste into MapExpander.ini, lists in .dat order, with the
                    origin the conversion this project follows places that city at
 
@@ -2077,6 +2081,255 @@ def rename_zon(text, renames):
     return "".join(out)
 
 
+# ---------------------------------------------------------------- weapons
+
+# Which San Andreas weapon each Vice City gun takes over, and why that one.
+#
+# San Andreas cannot be given a genuinely new weapon type. The name in column A of weapon.dat is
+# looked up in a fixed table of 49 char* at 0x8D6150, the records live in aWeaponInfo[80] at
+# 0xC8AAB8 with the skill variants packed in directly behind the 47 real weapons, and - the part
+# that actually decides it - every switch on weapon type in the executable (CWeapon::Fire,
+# CWeapon::FireInstantHit, the firing audio) ends in "ja default". A new type would draw in the
+# player's hand and then do nothing when fired, in silence. So each imported gun is written over
+# the San Andreas weapon nearest to it in class, slot and role, and the cost is that San Andreas'
+# own weapon changes everywhere, not only inside the region.
+#
+# `default` says whether the line is written live or commented out. Live are the guns Vice City
+# has and San Andreas simply does not, over San Andreas weapons that give up least. Commented out
+# are the ones whose San Andreas counterpart is worth more than the import - the knife with its
+# stealth kill, the katana - and the ones where both games have the same gun under two names, so
+# the swap buys nothing but a different mesh.
+VC_WEAPON_MAP = [
+    ("Python", "DESERT_EAGLE", True,
+     "Vice City Python .357 - San Andreas' Desert Eagle is a re-skinned Python already: same fire "
+     "offset to two decimals, the `python` animation group, and a texture dictionary called python"),
+    ("Ruger", "AK47", True,
+     "Vice City Ruger - a 30-round assault rifle; the AK-47 rather than the M4 because Vice City "
+     "has an m4 of its own and San Andreas' is the same gun"),
+    ("M60", "MINIGUN", True,
+     "Vice City M60 - San Andreas has no light machine gun at all; the minigun is its other "
+     "slot-7 continuous-fire heavy weapon"),
+    ("StubbyShotgun", "SAWNOFF", True,
+     "Vice City stubby shotgun - the short-barrelled close-range one, which is what the sawn-off is"),
+    ("SilencedIngram", "TEC9", True,
+     "Vice City silenced Ingram - a slot-5 submachine gun; San Andreas' silenced pistol is a "
+     "pistol and not the same class"),
+    ("LaserScope", "COUNTRYRIFLE", True,
+     "Vice City laser-sighted sniper rifle - over the country rifle rather than the sniper rifle, "
+     "so the sniper rifle San Andreas' missions hand out stays as it was"),
+    ("Machete", "KATANA", False,
+     "Vice City machete - the katana is a better weapon and a San Andreas landmark; uncomment to "
+     "trade it"),
+    ("Cleaver", "KNIFE", False,
+     "Vice City cleaver - the knife carries San Andreas' stealth kill, which is worth more than "
+     "the mesh"),
+    ("Hammer", "SHOVEL", False,
+     "Vice City hammer - both are blunt tools on the baseball-bat combo"),
+    ("ScrewDriver", "POOLCUE", False,
+     "Vice City screwdriver - nothing in San Andreas stabs except the knife, so this is a poor "
+     "match either way"),
+    ("Uzi", "MICRO_UZI", False,
+     "Vice City Uzi - the same weapon as San Andreas' micro uzi with a different mesh"),
+    ("Colt45", "PISTOL", False,
+     "Vice City Colt 45 - literally San Andreas' pistol: same model name, same clip, same damage"),
+]
+
+# The fire types CWeaponInfo::FindWeaponFireType (0x5BCF30) knows. A name outside this set makes it
+# answer INSTANT_HIT without saying so, so anything else is written as "keep San Andreas' own".
+SA_FIRE_TYPES = ("MELEE", "INSTANT_HIT", "PROJECTILE", "AREA_EFFECT", "CAMERA", "USE_3RD_PERSON_AIM")
+
+# Vice City's weapon.dat, by column letter: A name, B fire type, C range, D firing rate, E reload,
+# F ammunition, G damage, H speed, I radius, J life span, K spread, L/M/N fire offset, P animation,
+# R/S/T animation loop, U/V/W animation 2 loop, X breakout, Y model, Z model 2, a flags, b slot.
+VC_COL = dict(name=0, fire=1, range=2, ammo=5, damage=6, speed=7, radius=8, lifespan=9, spread=10,
+              offx=11, offy=12, offz=13, anim=14, model=22, model2=23, flags=24, slot=25)
+VC_COLUMNS = 26
+
+
+def read_source_weapons(root):
+    """Every line of the source game's data/weapon.dat, keyed by lowercased weapon name."""
+    path = find_file(root, "data/weapon.dat")
+    if not path:
+        return {}
+    out = {}
+    with open(path, "r", encoding="latin-1") as f:
+        for line in f:
+            line = line.split("#")[0].strip()
+            if not line or line.upper().startswith("ENDWEAPONDATA"):
+                continue
+            tok = [t for t in re.split(r"[,\s]+", line) if t]
+            if len(tok) == VC_COLUMNS:
+                out[tok[0].lower()] = tok
+    return out
+
+
+def read_weap_ide(root):
+    """The `weap` section of the source game's data/default.ide, by model id.
+
+    default.ide hangs off data/default.dat rather than the level .dat, so read_dat never sees it -
+    which is right for everything else in it (vehicles, peds, the weapons' own low model ids) and
+    wrong only for this section, which is where a weapon's mesh and dictionary are declared.
+    """
+    path = find_file(root, "data/default.ide")
+    if not path:
+        return {}
+    out, section = {}, None
+    with open(path, "r", encoding="latin-1") as f:
+        for line in f:
+            s = line.strip().lower()
+            if section is None:
+                if s == "weap":
+                    section = s
+                continue
+            if s == "end":
+                section = None
+                continue
+            if s.startswith("#"):
+                continue
+            tok = [t for t in re.split(r"[,\s]+", line.strip()) if t]
+            if len(tok) >= 3 and tok[0].isdigit():
+                out[int(tok[0])] = tok
+    return out
+
+
+def sa_weapon_anims(sa):
+    """San Andreas weapon name -> the animation file its own weap IDE line names.
+
+    The fourth column of a weap line is an IFP block, not the animation group in weapon.dat, and
+    CFileLoader::LoadWeaponObject hands it to SetAnimFile without checking that the block exists -
+    so a Vice City name San Andreas has never heard of ("m60", "baseball") would leave the model
+    asking the streamer for a file that is not there. The imported mesh therefore takes the
+    animation file of the San Andreas weapon it is replacing, which by definition exists.
+    """
+    model_of, anim_of = {}, {}
+    path = find_file(sa, "data/weapon.dat")
+    if path:
+        with open(path, "r", encoding="latin-1") as f:
+            for line in f:
+                if not line or line[0] not in ("$", "\xa3"):
+                    continue
+                tok = [t for t in re.split(r"[,\s]+", line.strip()) if t]
+                if len(tok) >= 6 and tok[5].lstrip("-").isdigit():
+                    model_of.setdefault(tok[1].upper(), int(tok[5]))
+    ide = find_file(sa, "data/default.ide")
+    if ide:
+        section = None
+        with open(ide, "r", encoding="latin-1") as f:
+            for line in f:
+                s = line.strip().lower()
+                if section is None:
+                    if s == "weap":
+                        section = s
+                    continue
+                if s == "end":
+                    section = None
+                    continue
+                tok = [t for t in re.split(r"[,\s]+", line.strip()) if t]
+                if len(tok) >= 4 and tok[0].isdigit():
+                    anim_of[int(tok[0])] = tok[3]
+    return {name: anim_of.get(model, "null") for name, model in model_of.items()}
+
+
+def write_weapons(out, src, sa, renames, prefix):
+    """weapons.dat and ide/weapons.ide for the region, or (None, None) when there is nothing to say.
+
+    Only Vice City has anything: every gun GTA III carries, San Andreas carries too - even the M16,
+    which is San Andreas' M4 with different art - and III's weapon meshes are not importable in any
+    case, being clumps inside models/Generic/weapons.dff rather than entries in gta3.img.
+    """
+    if prefix != "vc_":
+        return None, None
+    weapons = read_source_weapons(src)
+    weap_ide = read_weap_ide(src)
+    if not weapons or not weap_ide:
+        print("  no data/weapon.dat or no weap section in data/default.ide; no weapons imported")
+        return None, None
+    sa_anim = sa_weapon_anims(sa)
+
+    def renamed(name, ext):
+        return renames.get(name.lower() + ext, name)
+
+    lines, ide_lines, missing = [], [], []
+    for source_name, sa_name, live, why in VC_WEAPON_MAP:
+        tok = weapons.get(source_name.lower())
+        if not tok:
+            missing.append(source_name)
+            continue
+        ide = weap_ide.get(int(tok[VC_COL["model"]]))
+        if not ide:
+            missing.append(source_name)
+            continue
+
+        # The model is written by name, not by id: the id in the emitted IDE is remapped into the
+        # free range when the region loads, and the name is the only thing that survives that.
+        model = renamed(ide[1], ".dff")
+        fire = tok[VC_COL["fire"]].upper()
+        melee = fire == "MELEE"
+        field = [sa_name,
+                 fire if fire in SA_FIRE_TYPES else "*",
+                 "*",                      # target range: San Andreas' own; Vice City has one range column
+                 tok[VC_COL["range"]],
+                 model,
+                 "*",                      # model 2: San Andreas' own
+                 "*",                      # slot: San Andreas' own, so the weapon wheel keeps its order
+                 "*",                      # animation group: San Andreas' own, which addresses its own IFPs
+                 # San Andreas' melee parser writes neither of these - a melee weapon's damage is in
+                 # its combo, not in CWeaponInfo - and Vice City's melee ammunition column is the
+                 # placeholder 1000 for every one of them.
+                 "*" if melee else tok[VC_COL["ammo"]],
+                 "*" if melee else tok[VC_COL["damage"]],
+                 tok[VC_COL["offx"]], tok[VC_COL["offy"]], tok[VC_COL["offz"]],
+                 "*"]                      # flags: the two games' flag words share no bit meanings
+        if fire in ("PROJECTILE", "AREA_EFFECT"):
+            field += [tok[VC_COL["speed"]], tok[VC_COL["radius"]],
+                      tok[VC_COL["lifespan"]], tok[VC_COL["spread"]]]
+        text = "%s%s   # %s" % ("" if live else ";", "  ".join(field), why)
+        lines.append(text)
+
+        # Every mapped weapon's mesh travels, commented-out ones included, so that uncommenting a
+        # line is all it takes. The id stays as Vice City wrote it; CityLoader remaps it.
+        ide_lines.append("%s, %s, %s, %s, %s" % (ide[0], model, renamed(ide[2], ".txd"),
+                                                 sa_anim.get(sa_name, "null"), ", ".join(ide[4:])))
+
+    if missing:
+        print("  weapons not found in the source data: %s" % ", ".join(missing))
+    if not lines:
+        return None, None
+
+    with open(os.path.join(out, "ide", "weapons.ide"), "w", encoding="latin-1") as f:
+        f.write("# The source game's weapon meshes, written by tools/import_city.py from\n"
+                "# data/default.ide. Loaded only when the region's Weapons key is set: a weapon\n"
+                "# model info costs one of the fifty-one San Andreas has, and a region that is not\n"
+                "# replacing any weapon has nothing to point at them.\n"
+                "weap\n" + "\n".join(ide_lines) + "\nend\n")
+
+    header = (
+        "# The guns Vice City has and San Andreas does not, each written over the San Andreas\n"
+        "# weapon nearest to it. Written by tools/import_city.py; see the Weapons note in\n"
+        "# MapExpander.ini for what the columns mean.\n"
+        "#\n"
+        "# THIS CHANGES THOSE WEAPONS FOR THE WHOLE GAME, not only inside the region. There is one\n"
+        "# weapon table and it is global, so the first line below makes the Desert Eagle a Python\n"
+        "# in Los Santos as well as in Vice City. Comment out anything you would rather keep.\n"
+        "#\n"
+        "# A column of * keeps what San Andreas already had. Everything Vice City has no column\n"
+        "# for is left that way: the target range, the weapon slot, the animation group, the skill\n"
+        "# levels and their accuracy and move speed, and the animation frame numbers - those last\n"
+        "# address San Andreas' own animations, which Vice City's numbers do not.\n"
+        "#\n"
+        "# What does carry over: the mesh, the weapon range, the clip size, the damage, the fire\n"
+        "# offset, and for a projectile its speed, radius, lifespan and spread.\n"
+        "#\n"
+        "# name          fire type  target  range  model  model2 slot anim clip dmg  offset x y z  flags\n")
+    with open(os.path.join(out, "weapons.dat"), "w", encoding="latin-1") as f:
+        f.write(header + "\n".join(lines) + "\n")
+
+    live = sum(1 for l in lines if not l.startswith(";"))
+    print("weapons.dat: %d line(s), %d of them live; ide/weapons.ide: %d model(s)"
+          % (len(lines), live, len(ide_lines)))
+    return "weapons.dat", "weapons.ide"
+
+
 # ---------------------------------------------------------------- main
 
 def main():
@@ -2491,6 +2744,9 @@ def main():
         with open(os.path.join(out, "ide", name), "w", encoding="latin-1") as f:
             f.write(rename_ide(text, renames, ide_drop_flags))
         ide_out.append(name)
+    weapons_out, weap_ide_out = (None, None) if lite else write_weapons(out, src, sa, renames, prefix)
+    if weap_ide_out:
+        ide_out.append(weap_ide_out)
     inst_areas = []
     for rel in ipl_rel:
         p = find_file(src, rel)
@@ -2630,6 +2886,27 @@ def main():
     if zone_names_out:
         lines.append("ZoneNames    = %s%s" % (base, zone_names_out))
     lines += ["RegionName   = %s" % ("Vice City" if prefix == "vc_" else "Liberty City")]
+
+    # The pickups the source game's main script leaves around its map. They are not in the map
+    # files - III and Vice City create almost all of them from main.scm with literal coordinates -
+    # and walking another game's script bytecode is not something worth redoing on every import, so
+    # the placements are mined once and kept beside this script. See MapExpander.ini for the
+    # columns; the coordinates are the source game's own and the loader adds the region origin.
+    pickups_out = None
+    mined = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pickups_%s.dat" % region)
+    if os.path.exists(mined):
+        with open(mined, "rb") as f:
+            blob = f.read()
+        with open(os.path.join(out, "pickups.dat"), "wb") as f:
+            f.write(blob)
+        pickups_out = "pickups.dat"
+        print("pickups.dat: %d line(s) from %s"
+              % (sum(1 for l in blob.decode("latin-1").splitlines()
+                     if l.strip() and not l.strip().startswith("#")), mined))
+    else:
+        print("no %s beside this script; the region gets no pickups.dat" % os.path.basename(mined))
+    if pickups_out:
+        lines.append("Pickups      = %s%s" % (base, pickups_out))
     if not lite:
         lines += ["Img          = %s%s.img" % (base, region),
                   "Ide          = " + ", ".join(base + "ide\\" + n for n in ide_out),
@@ -2665,6 +2942,14 @@ def main():
     # rather than replacing them, and two regions no longer take each other's place either. It is
     # optional all the same: the zone names a player actually reads are in zone_names.txt, and
     # the rest of a donor game's text is only worth loading if something is going to ask for it.
+    # Left commented out on purpose. Everything else a region brings exists only inside the region;
+    # this one rewrites San Andreas' own weapon table, which is global, so it is the one key a
+    # player has to agree to rather than be given.
+    if weapons_out:
+        lines += ["", "; The source game's guns over the San Andreas weapons nearest to them. This",
+                  "; changes those weapons for the WHOLE GAME and not only inside the region -",
+                  "; read the file, it says which line trades what.",
+                  "; Weapons = %s%s" % (base, weapons_out)]
     lines += ["", "; [World] Gxt takes a comma-separated list; the keys in this file are tagged",
               "; \"%s\" so they add to San Andreas' strings instead of replacing them." % gxt_tag,
               "; Gxt = %samerican.gxt" % base]

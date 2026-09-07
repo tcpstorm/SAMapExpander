@@ -20,6 +20,8 @@
 #include "Zones.h"
 #include "Interiors.h"
 #include "ModelLimits.h"
+#include "RegionWeapons.h"
+#include "RegionPickups.h"
 
 using namespace plugin;
 
@@ -38,6 +40,10 @@ public:
             if (Settings::world.extendPauseMap) MenuMapFix::Install();
             Water::Install();
             WaterRender::Install();
+            // Before CityLoader, which budgets a region's weap IDE lines against the weapon model
+            // store this has just moved out of the way.
+            RegionWeapons::Install();
+            RegionPickups::Install();
             CityLoader::Install();
             // Only when this process is the one placing the region: under SA-MP the server owns
             // the objects and already handles distant ones, so the world grid is left alone.

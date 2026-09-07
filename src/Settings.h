@@ -49,6 +49,8 @@ struct MapRegion {
 
     std::vector<std::string> zoneFiles;  // III/VC .zon or SA IPL files, in the region's own coords
     std::string zoneNamesFile;           // "GXTKEY = Display Name" lines; empty if none
+    std::string weaponFile;              // importer's weapons.dat: the source game's guns over SA's weapon types
+    std::string pickupFile;              // importer's pickups.dat: the world pickups its main script placed
 
     // Interior<N> lines from this region's ini section, in the region's own coordinates. Several
     // may name the same area: an interior split over rooms that are not one box (Vercetti's house
@@ -82,6 +84,9 @@ struct WorldSettings {
     bool linkRegionLods;                   // rebuild HD->LOD links from the source game's naming rule; off = LODs draw as plain objects
     bool dropUnlinkedLods;                 // leave out LODs no HD hides - orphans and whole-district island meshes - which SA would draw through the real geometry
     std::vector<int> skipRenderModels;     // remapped model ids the render guard refuses to draw (a crash workaround while a model is diagnosed)
+    bool regionWeapons;                    // let a region's weapons.dat take over San Andreas weapon types
+    bool regionPickups;                    // place the world pickups a region's pickups.dat lists
+    int pickupReserve;                     // CPickup slots left for San Andreas' own script, of its 620
     bool debug;                      // verbose log, F8 diagnostics, water render statistics
 };
 
