@@ -2118,9 +2118,11 @@ VC_WEAPON_MAP = [
     ("SilencedIngram", "TEC9", True,
      "Vice City silenced Ingram - a slot-5 submachine gun; San Andreas' silenced pistol is a "
      "pistol and not the same class"),
-    ("LaserScope", "COUNTRYRIFLE", True,
-     "Vice City laser-sighted sniper rifle - over the country rifle rather than the sniper rifle, "
-     "so the sniper rifle San Andreas' missions hand out stays as it was"),
+    ("LaserScope", "SNIPERRIFLE", True,
+     "Vice City .308 laser-sighted sniper - the sniper rifle and not the country rifle, because "
+     "the scope is the donor's: CPed::UpdateCameraWeaponModes gives SNIPERRIFLE camera mode 7 and "
+     "COUNTRYRIFLE none at all, and CWeapon::Fire reads that mode to decide whether to call "
+     "FireSniper. Over the country rifle it drew, aimed and fired but never zoomed in"),
     ("Machete", "KATANA", True,
      "Vice City machete - a long blade swung one-handed, so it takes the katana's slot, animation "
      "group and combo"),
