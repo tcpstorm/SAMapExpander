@@ -134,13 +134,23 @@ void __cdecl Hooked_RenderEntity(void* entity, float distance) {
                                    model, (i - 1) * 4, g[i - 1], g[i]);
                         for (int m = 0; m < 165; m++) {
                             void* mat = mats[m];
-                            const unsigned tex = IsBadReadPtr(mat, 0x14) ? 0xDEAD : *(const unsigned*)mat;
-                            const unsigned pipe = IsBadReadPtr(mat, 0x14) ? 0xDEAD : *(const unsigned*)((const uint8_t*)mat + 0x0C);
-                            const bool bad = IsBadReadPtr(mat, 0x14) || tex == 0xFFFFFFFF || pipe == 0xFFFFFFFF ||
-                                             (tex && IsBadReadPtr((void*)tex, 4)) || (pipe && IsBadReadPtr((void*)pipe, 4));
-                            if (bad || m < 2)
-                                Log::Write("dump:   material %d %08X: texture %08X pipeline %08X%s",
-                                           m, (unsigned)(uintptr_t)mat, tex, pipe, bad ? " <BAD>" : "");
+                            if (IsBadReadPtr(mat, 0x1C)) {
+                                Log::Write("dump:   material %d ptr %08X UNREADABLE", m, (unsigned)(uintptr_t)mat);
+                                continue;
+                            }
+                            const unsigned tex = *(const unsigned*)mat;                                // RwTexture* at 0x00
+                            const unsigned pipe = *(const unsigned*)((const uint8_t*)mat + 0x08);       // RxPipeline* at 0x08
+                            // The texture's raster (RwTexture+0x00), where the D3D9 data hangs.
+                            unsigned raster = 0;
+                            if (tex && !IsBadReadPtr((void*)tex, 4)) raster = *(const unsigned*)tex;
+                            const bool badPipe = pipe == 0xFFFFFFFF || (pipe && IsBadReadPtr((void*)pipe, 4));
+                            const bool badTex = tex && (tex == 0xFFFFFFFF || IsBadReadPtr((void*)tex, 0x10));
+                            const bool badRaster = raster == 0xFFFFFFFF || (raster && IsBadReadPtr((void*)raster, 4));
+                            if (badPipe || badTex || badRaster || m < 2)
+                                Log::Write("dump:   material %d %08X: texture %08X raster %08X pipeline %08X%s%s%s",
+                                           m, (unsigned)(uintptr_t)mat, tex, raster, pipe,
+                                           badPipe ? " PIPE-BAD" : "", badTex ? " TEX-BAD" : "",
+                                           badRaster ? " RASTER-BAD" : "");
                         }
                         break;
                     }
