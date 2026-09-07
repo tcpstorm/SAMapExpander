@@ -251,6 +251,46 @@ void __cdecl ReInitHook() {
     PlaceAll();
 }
 
+// And a frame check behind it, because the hook above is not enough on its own.
+//
+// CGame::ReInitGameObjectVariables has exactly two callers, both inside
+// CGame::InitialiseWhenRestarting, and that did not run at all on a session that loaded a save and
+// played for two minutes: the pickups were read, the hook was in place, and nothing was ever put
+// in the world. Which of San Andreas' several ways into a game reaches that function is not worth
+// establishing, because there is a check that does not care.
+//
+// So look once a frame instead. AlreadyPlaced already answers "are these still ours", by
+// remembering the slot and model of the first pickup written and seeing whether that slot still
+// holds it, so it distinguishes all three states this needs: ours are in (leave them), the array
+// has been emptied under us (a new game - put them back), or nothing has been placed yet. Placing
+// is attempted once per game, not once per frame, so a placement that legitimately puts nothing in
+// - no room left, every model refused - says so once and is not retried in a loop.
+SafetyHookInline& FrameOriginal() { static SafetyHookInline h; return h; }
+bool gAttempted = false;
+bool gWasPlaced = false;
+
+void __cdecl FrameHook() {
+    FrameOriginal().ccall<void>();
+    if (!FindPlayerPed()) {          // in a menu or a loading screen; arm for the next game
+        gAttempted = false;
+        gWasPlaced = false;
+        return;
+    }
+    if (AlreadyPlaced()) {           // in the world already, by this or by the hook above
+        gAttempted = true;
+        gWasPlaced = true;
+        return;
+    }
+    if (gWasPlaced) {                // they were ours and are gone: the game restarted
+        gAttempted = false;
+        gWasPlaced = false;
+    }
+    if (gAttempted) return;
+    gAttempted = true;
+    gWitnessSlot = -1;
+    PlaceAll();
+}
+
 }   // namespace
 
 namespace RegionPickups {
@@ -274,12 +314,17 @@ void Install() {
 
     ReInitOriginal() = safetyhook::create_inline(reinterpret_cast<void*>(0x53BCF0),
                                                 reinterpret_cast<void*>(&ReInitHook));
-    if (!ReInitOriginal()) {
-        Log::Write("pickups: the hook on CGame::ReInitGameObjectVariables failed; the region's "
-                   "pickups are left out");
+    // CEntryExitManager::Update, once a frame from CGame::Process and only while a game is running.
+    FrameOriginal() = safetyhook::create_inline(reinterpret_cast<void*>(0x440D10),
+                                               reinterpret_cast<void*>(&FrameHook));
+    if (!ReInitOriginal() && !FrameOriginal()) {
+        Log::Write("pickups: neither the restart hook nor the frame hook could be placed; the "
+                   "region's pickups are left out");
         Regions().clear();
         return;
     }
+    if (!FrameOriginal())
+        Log::Write("pickups: the frame hook failed; pickups will only go in when the game restarts");
     int total = 0;
     for (const RegionState& rs : Regions()) total += (int)rs.pickups.size();
     Log::Write("pickups: %d placement(s) from %u region file(s), to go in when a game starts",
