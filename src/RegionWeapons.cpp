@@ -237,6 +237,7 @@ struct Line {
     std::string sourceName;   // what the source game called this gun, for the log only
     std::string newName;      // what Add mode will call it; empty means "make one up from the model"
     int donor = -1;           // the San Andreas weapon type: overwritten in Replace, borrowed in Add
+    bool overDonor = false;   // this line asked to be written over its donor, whatever the mode
     int type = -1;            // where this line's numbers actually go - the donor, or a new type
     std::vector<std::string> field;
 };
@@ -304,6 +305,26 @@ bool ReadWeaponFile(RegionArms& arms) {
         if (slash != std::string::npos) {
             entry.newName = Trim(donorName.substr(0, slash));
             donorName = Trim(donorName.substr(slash + 1));
+        }
+        // A `!` in front of the donor asks for this one gun to be written over that San Andreas
+        // weapon even while everything else is being added alongside.
+        //
+        // It exists because some of what a weapon does is not reached through the jump tables Add
+        // widens. Scoping is the case that forced it: whether a rifle has a telescopic sight is
+        // decided by about fifteen equality tests against the weapon type - 0x21 and 0x22, the
+        // country rifle and the sniper rifle - in CCamera::Using1stPersonWeaponMode,
+        // Camera::Process_AimWeapon, CHud::DrawCrossHairs, CPlayerPed::ProcessWeaponSwitch and
+        // their neighbours. Each is a two or three byte compare with the branch that reads it
+        // immediately behind, so there is nowhere to widen them into, and a weapon at type 70 or
+        // above fails every one. It fires perfectly and never raises a scope.
+        //
+        // So a gun that needs its donor's identity, rather than only its behaviour, can ask for it.
+        // The cost is exactly what Replace always cost - that San Andreas weapon becomes this one,
+        // everywhere - which is why it is per line, opt-in, spelled out in the file, and said again
+        // in the log when it happens. Nothing takes this route unless the file asks.
+        if (!donorName.empty() && donorName[0] == '!') {
+            entry.overDonor = true;
+            donorName = Trim(donorName.substr(1));
         }
         entry.donor = WeaponTypeByName(donorName);
         if (entry.donor < 0) {
@@ -475,6 +496,22 @@ bool ClaimNewTypes() {
             // left pointing at the donor is a line that would overwrite San Andreas' own weapon.
             // Nothing here may end that way: a gun that cannot be added is dropped, not swapped.
             line.type = -1;
+            // A line that asked for its donor's own type keeps it, and says so. This is the only
+            // way a San Andreas weapon is changed while adding, and it never happens by accident.
+            if (line.overDonor) {
+                line.type = line.donor;
+                Log::Write("[%s] weapons: %s takes San Andreas' weapon type %d rather than a type "
+                           "of its own, because the file asked for it with a leading '!'. What it "
+                           "needs - a scope, or anything else the game decides by comparing the "
+                           "weapon type rather than dispatching on it - works only for that type. "
+                           "San Andreas' own weapon %d is replaced by this one everywhere, not "
+                           "only inside the region.",
+                           arms.region->name.c_str(),
+                           line.newName.empty() ? "this weapon" : line.newName.c_str(),
+                           line.donor, line.donor);
+                added++;
+                continue;
+            }
             if (line.field.size() <= 3 || Keep(line.field[3]) || line.field[3] == "-1") {
                 Log::Write("[%s] weapons: a line with no mesh of its own cannot be a new weapon - "
                            "there would be nothing to hold; skipped", arms.region->name.c_str());
