@@ -149,3 +149,29 @@ for n, (name, donor_name) in enumerate(live):
     want = chain.get(donor, dflt[1])
     print('   %-14s donor %-14s chain gives 0x%X%s'
           % (name, donor_name, want, '' if want == dflt[1] else '   <- the stand-in must supply this'))
+
+# The black filled in around the scope, which is not in CHud at all.
+print('\n=== Render2dStuff, the five black rectangles around the scope ===')
+ok = pe.read(0x53E2D2, 7) == bytes.fromhex('8bb401a0050000')
+print('   reads the ped weapon type at 0x53E2D2: %s' % ('ok' if ok else 'BAD'))
+fill_types = []
+for at in (0x53E31B, 0x53E320):
+    c = pe.read(at, 3)
+    fill_types.append(c[2])
+    print('   0x%X cmp esi, 0x%-3X  %s' % (at, c[2], 'ok' if c[0] == 0x83 and c[1] == 0xFE else 'BAD'))
+fill_modes = []
+for at in (0x53E2F5, 0x53E2FB, 0x53E301, 0x53E307, 0x53E30D, 0x53E313):
+    c = pe.read(at, 4)
+    fill_modes.append(c[2])
+    print('   0x%X cmp ax, 0x%-3X   %s' % (at, c[2], 'ok' if c[0] == 0x66 and c[1] == 0x3D else 'BAD'))
+colour = pe.read(0x53E331, 11)
+print('   0x53E331 colour pushed: %s  %s'
+      % (colour.hex(), 'ok, opaque black' if colour[:5] == b'\x68\xff\x00\x00\x00'
+         and colour[5:11] == b'\x6a\x00\x6a\x00\x6a\x00' else 'BAD'))
+print('   drawn for weapon types %s in camera modes %s'
+      % (', '.join('0x%X' % t for t in fill_types), ', '.join('0x%X' % m for m in fill_modes)))
+for n, (name, donor_name) in enumerate(live):
+    donor = NAMES.index(donor_name)
+    if donor in fill_types:
+        print('   %-14s donor %-14s is one of them   <- the stand-in must supply this'
+              % (name, donor_name))
