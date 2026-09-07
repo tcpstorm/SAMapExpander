@@ -16,14 +16,29 @@
 // lying in the street, and without it the same line still works and shows the Desert Eagle.
 //
 // CPickups::aPickUps is 620 fixed entries at 0x9788C0, 0x20 bytes each, with the type byte at +0x1C
-// and 0 meaning free; CPickups::GenerateNewOne (0x456F20) scans it and returns -1 when there is no
-// room. San Andreas' own script wants a large part of that - fifty oysters, fifty horseshoes, its
-// own street weapons - and it asks for them after this runs, so a region is never allowed to fill
-// the array: PickupReserve slots are counted out and kept, and whatever does not fit is dropped
-// with a line in the log saying how many and why. The array is not relocated. It could be, the way
-// ModelLimits relocates the streaming arrays, but the array is also what CPickups::Save (0x5D3540)
-// writes into a save game, so growing it would quietly make saves that vanilla San Andreas and
-// every other mod read wrongly - a poor trade for a few dozen more crates.
+// and 0 meaning free; CPickups::GenerateNewOne (0x456F20) takes the first free entry it finds,
+// counting up from index 0, and returns -1 when there is none. San Andreas' own script wants a
+// large part of that array - fifty oysters, fifty horseshoes, its own street weapons - and it asks
+// for them before this runs, so a region used to meet 69 free slots against the 291 the two shipped
+// regions want, and every single one of them was dropped.
+//
+// So the array is enlarged instead, by PickupSlots, which moves it to a block sized from what the
+// regions actually ask for. San Andreas' own entries are not touched, moved or recycled: what it
+// has, it keeps. The savegame keeps looking at exactly the first 620 entries, so it stays byte for
+// byte what vanilla writes - that is the whole reason the move is safe, and PickupSlots.cpp is
+// where it is explained.
+//
+// A region's pickups therefore have to end up ABOVE those first 620, or a save made inside the
+// region would carry them - and their region model ids - into a vanilla San Andreas that has no
+// such models. GenerateNewOne takes the first free slot from index 0 and there is no telling it
+// otherwise, so while this places, the free entries below 620 are made to look occupied and put
+// back afterwards. Nothing of San Andreas' is written: an entry it is using is left alone, and an
+// entry it is not using is free again by the time the function returns.
+//
+// PickupReserve is still what protects San Andreas' script from us, but from the other end now: it
+// is counted into the array's new size, so that after the region has taken everything it wants
+// there are still that many free entries for the script to find. It is no longer the thing that
+// stops a region getting in at all.
 //
 // The moment to place them is a post hook on CGame::ReInitGameObjectVariables (0x53BCF0). By then
 // CGame::ShutDownForRestart has run CWorld::ClearForRestart -> CPickups::ReInit (0x456E60), which
@@ -43,8 +58,8 @@
 #include <string>
 #include <vector>
 #include "RegionPickups.h"
-#include "PickupSlots.h"
 #include "RegionWeapons.h"
+#include "PickupSlots.h"
 #include "Settings.h"
 #include "Log.h"
 
@@ -52,15 +67,27 @@ using namespace plugin;
 
 namespace {
 
-// Where the array is and how long it is. PickupSlots moves it to the heap and lengthens it
-// before this runs, because San Andreas' own script fills 551 of the vanilla 620 and a region
-// would never fit beside that. When it has left the array alone these give the vanilla pair,
-// so nothing below needs to know which of the two happened.
-#define kPickupArray (PickupSlots::Array())
 constexpr unsigned kPickupStride = 0x20;
-#define kPickupCount (PickupSlots::Count() ? PickupSlots::Count() : 620)
 constexpr unsigned kPickupTypeOffset = 0x1C;   // 0 is PICKUP_NONE, i.e. a free slot
 constexpr unsigned kPickupModelOffset = 0x18;  // uint16, written by GenerateNewOne at 0x45729A
+
+// What a free entry below San Andreas' own 620 is set to while a region is being placed. Any
+// non-zero value would do: GenerateNewOne's first search wants a 0, and the two searches behind it
+// - which only run when the first found nothing - want an 8 (PICKUP_MONEY) or a 4
+// (PICKUP_ONCE_TIMEOUT), the two kinds it is allowed to take over. This is none of the three, and
+// it is not a type any switch in CPickup::Update has a case for either, so an entry wearing it for
+// the length of one call is invisible to everything.
+constexpr uint8_t kBlockedType = 0xFF;
+
+uintptr_t PickupEntry(int index) {
+    return PickupSlots::Base() + (uintptr_t)index * kPickupStride;
+}
+uint8_t PickupType(int index) {
+    return *(uint8_t*)(PickupEntry(index) + kPickupTypeOffset);
+}
+void SetPickupType(int index, uint8_t type) {
+    *(uint8_t*)(PickupEntry(index) + kPickupTypeOffset) = type;
+}
 
 // CPickups::GenerateNewOne. The position is a CVector passed by value, which for __cdecl is three
 // floats on the stack and nothing else - spelling it that way keeps the cross-compiler out of the
@@ -69,6 +96,12 @@ typedef int(__cdecl* GenerateNewOneFn)(float x, float y, float z, unsigned int m
                                        unsigned char type, unsigned int ammo, unsigned int moneyPerDay,
                                        bool minigame, const char* message);
 const GenerateNewOneFn CallGenerateNewOne = reinterpret_cast<GenerateNewOneFn>(0x456F20);
+
+// CPickups::RemovePickUp, taking the same packed handle GenerateNewOne returns - the slot in the
+// low half, that entry's reference index in the high half, which is how it tells a live pickup from
+// a slot that has since been reused.
+typedef void(__cdecl* RemovePickUpFn)(int handle);
+const RemovePickUpFn CallRemovePickUp = reinterpret_cast<RemovePickUpFn>(0x4573D0);
 
 struct Pickup {
     int  weaponType;   // -1 when the line names a model instead
@@ -90,11 +123,36 @@ std::vector<RegionState>& Regions() { static std::vector<RegionState> v; return 
 int gWitnessSlot = -1;
 int gWitnessModel = -1;
 
-int FreePickupSlots() {
+// Free entries in [from, PickupSlots::Count()). `from` is 0 for the whole array and 620 for the
+// part above San Andreas' own, which is the only part a region is allowed into once the array has
+// been enlarged.
+int FreePickupSlots(int from = 0) {
     int free = 0;
-    for (int i = 0; i < kPickupCount; i++)
-        if (*(uint8_t*)(kPickupArray + (uintptr_t)i * kPickupStride + kPickupTypeOffset) == 0) free++;
+    for (int i = from; i < PickupSlots::Count(); i++)
+        if (PickupType(i) == 0) free++;
     return free;
+}
+
+// The free entries below San Andreas' own end, made to look occupied so that GenerateNewOne - which
+// always settles on the first free entry it finds from index 0 - cannot put a region's pickup
+// anywhere the savegame would see it. Occupied entries are not touched: San Andreas keeps what it
+// has, exactly where it has it.
+std::vector<int> gBlocked;
+
+void BlockVanillaSlots() {
+    gBlocked.clear();
+    if (!PickupSlots::Grown()) return;   // no room above 620: the old rules apply, see PlaceAll
+    for (int i = 0; i < PickupSlots::VanillaCount(); i++) {
+        if (PickupType(i) != 0) continue;
+        SetPickupType(i, kBlockedType);
+        gBlocked.push_back(i);
+    }
+}
+
+void UnblockVanillaSlots() {
+    for (int i : gBlocked)
+        if (PickupType(i) == kBlockedType) SetPickupType(i, 0);
+    gBlocked.clear();
 }
 
 std::string Trim(const std::string& s) {
@@ -182,7 +240,15 @@ bool ReadPickupFile(RegionState& rs) {
 
 void PlaceAll() {
     const int reserve = Settings::world.pickupReserve < 0 ? 0 : Settings::world.pickupReserve;
+    const bool grown = PickupSlots::Grown();
+    const int ours = grown ? PickupSlots::VanillaCount() : 0;   // the first entry we may write
     int freeAtStart = FreePickupSlots();
+
+    // Hide San Andreas' end of the array for the length of this function, so every placement below
+    // lands above it. When the array could not be enlarged there is no "above it" and this does
+    // nothing: the old rule then applies unchanged, PickupReserve slots are counted out and kept,
+    // and what does not fit is dropped.
+    BlockVanillaSlots();
 
     // A CPickup keeps its position as int16 * 1/CompressedPositionScale, and PickupFix widens that
     // scale for exactly this reason. A region beyond what the scale reaches would still take a
@@ -192,9 +258,15 @@ void PlaceAll() {
                                     ? Settings::world.compressedPositionScale : 8.0f);
 
     for (RegionState& rs : Regions()) {
-        int placed = 0, noRoom = 0, noModel = 0, refused = 0, outOfReach = 0;
+        int placed = 0, noRoom = 0, noModel = 0, refused = 0, outOfReach = 0, strayed = 0;
         for (const Pickup& p : rs.pickups) {
-            if (FreePickupSlots() <= reserve) { noRoom++; continue; }
+            // Above San Andreas' own entries we may use everything that is free, because the
+            // reserve was already counted into the array's size; without the enlarged array we are
+            // sharing its 620 and have to stop short of the reserve.
+            if (grown ? FreePickupSlots(ours) <= 0 : FreePickupSlots() <= reserve) {
+                noRoom++;
+                continue;
+            }
 
             int model = p.modelId;
             if (p.weaponType >= 0) model = RegionWeapons::WeaponModel(p.weaponType);
@@ -212,27 +284,52 @@ void PlaceAll() {
                                            (unsigned)p.ammo, 0, false, nullptr);
             if (index < 0) { refused++; continue; }
             // The low half of the return is the slot, the high half its reference index.
-            if (gWitnessSlot < 0) { gWitnessSlot = index & 0xFFFF; gWitnessModel = model; }
+            int slot = index & 0xFFFF;
+            // Belt and braces. This cannot happen while the blocking above holds - and if it ever
+            // did, the pickup would be inside the part of the array the savegame copies, which is
+            // the one thing this whole design exists to prevent. So take it straight back out.
+            if (slot < ours) {
+                CallRemovePickUp(index);
+                strayed++;
+                continue;
+            }
+            if (gWitnessSlot < 0) { gWitnessSlot = slot; gWitnessModel = model; }
             placed++;
         }
 
-        Log::Write("[%s] pickups: %d placed of %u; %d dropped to keep %d slot(s) for San Andreas' "
-                   "own script, %d with no model, %d the game refused, %d past the +/-%.0f a "
-                   "compressed pickup position reaches",
-                   rs.region->name.c_str(), placed, (unsigned)rs.pickups.size(), noRoom, reserve,
-                   noModel, refused, outOfReach, reach);
+        Log::Write("[%s] pickups: %d placed of %u; %d dropped for want of a slot, %d with no model, "
+                   "%d the game refused, %d past the +/-%.0f a compressed pickup position reaches",
+                   rs.region->name.c_str(), placed, (unsigned)rs.pickups.size(), noRoom, noModel,
+                   refused, outOfReach, reach);
         if (outOfReach)
             Log::Write("[%s] pickups: a lower CompressedPositionScale reaches further, at the cost "
                        "of a coarser step; the vanilla 8 only reaches +/-4096",
                        rs.region->name.c_str());
-        if (noRoom)
-            Log::Write("[%s] pickups: San Andreas has %d pickup slots in all and its own script "
-                       "wants a large part of them; lower PickupReserve to give the region more, "
-                       "knowing that what runs out next is the oysters and horseshoes",
-                       rs.region->name.c_str(), kPickupCount);
+        if (strayed)
+            Log::Write("[%s] pickups: %d landed among San Andreas' own entries and were taken back "
+                       "out; the region's pickups must stay above them or a save game would carry "
+                       "them", rs.region->name.c_str(), strayed);
+        if (noRoom && grown)
+            Log::Write("[%s] pickups: the array holds %d entries and %d of them are above San "
+                       "Andreas' own %d, which is the only part a region may use - and they are "
+                       "gone. The array was sized to fit every placement, so something else has "
+                       "taken them: raise PickupReserve, which is counted into that size",
+                       rs.region->name.c_str(), PickupSlots::Count(),
+                       PickupSlots::Count() - PickupSlots::VanillaCount(),
+                       PickupSlots::VanillaCount());
+        if (noRoom && !grown)
+            Log::Write("[%s] pickups: the array could not be enlarged, so the region is sharing San "
+                       "Andreas' %d slots and its own script wants a large part of them; lower "
+                       "PickupReserve to give the region more, knowing that what runs out next is "
+                       "the oysters and horseshoes",
+                       rs.region->name.c_str(), PickupSlots::VanillaCount());
     }
-    Log::Debug("pickups: %d of %d slots were free before the regions, %d after",
-               freeAtStart, kPickupCount, FreePickupSlots());
+
+    UnblockVanillaSlots();
+    Log::Debug("pickups: %d of %d slots were free before the regions, %d after (%d free above San "
+               "Andreas' own %d)",
+               freeAtStart, PickupSlots::Count(), FreePickupSlots(),
+               FreePickupSlots(PickupSlots::VanillaCount()), PickupSlots::VanillaCount());
 }
 
 // CGame::ReInitGameObjectVariables is called from two places in CGame::InitialiseWhenRestarting -
@@ -241,8 +338,8 @@ void PlaceAll() {
 // slot still holding that model means these are our own pickups and the array has not been emptied
 // since: cheaper, and more honest, than assuming which of the two call sites ran.
 bool AlreadyPlaced() {
-    if (gWitnessSlot < 0) return false;
-    uintptr_t entry = kPickupArray + (uintptr_t)gWitnessSlot * kPickupStride;
+    if (gWitnessSlot < 0 || gWitnessSlot >= PickupSlots::Count()) return false;
+    uintptr_t entry = PickupEntry(gWitnessSlot);
     return *(uint8_t*)(entry + kPickupTypeOffset) != 0 &&
            *(uint16_t*)(entry + kPickupModelOffset) == (uint16_t)gWitnessModel;
 }
@@ -316,6 +413,15 @@ void Install() {
         if (ReadPickupFile(rs)) Regions().push_back(rs);
     }
     if (Regions().empty()) return;
+
+    // Enlarge the array before anything else touches it, and size it from what the regions turned
+    // out to be asking for rather than from a number written down here. Nothing above has patched
+    // the game yet, and this is well below the SA-MP check, so under SA-MP not a byte is written.
+    // If it fails it says why and leaves the game vanilla; the placement below then works the way
+    // it did before, sharing San Andreas' own 620 and keeping PickupReserve of them back.
+    int wanted = 0;
+    for (const RegionState& rs : Regions()) wanted += (int)rs.pickups.size();
+    PickupSlots::Grow(wanted, Settings::world.pickupReserve < 0 ? 0 : Settings::world.pickupReserve);
 
     ReInitOriginal() = safetyhook::create_inline(reinterpret_cast<void*>(0x53BCF0),
                                                 reinterpret_cast<void*>(&ReInitHook));

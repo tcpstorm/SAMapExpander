@@ -1,275 +1,334 @@
-// Gives San Andreas more pickup slots, so a region's own can go in beside its.
+// Makes room in CPickups::aPickUps for a region's world pickups, by moving the array somewhere
+// bigger and leaving the savegame looking at exactly the first 620 entries.
 //
-// CPickups::aPickUps is 620 entries of 0x20 bytes at 0x9788C0, and San Andreas' own main script
-// takes 551 of them - its oysters, its horseshoes, its photo opportunities, the guns at its
-// safehouses - before a region is asked for anything. That leaves 69, and the two shipped regions
-// between them want 291. Every one of them was refused, and no amount of lowering the reserve
-// changes it: the array is simply not big enough for two cities as well as San Andreas.
+// THE PROBLEM. aPickUps is 620 fixed entries of 0x20 bytes at 0x9788C0. San Andreas' own main
+// script takes 551 of them - fifty oysters, fifty horseshoes, its own street weapons, the spray
+// shops' respray pickups - and it asks for them before a region's placements go in, so a region
+// meets 69 free slots. Liberty City wants 170 and Vice City 121. Even with PickupReserve at 0 they
+// do not fit, and RegionPickups spent the whole budget dropping them.
 //
-// So move it to the heap and make it longer. The array is only ever addressed absolutely - there is
-// no pointer to repoint, every access has 0x9788C0 plus a field offset written into the instruction
-// - so relocating it means finding those instructions and rewriting the address in each. Which is
-// the same surgery ModelLimits does for the streaming tables and CityLoader does for the object
-// data, and it follows the same rule they do: every site is checked to still hold the exact value
-// expected before a single byte is written, and if any one of them does not, nothing is written at
-// all and the feature turns itself off.
+// WHY THE ARRAY WAS LEFT ALONE UNTIL NOW, and why that objection no longer applies. CPickups::Save
+// (0x5D3540) writes the array straight into the savegame - 620 entries of 0x20 bytes, one memcpy
+// each - and CPickups::Load (0x5D35A0) reads them back the same way. Widen the array naively and
+// the savegame block widens with it: saves this plugin makes stop being readable by vanilla San
+// Andreas and by every other mod, and a save written before the change no longer lines up with the
+// one written after. That is somebody's playthrough, so it is not a trade worth making.
 //
+// The way round it is that Save and Load do not care how big the array is. Each walks a cursor from
+// a start pointer to an end pointer, and both pointers are plain 32-bit operands in the code:
 //
-// FINDING THE SITES
+//     CPickups::Save   mov esi, 0x9788C0 ... add esi, 0x20 ... cmp esi, 0x97D640 ... jl
+//     CPickups::Load   mov esi, 0x9788C4 ... add esi, 0x20 ... cmp esi, 0x97D644 ... jl
 //
-// Scanning the executable for any four bytes that happen to fall inside the array's address range
-// finds 107 candidates, and most of them are wreckage - byte sequences that land in range by
-// accident, in the middle of instructions that have nothing to do with pickups. Decoding backwards
-// from each one does not settle it either, because x86 has no way of knowing where an instruction
-// starts from its middle: CCollision::ProcessColModels' "hit" disassembles to `ror byte ptr [edi],
-// 0x8e` and CPathFind's to `les eax, ptr [ecx + 0xf]`, neither of which is a real instruction.
+// So the array is moved and enlarged, every site that walks it at run time is given the new size -
+// and Save and Load are given the new base but the OLD COUNT. They keep reading and writing exactly
+// 620 entries of 0x20 bytes, in the same order, from the same offsets. The savegame block is byte
+// for byte what vanilla writes. A save made before this change loads afterwards; a save made
+// afterwards loads in vanilla San Andreas; nothing of the user's is at risk.
 //
-// Disassembling linearly from each function's own start, which does know where instructions begin,
-// gives 58 genuine references across 23 functions. They are listed below with the field offset each
-// one carries, and each is rewritten by looking for that exact address in the handful of bytes at
-// the site and replacing it - which needs no instruction decoding at all and refuses to write if
-// what it expects is not there.
+// What that costs is that entries 620 and up are never saved - and they are exactly where a
+// region's pickups go (RegionPickups blocks the low 620 while it places, so ours can only land
+// above them). That is not a loss. A region's pickups are static world placements read out of
+// pickups.dat and put back by RegionPickups every time a game starts, so saving them would only
+// mean restoring them twice; and a savegame that did contain them would carry region model ids into
+// a vanilla San Andreas that has no such models.
 //
+// THE TRAP. 0x97D640 is one past the last entry AND a live global variable in its own right - the
+// linker put it immediately behind the array, and CPickup::Update and CPickups::Update read and
+// write it. The same is true of 0x97D644, and 0x97D648..0x97D65C are floats a CRT thunk at 0x84A24C
+// initialises. So "every instruction naming 0x97D640" is the wrong question. The right one is which
+// instructions use those addresses as a LOOP SENTINEL - `cmp <cursor>, imm32`, an immediate - as
+// against which use them as memory - `mov [0x97D640], 6`, a memory operand. The two are told apart
+// by hand below and only the first kind is touched; the variables are left exactly alone.
 //
-// THE ONE THAT WOULD HAVE BEEN A DISASTER
-//
-// 0x97D640 is one byte past the end of the array, so it is what the loops compare against to know
-// they have finished. It is ALSO a live global variable in its own right, sitting immediately
-// behind the array, and four instructions read and write it as one - CPickup::Update stores 6 into
-// it twice. Rewriting those four as though they were end-of-array tests would silently corrupt
-// whatever that variable is for. Only the two genuine bounds tests are touched; the four variable
-// accesses are named below and deliberately left exactly as they are.
-//
-//
-// SAVEGAMES
-//
-// CPickups::Save walks the array 0x20 bytes at a time until it reaches the end and writes each
-// entry; CPickups::Load reads them back the same way. Both are pointed at the new array but keep
-// their old count, so they still write and read exactly 620 entries - the savegame's layout does
-// not change by a byte, and a save made with this loaded still opens without it.
-//
-// That works because of where the region's pickups live: above the vanilla 620, in the space that
-// only exists because of this file. San Andreas' own pickups stay in the first 620 and are saved
-// and restored exactly as before, while the region's are put back by RegionPickups at the start of
-// every session anyway - they are placements read from a file, not state worth persisting.
+// FINDING THE SITES. gta_sa.exe 1.0 US HOODLUM was disassembled with capstone: a linear sweep of
+// the first .text, and of .HOODLUM, which holds the stolen-byte stubs the crack moved whole
+// functions into. Five CPickups functions live there rather than in .text - Init,
+// AddToCollectedPickupsArray, GetActualPickupIndex, UpdateMoneyPerDay and FindPickUpForThisObject -
+// and one more instruction, CPickup::Remove's `sub eax, aPickUps`, sits in a stub at the very top of
+// .text at 0x4020BB, reached by a jmp from 0x4556C5. Missing any of those would leave a loop
+// walking from the new array to the old array's end: a wild sweep over megabytes of the address
+// space. Every stub below was found from the branch that reaches it and re-decoded from there, not
+// from a sliding byte scan, and every one of the 96 operands is checked to still hold the value
+// this table expects BEFORE anything at all is written. On any mismatch the game is left completely
+// vanilla and the caller turns the feature off.
 #include <plugin.h>
-#include <windows.h>
 #include <cstdint>
-#include <cstdio>
-#include <vector>
+#include <cstdlib>
 #include "PickupSlots.h"
-#include "Settings.h"
 #include "Log.h"
 
 using namespace plugin;
 
 namespace {
 
-constexpr uintptr_t kArray = 0x9788C0;      // CPickups::aPickUps
+constexpr uintptr_t kArray = 0x9788C0;     // CPickups::aPickUps
+constexpr unsigned kStride = 0x20;         // sizeof(CPickup)
 constexpr int kVanillaCount = 620;
-constexpr int kEntry = 0x20;
-constexpr uintptr_t kArrayEnd = kArray + (uintptr_t)kVanillaCount * kEntry;   // 0x97D640
+constexpr uintptr_t kArrayEnd = kArray + (uintptr_t)kVanillaCount * kStride;   // 0x97D640
 
-// How many slots to add beyond what the regions ask for, so San Andreas' script can still create
-// pickups of its own mid-game - mission items, respawns - after the regions have had theirs.
-constexpr int kHeadroom = 256;
-// A region file that asked for a hundred thousand slots would be a mistake, not a request.
-constexpr int kMaxCount = 8192;
+// CPickups::GenerateNewOne's free-slot search is unrolled ten entries at a time: it reads
+// entries [i .. i+9], adds 0x140 to its cursor and compares that against a pointer one past the
+// end. The loop therefore runs ceil(count / 10) times whatever the count is, and only a count that
+// is a multiple of ten stops the last pass reading past the last entry. Vanilla's 620 is 62 x 10;
+// ours is rounded up to keep that true.
+constexpr int kScanGroup = 10;
+// Spare entries on top of what the regions ask for and what the reserve keeps back, in the spirit
+// of the entity pools' headroom: a mod, a script or a later region file can want a few more, and
+// the whole array costs 0x20 bytes an entry.
+constexpr int kMargin = 64;
+// A slot index is packed into the low half of the handle CPickups::GetUniquePickupIndex builds, so
+// the array can never exceed 65535 entries; this is far below that and simply refuses a silly ini.
+constexpr int kMaxCount = 4000;
 
-// Every instruction that names the array, as { address, field offset within an entry }. Found by
-// disassembling each function linearly from its own start; see the note above about why a plain
-// byte scan will not do. The offsets are the fields of a CPickup - 0x00 position, 0x0C, 0x18 model,
-// 0x1A index, 0x1C type, 0x1D - and one end-of-array sentinel at 0x4D7C.
-const struct { uintptr_t at; unsigned offset; } kSites[] = {
-    { 0x4556D2, 0x01A }, { 0x4590CB, 0x000 }, { 0x456F51, 0x01C },
-    { 0x456F64, 0x03C }, { 0x457002, 0x03C }, { 0x457099, 0x03C }, { 0x45719F, 0x000 },
-    { 0x4571E8, 0x008 }, { 0x4571F3, 0x016 }, { 0x4571FA, 0x01D }, { 0x457214, 0x000 },
-    { 0x45721A, 0x01C }, { 0x457226, 0x00C }, { 0x45722C, 0x01D }, { 0x457266, 0x01C },
-    { 0x45726D, 0x00C }, { 0x45727D, 0x01C }, { 0x45728A, 0x00C }, { 0x45729A, 0x018 },
-    { 0x4572AA, 0x01D }, { 0x4572C2, 0x01D }, { 0x4572FE, 0x01D }, { 0x457313, 0x004 },
-    { 0x457319, 0x01D }, { 0x457344, 0x01A }, { 0x457354, 0x01A }, { 0x457366, 0x01A },
-    { 0x45736F, 0x01A }, { 0x456A39, 0x01A }, { 0x455289, 0x01A }, { 0x5D35A2, 0x004 },
-    { 0x455204, 0x00C }, { 0x456A83, 0x012 }, { 0x456BF3, 0x000 }, { 0x456BFD, 0x000 },
-    { 0x456C0A, 0x01A }, { 0x456E6C, 0x004 }, { 0x456E82, 0x01A }, { 0x456ED6, 0x01A },
-    { 0x456DE2, 0x004 }, { 0x456E00, 0x01A }, { 0x4573E8, 0x01A }, { 0x4573F6, 0x000 },
-    { 0x456D32, 0x010 }, { 0x455471, 0x004 }, { 0x4563A9, 0x012 }, { 0x5D3542, 0x000 },
-    { 0x456453, 0x012 }, { 0x4555BD, 0x012 }, { 0x455664, 0x008 }, { 0x458E2A, 0x004 },
-    { 0x458FE4, 0x01C }, { 0x585F08, 0x000 }, { 0x587110, 0x000 }, { 0x47AC91, 0x000 },
-    { 0x494725, 0x000 }, { 0x48ADC2, 0x000 },
+// ---------------------------------------------------------------- the sites
+//
+// `operandOffset` is where the four bytes sit inside the instruction. Each was read out of the
+// executable and confirmed to be the only place in that instruction the value appears.
+
+// A dword naming &aPickUps[0].<field>, or a fixed low entry: the array's base plus a constant.
+// Rewritten to the new base plus the same constant.
+struct BaseSite { uintptr_t address; uint8_t operandOffset; uint32_t oldValue; };
+
+const BaseSite kBaseSites[] = {
+    // --- the stolen-byte stub CPickup::Remove jumps to, at the very top of .text
+    { 0x4020BB, 1, 0x9788C0 },   // sub eax, aPickUps          this - aPickUps, for the slot index
+
+    { 0x455204, 1, 0x9788CC },   // CPickups::PassTime          loop start, at +0xC
+    { 0x455289, 3, 0x9788DA },   // CPickups::GetUniquePickupIndex
+    { 0x455471, 1, 0x9788C4 },   // CPickups::RemovePickupObjects   loop start, at +4
+    { 0x4555BD, 1, 0x9788D2 },   // CPickups::TryToMerge_WeaponType loop start, at +0x12
+    { 0x455664, 2, 0x9788C8 },   // CPickups::TryToMerge_WeaponType index -> pointer
+    { 0x4556D2, 3, 0x9788DA },   // CPickup::Remove
+    { 0x4563A9, 1, 0x9788D2 },   // CPickups::RemoveUnnecessaryPickups loop start
+    { 0x456453, 1, 0x9788D2 },   // CPickups::TestForPickupsInBubble   loop start
+    { 0x456A39, 2, 0x9788DA },   // CPickups::GetNewUniquePickupIndex
+    { 0x456A83, 1, 0x9788D2 },   // CPickups::PictureTaken             loop start
+    { 0x456BF3, 2, 0x9788C0 },   // CPickups::PictureTaken  index -> pointer
+    { 0x456BFD, 1, 0x9788C0 },   // CPickups::PictureTaken  pointer -> index
+    { 0x456C0A, 3, 0x9788DA },   // CPickups::PictureTaken
+    { 0x456D32, 1, 0x9788D0 },   // CPickups::RemovePickUpsInArea      loop start, at +0x10
+    { 0x456DE2, 1, 0x9788C4 },   // CPickups::RemoveMissionPickUps     loop start
+    { 0x456E00, 3, 0x9788DA },   // CPickups::RemoveMissionPickUps
+    { 0x456E6C, 1, 0x9788C4 },   // CPickups::ReInit   first loop's start
+    { 0x456E82, 3, 0x9788DA },   // CPickups::ReInit
+    { 0x456ED6, 1, 0x9788DA },   // CPickups::ReInit   second loop's start, at +0x1A
+
+    // CPickups::GenerateNewOne. Three searches, each walking the type byte at +0x1C: one backwards
+    // from the last entry (for the mine and mission types), then forwards for a free slot, then
+    // forwards again for a slot holding a pickup it is allowed to take over.
+    { 0x456F51, 1, 0x9788DC },   // backwards search: stop at &aPickUps[0].type
+    { 0x456F64, 1, 0x9788FC },   // forward search 1 starts at &aPickUps[1].type
+    { 0x457002, 1, 0x9788FC },   // forward search 2
+    { 0x457099, 1, 0x9788FC },   // forward search 3
+    { 0x45719F, 2, 0x9788C0 },   // index -> pointer, to free the old slot's object
+    { 0x4571E8, 2, 0x9788C8 },   // and then the fields of the entry it settled on
+    { 0x4571F3, 3, 0x9788D6 },
+    { 0x4571FA, 2, 0x9788DD },
+    { 0x457214, 2, 0x9788C0 },
+    { 0x45721A, 2, 0x9788DC },
+    { 0x457226, 2, 0x9788CC },
+    { 0x45722C, 2, 0x9788DD },
+    { 0x457266, 2, 0x9788DC },
+    { 0x45726D, 2, 0x9788CC },
+    { 0x45727D, 2, 0x9788DC },
+    { 0x45728A, 2, 0x9788CC },
+    { 0x45729A, 3, 0x9788D8 },   // the model index, +0x18
+    { 0x4572AA, 2, 0x9788DD },
+    { 0x4572C2, 2, 0x9788DD },
+    { 0x4572FE, 2, 0x9788DD },
+    { 0x457313, 2, 0x9788C4 },
+    { 0x457319, 2, 0x9788DD },
+    { 0x457344, 3, 0x9788DA },
+    { 0x457354, 3, 0x9788DA },
+    { 0x457366, 3, 0x9788DA },
+    { 0x45736F, 3, 0x9788DA },
+
+    { 0x4573E8, 3, 0x9788DA },   // CPickups::RemovePickUp
+    { 0x4573F6, 2, 0x9788C0 },   // CPickups::RemovePickUp  index -> pointer
+    { 0x458E2A, 2, 0x9788C4 },   // CPickups::Update  first slice's start
+    { 0x458FE4, 2, 0x9788DC },   // CPickups::Update  second slice's start
+    { 0x4590CB, 1, 0x9788C0 },   // CPickups::DetonateMinesHitByGunShot  loop start
+
+    { 0x47AC91, 1, 0x9788C0 },   // script opcode: is there a pickup of this kind within range
+    { 0x48ADC2, 1, 0x9788C0 },   // script opcode: the same shape, testing every entry
+    { 0x494725, 2, 0x9788C0 },   // script opcode: a pickup's coordinates, index -> pointer
+    { 0x585F08, 2, 0x9788C0 },   // CRadar::Draw3dMarkers   index -> pointer
+    { 0x587110, 1, 0x9788C0 },   // CRadar::DrawEntityBlip  index -> pointer
+
+    // The save path. These two get the new base and keep the vanilla count, which is the whole
+    // point of the exercise - see the end sites below.
+    { 0x5D3542, 1, 0x9788C0 },   // CPickups::Save  loop start
+    { 0x5D35A2, 1, 0x9788C4 },   // CPickups::Load  loop start
+
+    // --- whole functions HOODLUM moved out of .text into its own section
+    { 0x1561589, 3, 0x9788DA },  // CPickups::AddToCollectedPickupsArray (entered from 0x455240)
+    { 0x1564659, 1, 0x9788DA },  // CPickups::Init (0x454A70): clears every entry
+    { 0x1564BC8, 3, 0x9788DA },  // CPickups::GetActualPickupIndex (0x4552A0)
+    { 0x156B378, 3, 0x9788DA },  // CPickups::UpdateMoneyPerDay (0x455680)
+    { 0x156B38B, 3, 0x9788D6 },
+    { 0x156D876, 1, 0x9788C4 },  // CPickups::FindPickUpForThisObject (0x4551C0)  loop start
+    { 0x156D896, 1, 0x9788C0 },  // its "nothing found" return
+    { 0x156D8A0, 1, 0x9788C0 },  // its "found" return, index -> pointer
 };
 
-// The count, written into instructions as a plain number rather than an address.
-//
-// CPickups::GenerateNewOne searches for a free slot and compares the index against 620 four times,
-// having started it at 619. CPickups::Update is not a loop over the array at all: it takes the
-// frame counter modulo 32, multiplies by 620 and divides by 32, so each frame it updates a
-// thirty-second of the array. That 620 is the count as much as the others are, and if it is left
-// alone every pickup above the old end is never updated - never collected, never respawned, never
-// drawn. Which would look exactly like the pickups not being there.
-const struct { uintptr_t at; int value; } kCounts[] = {
-    { 0x456F3E, kVanillaCount - 1 },   // CPickups::GenerateNewOne  mov ebx, 619
-    { 0x456FF4, kVanillaCount },       // CPickups::GenerateNewOne  cmp ebx, 620
-    { 0x45708B, kVanillaCount },       // CPickups::GenerateNewOne  cmp ebx, 620
-    { 0x45718E, kVanillaCount },       // CPickups::GenerateNewOne  cmp ebx, 620
-    { 0x4571D1, kVanillaCount },       // CPickups::GenerateNewOne  cmp ebx, 620
-    { 0x458DF7, kVanillaCount },       // CPickups::Update  imul ecx, ecx, 620
-    { 0x458E0B, kVanillaCount },       // CPickups::Update  lea eax, [ecx + 620]
-    { 0x458FB0, kVanillaCount },       // CPickups::Update  imul ecx, ecx, 620
-    { 0x458FBF, kVanillaCount },       // CPickups::Update  add ecx, 620
+// The one operand that names the LAST entry rather than the first: CPickups::GenerateNewOne's
+// backwards search starts at &aPickUps[619].type, so it moves with the count as well as the base.
+constexpr uintptr_t kLastEntrySite = 0x456F43;
+constexpr uint8_t kLastEntryOperandOffset = 1;
+constexpr uint32_t kLastEntryOldValue = 0x97D63C;   // kArray + 619 * 0x20 + 0x1C
+constexpr unsigned kLastEntryField = 0x1C;
+
+// A dword naming one past the last entry - &aPickUps[620].<field> - that a loop compares its cursor
+// against. `savePath` marks the two that must keep counting 620 however big the array gets.
+struct EndSite { uintptr_t address; uint8_t operandOffset; unsigned field; bool savePath; };
+
+const EndSite kEndSites[] = {
+    { 0x455231, 1, 0x0C, false },   // CPickups::PassTime
+    { 0x4554A9, 2, 0x04, false },   // CPickups::RemovePickupObjects
+    { 0x455649, 2, 0x12, false },   // CPickups::TryToMerge_WeaponType
+    { 0x456436, 2, 0x12, false },   // CPickups::RemoveUnnecessaryPickups
+    { 0x4564D7, 2, 0x12, false },   // CPickups::TestForPickupsInBubble
+    { 0x456BDC, 2, 0x12, false },   // CPickups::PictureTaken
+    { 0x456DD1, 2, 0x10, false },   // CPickups::RemovePickUpsInArea
+    { 0x456E4A, 2, 0x04, false },   // CPickups::RemoveMissionPickUps
+    { 0x456EC7, 2, 0x04, false },   // CPickups::ReInit, first loop
+    { 0x456EEE, 1, 0x1A, false },   // CPickups::ReInit, second loop
+    // The three unrolled searches stop at &aPickUps[count + 1].type, one group of ten past the end
+    // of the entries they read; that is why the count is rounded to a multiple of ten.
+    { 0x456FC2, 1, 0x3C, false },   // CPickups::GenerateNewOne, forward search 1
+    { 0x457059, 1, 0x3C, false },   // forward search 2
+    { 0x457154, 1, 0x3C, false },   // forward search 3
+    { 0x4590E2, 2, 0x00, false },   // CPickups::DetonateMinesHitByGunShot
+    { 0x156466E, 1, 0x1A, false },  // CPickups::Init, in HOODLUM's section
+    { 0x156D88E, 2, 0x04, false },  // CPickups::FindPickUpForThisObject, likewise
+
+    // And the two that stay at 620 for ever.
+    { 0x5D3555, 2, 0x00, true },    // CPickups::Save
+    { 0x5D35D2, 2, 0x04, true },    // CPickups::Load
 };
 
-// The two end-of-array comparisons that are genuinely that, and what each becomes.
-//
-//   CPickups::Save     stays at 620 entries, so the savegame is unchanged - see the note above.
-//   DetonateMinesHitByGunShot  walks the whole array looking for mines, so it takes the new end.
-//
-// CPickups::Load's bound is the same test one field along, 0x97D644, and stays at 620 with Save.
-//
-// NOT in this list, and deliberately: 0x457ACE and 0x457CC3 in CPickup::Update, and 0x458EE1 and
-// 0x458EF5 in CPickups::Update. Those four read and write 0x97D640 as a variable, not as the end of
-// anything. Rewriting them would corrupt it.
-constexpr uintptr_t kSaveBound = 0x5D3555;      // cmp esi, 0x97D640  - keep to 620
-constexpr uintptr_t kLoadBound = 0x5D35D2;      // cmp esi, 0x97D644  - keep to 620
-constexpr uintptr_t kMinesBound = 0x4590E2;     // cmp esi, 0x97D640  - the whole array
+// A dword immediate that is the entry count itself, one less than it, or the array's size in bytes.
+enum CountKind { kCount, kCountLessOne, kCountBytes };
+struct CountSite { uintptr_t address; uint8_t operandOffset; CountKind kind; };
 
-// Where CPickups::GenerateNewOne starts looking, and it is not a field offset however much it looks
-// like one.
-//
-// The search runs backwards: `mov ebx, 619` sets the index, `mov eax, 0x97D63C` sets a pointer at
-// the type byte of entry 619 - 619 * 0x20 + 0x1C - and the two walk down together until the pointer
-// reaches entry 0's type at 0x9788DC. Treating 0x4D7C as a fixed offset and repointing it like any
-// other field leaves the pointer starting at entry 619 while the index starts at 1166, so the two
-// disagree by 547 the whole way down: the search finds a free slot and reports the wrong index for
-// it. That is what "the game refused" meant with 1157 slots standing empty.
-//
-// So it scales with the count, like the index does.
-constexpr uintptr_t kSearchStart = 0x456F43;    // mov eax, &aPickUps[619].type
+const CountSite kCountSites[] = {
+    { 0x456F3E, 1, kCountLessOne },  // GenerateNewOne: the backwards search's starting index
+    { 0x456FF4, 2, kCount },         // GenerateNewOne: "did search 1 find one before the end"
+    { 0x45708B, 2, kCount },         // search 2
+    { 0x45718E, 2, kCount },         // search 3
+    { 0x4571D1, 2, kCount },         // and the last check before it writes the entry
+    // CPickups::Update does not walk the array; it does a slice of it per frame - (frame & 31) *
+    // count / 32 up to ((frame & 31) + 1) * count / 32 for one pass, and sixths of it for the
+    // other. These four are that count. Leave them at 620 and every entry above the old end is
+    // never updated: our pickups would stand there, and never be collectable.
+    { 0x458DF7, 2, kCount },         // CPickups::Update, first pass: imul ecx, ecx, count
+    { 0x458E0B, 2, kCount },         //                              lea eax, [ecx + count]
+    { 0x458FB0, 2, kCount },         // second pass
+    { 0x458FBF, 2, kCount },
+    // Two script opcodes walk the array by byte offset instead of by pointer, so their bound is the
+    // array's size rather than its length.
+    { 0x47ACF1, 2, kCountBytes },
+    { 0x48AE3D, 2, kCountBytes },
+};
 
-uint8_t* gArray = nullptr;
-int gCount = 0;
+uint8_t* gBlock = nullptr;
+int gCount = kVanillaCount;
 
-// Find `want` in the few bytes at `at` and say where, or 0. The window is a whole instruction's
-// worth; an x86 instruction cannot be longer than 15 bytes and every site here is far shorter.
-uintptr_t FindOperand(uintptr_t at, uint32_t want) {
-    for (unsigned i = 0; i <= 10; i++) {
-        if (IsBadReadPtr((void*)(at + i), 4)) return 0;
-        if (*(const uint32_t*)(at + i) == want) return at + i;
-    }
-    return 0;
+uint32_t EndValue(const EndSite& s, uintptr_t base, int count) {
+    return (uint32_t)(base + (uintptr_t)count * kStride + s.field);
 }
 
-bool Verify() {
-    for (const auto& s : kSites)
-        if (!FindOperand(s.at, (uint32_t)(kArray + s.offset))) {
-            Log::Write("pickup slots: %08X does not hold %08X; leaving the array alone",
-                       (unsigned)s.at, (unsigned)(kArray + s.offset));
-            return false;
-        }
-    for (const auto& c : kCounts)
-        if (!FindOperand(c.at, (uint32_t)c.value)) {
-            Log::Write("pickup slots: %08X does not hold %d; leaving the array alone",
-                       (unsigned)c.at, c.value);
-            return false;
-        }
-    if (!FindOperand(kSearchStart, (uint32_t)(kArray + (uintptr_t)(kVanillaCount - 1) * kEntry + 0x1C)) ||
-        !FindOperand(kSaveBound, (uint32_t)kArrayEnd) ||
-        !FindOperand(kLoadBound, (uint32_t)(kArrayEnd + 4)) ||
-        !FindOperand(kMinesBound, (uint32_t)kArrayEnd)) {
-        Log::Write("pickup slots: a bounds test is not where it should be; leaving the array alone");
-        return false;
+uint32_t CountValue(const CountSite& s, int count) {
+    switch (s.kind) {
+        case kCountLessOne: return (uint32_t)(count - 1);
+        case kCountBytes:   return (uint32_t)((unsigned)count * kStride);
+        default:            return (uint32_t)count;
     }
-    return true;
 }
 
-void Write32(uintptr_t at, uint32_t value) {
-    DWORD old = 0;
-    VirtualProtect((void*)at, 4, PAGE_EXECUTE_READWRITE, &old);
-    *(uint32_t*)at = value;
-    VirtualProtect((void*)at, 4, old, &old);
-}
-
-// How many the regions between them are asking for. Counted from the files rather than from
-// RegionPickups, because this has to run before the game's own start-up and RegionPickups reads
-// them later; a line that is not a comment is a placement.
-int RegionDemand() {
-    int total = 0;
-    for (const MapRegion& r : Settings::regions) {
-        if (r.pickupFile.empty()) continue;
-        FILE* f = fopen(r.pickupFile.c_str(), "r");
-        if (!f) continue;
-        char line[512];
-        while (fgets(line, sizeof(line), f)) {
-            const char* p = line;
-            while (*p == ' ' || *p == '\t') p++;
-            if (*p && *p != ';' && *p != '#' && *p != '\n' && *p != '\r') total++;
-        }
-        fclose(f);
-    }
-    return total;
+// Read a site's operand and say whether it is still what this table expects. Nothing is written
+// until every one of them has answered yes.
+bool Holds(uintptr_t address, uint8_t operandOffset, uint32_t expected, const char* what) {
+    uint32_t have = (uint32_t)patch::GetUInt(address + operandOffset);
+    if (have == expected) return true;
+    Log::Write("ERROR: the pickup array was not enlarged: %s at 0x%X holds 0x%08X, expected 0x%08X "
+               "(another mod has patched it, or this is not the 1.0 US executable); San Andreas' "
+               "pickups are left exactly as they are and the region's are left out",
+               what, (unsigned)(address + operandOffset), have, expected);
+    return false;
 }
 
 }   // namespace
 
 namespace PickupSlots {
 
+int VanillaCount() { return kVanillaCount; }
+bool Grown() { return gBlock != nullptr; }
+uintptr_t Base() { return gBlock ? (uintptr_t)gBlock : kArray; }
 int Count() { return gCount; }
-uintptr_t Array() { return gArray ? (uintptr_t)gArray : kArray; }
 
-void Install() {
-    if (!Settings::world.regionPickups) return;
+bool Grow(int regionPlacements, int reserve) {
+    if (gBlock) return true;              // already done; Install is only meant to run once
+    if (regionPlacements <= 0) return false;
+    if (reserve < 0) reserve = 0;
 
-    // Under SA-MP the server owns the pickups and places them itself, so there is nothing here for
-    // a region to add and no reason to touch the game's array at all.
-    if (Settings::RunningUnderSaMp()) return;
+    // San Andreas' own 620, every placement the regions asked for, the slots the reserve keeps back
+    // so its script can still have its oysters and horseshoes afterwards, and a little headroom -
+    // then rounded up to the group of ten GenerateNewOne's search reads at a time.
+    int wanted = kVanillaCount + regionPlacements + reserve + kMargin;
+    wanted = ((wanted + kScanGroup - 1) / kScanGroup) * kScanGroup;
+    if (wanted > kMaxCount) {
+        wanted = (kMaxCount / kScanGroup) * kScanGroup;
+        Log::Write("pickup slots: %d entries asked for is more than this will go to; capped at %d",
+                   kVanillaCount + regionPlacements + reserve + kMargin, wanted);
+    }
+    if (wanted <= kVanillaCount) return false;
 
-    const int demand = RegionDemand();
-    if (!demand) return;
+    for (const BaseSite& s : kBaseSites)
+        if (!Holds(s.address, s.operandOffset, s.oldValue, "the array's address")) return false;
+    if (!Holds(kLastEntrySite, kLastEntryOperandOffset, kLastEntryOldValue,
+               "the last entry's address")) return false;
+    for (const EndSite& s : kEndSites)
+        if (!Holds(s.address, s.operandOffset, EndValue(s, kArray, kVanillaCount),
+                   "the end of the array")) return false;
+    for (const CountSite& s : kCountSites)
+        if (!Holds(s.address, s.operandOffset, CountValue(s, kVanillaCount),
+                   "the number of entries")) return false;
 
-    int count = kVanillaCount + demand + kHeadroom;
-    if (count > kMaxCount) {
-        Log::Write("pickup slots: %d wanted, which is past the %d this will go to; capped",
-                   count, kMaxCount);
-        count = kMaxCount;
+    // Zeroed, because that is what the loader gives the vanilla array and what CPickups::Init
+    // expects to find; Init then writes every entry itself, over the whole new length.
+    uint8_t* block = (uint8_t*)calloc((size_t)wanted, kStride);
+    if (!block) {
+        Log::Write("ERROR: the pickup array was not enlarged: cannot allocate %d entries; the "
+                   "region's pickups are left out", wanted);
+        return false;
     }
 
-    if (!Verify()) return;
+    const uintptr_t base = (uintptr_t)block;
+    for (const BaseSite& s : kBaseSites)
+        patch::SetUInt(s.address + s.operandOffset, (unsigned)(base + (s.oldValue - kArray)));
+    patch::SetUInt(kLastEntrySite + kLastEntryOperandOffset,
+                   (unsigned)(base + (uintptr_t)(wanted - 1) * kStride + kLastEntryField));
+    for (const EndSite& s : kEndSites)
+        patch::SetUInt(s.address + s.operandOffset,
+                       EndValue(s, base, s.savePath ? kVanillaCount : wanted));
+    for (const CountSite& s : kCountSites)
+        patch::SetUInt(s.address + s.operandOffset, CountValue(s, wanted));
 
-    gArray = (uint8_t*)VirtualAlloc(nullptr, (size_t)count * kEntry, MEM_COMMIT | MEM_RESERVE,
-                                    PAGE_READWRITE);
-    if (!gArray) {
-        Log::Write("pickup slots: could not allocate %d entries; leaving the array alone", count);
-        return;
-    }
-    // The game clears the array itself in CPickups::Init, but only over the count it knows about,
-    // and that is now this one - VirtualAlloc hands back zeroed pages regardless, so an entry the
-    // game never touches reads as the empty type rather than as whatever was in memory.
-    const uintptr_t base = (uintptr_t)gArray;
-
-    for (const auto& s : kSites)
-        Write32(FindOperand(s.at, (uint32_t)(kArray + s.offset)), (uint32_t)(base + s.offset));
-    for (const auto& c : kCounts)
-        Write32(FindOperand(c.at, (uint32_t)c.value),
-                (uint32_t)(c.value == kVanillaCount - 1 ? count - 1 : count));
-
-    // The backwards search starts at the last entry there now is, in step with its index.
-    Write32(FindOperand(kSearchStart, (uint32_t)(kArray + (uintptr_t)(kVanillaCount - 1) * kEntry + 0x1C)),
-            (uint32_t)(base + (uintptr_t)(count - 1) * kEntry + 0x1C));
-
-    // Save and Load keep to the first 620 entries, so the savegame is byte for byte what it was.
-    Write32(FindOperand(kSaveBound, (uint32_t)kArrayEnd),
-            (uint32_t)(base + (uintptr_t)kVanillaCount * kEntry));
-    Write32(FindOperand(kLoadBound, (uint32_t)(kArrayEnd + 4)),
-            (uint32_t)(base + 4 + (uintptr_t)kVanillaCount * kEntry));
-    // The mine sweep is a runtime walk of everything there is.
-    Write32(FindOperand(kMinesBound, (uint32_t)kArrayEnd),
-            (uint32_t)(base + (uintptr_t)count * kEntry));
-
-    gCount = count;
-    Log::Write("pickup slots: %d -> %d entries at %08X (%d for the regions, %d spare for San "
-               "Andreas' script); %d site(s) and %d count(s) repointed, saves still hold %d",
-               kVanillaCount, count, (unsigned)base, demand, count - kVanillaCount - demand,
-               (int)(sizeof(kSites) / sizeof(kSites[0])) + 3,
-               (int)(sizeof(kCounts) / sizeof(kCounts[0])), kVanillaCount);
+    gBlock = block;
+    gCount = wanted;
+    Log::Write("pickup slots: the array is %d -> %d entries at %p (%d for San Andreas, %d asked for "
+               "by the regions, %d kept in reserve, %d spare); %u site(s) patched",
+               kVanillaCount, wanted, (void*)block, kVanillaCount, regionPlacements, reserve,
+               wanted - kVanillaCount - regionPlacements - reserve,
+               (unsigned)(sizeof(kBaseSites) / sizeof(kBaseSites[0]) + 1 +
+                          sizeof(kEndSites) / sizeof(kEndSites[0]) +
+                          sizeof(kCountSites) / sizeof(kCountSites[0])));
+    Log::Write("pickup slots: the save game still holds exactly the first %d entries, so it stays "
+               "byte for byte what vanilla San Andreas writes; the region's pickups go above them "
+               "and are put back from pickups.dat every time a game starts", kVanillaCount);
+    return true;
 }
 
 }   // namespace PickupSlots
