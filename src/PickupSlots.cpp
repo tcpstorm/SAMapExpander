@@ -81,7 +81,7 @@ constexpr int kMaxCount = 8192;
 // byte scan will not do. The offsets are the fields of a CPickup - 0x00 position, 0x0C, 0x18 model,
 // 0x1A index, 0x1C type, 0x1D - and one end-of-array sentinel at 0x4D7C.
 const struct { uintptr_t at; unsigned offset; } kSites[] = {
-    { 0x4556D2, 0x01A }, { 0x4590CB, 0x000 }, { 0x456F43, 0x4D7C }, { 0x456F51, 0x01C },
+    { 0x4556D2, 0x01A }, { 0x4590CB, 0x000 }, { 0x456F51, 0x01C },
     { 0x456F64, 0x03C }, { 0x457002, 0x03C }, { 0x457099, 0x03C }, { 0x45719F, 0x000 },
     { 0x4571E8, 0x008 }, { 0x4571F3, 0x016 }, { 0x4571FA, 0x01D }, { 0x457214, 0x000 },
     { 0x45721A, 0x01C }, { 0x457226, 0x00C }, { 0x45722C, 0x01D }, { 0x457266, 0x01C },
@@ -132,6 +132,19 @@ constexpr uintptr_t kSaveBound = 0x5D3555;      // cmp esi, 0x97D640  - keep to 
 constexpr uintptr_t kLoadBound = 0x5D35D2;      // cmp esi, 0x97D644  - keep to 620
 constexpr uintptr_t kMinesBound = 0x4590E2;     // cmp esi, 0x97D640  - the whole array
 
+// Where CPickups::GenerateNewOne starts looking, and it is not a field offset however much it looks
+// like one.
+//
+// The search runs backwards: `mov ebx, 619` sets the index, `mov eax, 0x97D63C` sets a pointer at
+// the type byte of entry 619 - 619 * 0x20 + 0x1C - and the two walk down together until the pointer
+// reaches entry 0's type at 0x9788DC. Treating 0x4D7C as a fixed offset and repointing it like any
+// other field leaves the pointer starting at entry 619 while the index starts at 1166, so the two
+// disagree by 547 the whole way down: the search finds a free slot and reports the wrong index for
+// it. That is what "the game refused" meant with 1157 slots standing empty.
+//
+// So it scales with the count, like the index does.
+constexpr uintptr_t kSearchStart = 0x456F43;    // mov eax, &aPickUps[619].type
+
 uint8_t* gArray = nullptr;
 int gCount = 0;
 
@@ -158,7 +171,8 @@ bool Verify() {
                        (unsigned)c.at, c.value);
             return false;
         }
-    if (!FindOperand(kSaveBound, (uint32_t)kArrayEnd) ||
+    if (!FindOperand(kSearchStart, (uint32_t)(kArray + (uintptr_t)(kVanillaCount - 1) * kEntry + 0x1C)) ||
+        !FindOperand(kSaveBound, (uint32_t)kArrayEnd) ||
         !FindOperand(kLoadBound, (uint32_t)(kArrayEnd + 4)) ||
         !FindOperand(kMinesBound, (uint32_t)kArrayEnd)) {
         Log::Write("pickup slots: a bounds test is not where it should be; leaving the array alone");
@@ -236,6 +250,10 @@ void Install() {
     for (const auto& c : kCounts)
         Write32(FindOperand(c.at, (uint32_t)c.value),
                 (uint32_t)(c.value == kVanillaCount - 1 ? count - 1 : count));
+
+    // The backwards search starts at the last entry there now is, in step with its index.
+    Write32(FindOperand(kSearchStart, (uint32_t)(kArray + (uintptr_t)(kVanillaCount - 1) * kEntry + 0x1C)),
+            (uint32_t)(base + (uintptr_t)(count - 1) * kEntry + 0x1C));
 
     // Save and Load keep to the first 620 entries, so the savegame is byte for byte what it was.
     Write32(FindOperand(kSaveBound, (uint32_t)kArrayEnd),
