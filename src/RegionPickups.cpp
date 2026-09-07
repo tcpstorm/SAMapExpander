@@ -55,6 +55,7 @@ constexpr uintptr_t kPickupArray = 0x9788C0;   // CPickups::aPickUps[620]
 constexpr unsigned kPickupStride = 0x20;
 constexpr int kPickupCount = 620;
 constexpr unsigned kPickupTypeOffset = 0x1C;   // 0 is PICKUP_NONE, i.e. a free slot
+constexpr unsigned kPickupModelOffset = 0x18;  // uint16, written by GenerateNewOne at 0x45729A
 
 // CPickups::GenerateNewOne. The position is a CVector passed by value, which for __cdecl is three
 // floats on the stack and nothing else - spelling it that way keeps the cross-compiler out of the
@@ -79,6 +80,10 @@ struct RegionState {
 };
 
 std::vector<RegionState>& Regions() { static std::vector<RegionState> v; return v; }
+
+// The first slot this placed and what went in it - see AlreadyPlaced below.
+int gWitnessSlot = -1;
+int gWitnessModel = -1;
 
 int FreePickupSlots() {
     int free = 0;
@@ -132,8 +137,9 @@ bool ReadPickupFile(RegionState& rs) {
         std::string comment;
         size_t hash = raw.find('#');
         if (hash != std::string::npos) { comment = Trim(raw.substr(hash + 1)); raw = raw.substr(0, hash); }
-        std::vector<std::string> t = Tokens(Trim(raw));
-        if (t.empty()) continue;
+        std::string line = Trim(raw);
+        if (line.empty() || line[0] == ';') continue;   // ';' comments out a placement, as in the ini
+        std::vector<std::string> t = Tokens(line);
         if (t.size() != 7) { malformed++; continue; }
 
         Pickup p;
@@ -200,6 +206,8 @@ void PlaceAll() {
             int index = CallGenerateNewOne(x, y, z, (unsigned)model, (unsigned char)p.type,
                                            (unsigned)p.ammo, 0, false, nullptr);
             if (index < 0) { refused++; continue; }
+            // The low half of the return is the slot, the high half its reference index.
+            if (gWitnessSlot < 0) { gWitnessSlot = index & 0xFFFF; gWitnessModel = model; }
             placed++;
         }
 
@@ -223,24 +231,15 @@ void PlaceAll() {
 }
 
 // CGame::ReInitGameObjectVariables is called from two places in CGame::InitialiseWhenRestarting -
-// one for a new game, one for a loaded one - and only one of them runs, but nothing says so in the
-// code. Remembering a slot we filled and finding it still ours means we have already placed for
-// this life of the game, which is cheaper than trusting that.
-int gWitnessSlot = -1;
-int gWitnessModel = -1;
-
+// one for a new game, one for a loaded one - and only one of them runs, but nothing in the code
+// says so. So the first pickup this places is remembered by slot and by model, and finding that
+// slot still holding that model means these are our own pickups and the array has not been emptied
+// since: cheaper, and more honest, than assuming which of the two call sites ran.
 bool AlreadyPlaced() {
     if (gWitnessSlot < 0) return false;
     uintptr_t entry = kPickupArray + (uintptr_t)gWitnessSlot * kPickupStride;
-    return *(uint8_t*)(entry + kPickupTypeOffset) != 0;
-}
-
-void RememberWitness() {
-    for (int i = 0; i < kPickupCount; i++) {
-        uintptr_t entry = kPickupArray + (uintptr_t)i * kPickupStride;
-        if (*(uint8_t*)(entry + kPickupTypeOffset) != 0) { gWitnessSlot = i; return; }
-    }
-    gWitnessSlot = -1;
+    return *(uint8_t*)(entry + kPickupTypeOffset) != 0 &&
+           *(uint16_t*)(entry + kPickupModelOffset) == (uint16_t)gWitnessModel;
 }
 
 SafetyHookInline& ReInitOriginal() { static SafetyHookInline h; return h; }
@@ -248,8 +247,8 @@ SafetyHookInline& ReInitOriginal() { static SafetyHookInline h; return h; }
 void __cdecl ReInitHook() {
     ReInitOriginal().ccall<void>();
     if (AlreadyPlaced()) return;
+    gWitnessSlot = -1;
     PlaceAll();
-    RememberWitness();
 }
 
 }   // namespace

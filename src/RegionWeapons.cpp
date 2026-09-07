@@ -280,8 +280,11 @@ bool ReadWeaponFile(RegionArms& arms) {
         std::string comment;
         size_t hash = raw.find('#');
         if (hash != std::string::npos) { comment = Trim(raw.substr(hash + 1)); raw = raw.substr(0, hash); }
+        // ';' is how the importer ships a line it has written but does not recommend - the trades
+        // where San Andreas' own weapon is worth more than the import - so it has to mean nothing
+        // rather than mean a weapon called ";KATANA".
         std::string line = Trim(raw);
-        if (line.empty()) continue;
+        if (line.empty() || line[0] == ';') continue;
 
         std::vector<std::string> t = Tokens(line);
         if (t.size() < kFieldsMin || t.size() > kFieldsMax) { malformed++; continue; }
