@@ -111,7 +111,7 @@ SA x 4171..6963, y −778..2626).
 | `AtomicModelInfoLimit` | grows with `ModelIdLimit` (14000 stock) | capacity of SA's atomic model-info store; set only if another limit adjuster changed it |
 | `RegionWeapons` | 1 | master switch for every region's `Weapons` file. Skipped under SA-MP. |
 | `RegionPickups` | 1 | master switch for every region's `Pickups` file. Skipped under SA-MP. |
-| `PickupReserve` | 200 | how many of SA's 620 pickup slots to keep back for its own script, which asks for them after the regions are placed |
+| `PickupReserve` | 200 | how many free pickup slots to leave SA's own script once a region has taken what it wants. Counted into the enlarged array's size rather than deducted from SA's 620 |
 | `Debug` | 0 | verbose log, F8 diagnostics, water render statistics |
 
 ### Region data (feature branches)
@@ -269,6 +269,7 @@ All run in throwaway containers; nothing is installed on the host.
 - `tools/import-city.ps1` / `tools/import_city.py` — build a region folder from a III/VC install (see *Importing a city*).
 - `tools/sftp.ps1` — serve the project folder over SFTP (port 2222) to test on another machine.
 - `tools/scan.ps1 <gamedir>` / `tools/scan_exe.py` — find every code site using the int16/8 compression constants and the pickup accessors.
+- `tools/verify_pickup_sites.py <gta_sa.exe>` — re-read the 96 operands `src/PickupSlots.cpp` rewrites straight out of the executable, confirm each is unambiguous, confirm none of them is one of the globals sharing the array's end address, and prove the save path still spans exactly 620 entries. Must pass 100% before the table ships.
 - `tools/xref.py`, `tools/fieldref.py`, `tools/check_fn.py`, `tools/readfloat.py`, `tools/dumpb.py` — capstone helpers for cross-referencing addresses, struct-field accesses, disassembly, constants and raw bytes/branch targets in `gta_sa.exe`.
 - `tools/gen_functions.py` → `tools/sa_functions.txt` — 9.6k named addresses merged from gta-reversed and plugin-sdk, used to label scanner output.
 - `tools/montage.py`, `tools/montage_orders.py`, `tools/tile_order_score.py` — stitch tiles and score the eight possible grid orderings to verify a tile set's numbering.
@@ -302,8 +303,20 @@ All run in throwaway containers; nothing is installed on the host.
 - All 13 of `CPed`'s weapon slots (`m_aWeapons` at +0x5A0, `0x1C` each) are used, and `Ped::GiveWeapon` indexes them
   without a bounds check, so a weapon cannot be given a slot of its own either.
 - `CPickups::aPickUps` is 620 entries of `0x20` at 0x9788C0 (type at +0x1C, model at +0x18, positions `int16 / scale`).
-  `GenerateNewOne` (0x456F20) returns −1 when full, and `CPickups::Save` writes the whole array into a savegame — so
-  the array is deliberately *not* relocated, and regions are capped by `PickupReserve` instead.
+  SA's own script takes 551 of them before a region is placed, so `PickupSlots` moves the array to the heap and sizes
+  it from what the regions ask for. `CPickups::Save` (0x5D3540) and `Load` (0x5D35A0) each walk a cursor between two
+  32-bit operands, so they are given the new base and the **old count**: they still write and read exactly 620 entries
+  of `0x20`, and the savegame block stays byte for byte what vanilla writes. A region's pickups therefore have to live
+  above entry 620, which `RegionPickups` guarantees by making the free entries below it look occupied while it places
+  — `GenerateNewOne` (0x456F20) always takes the first free entry counting up from 0, and nothing of SA's own is
+  moved, evicted or recycled.
+- 96 operands change, verified against the executable before a byte is written (`tools/verify_pickup_sites.py`).
+  Two traps: 0x97D640 is one past the last entry **and** a live global — only the instructions using it as a loop
+  sentinel move, the ones reading it as memory are left alone; and six of the sites are in HOODLUM's own section,
+  which holds `CPickups::Init`, `AddToCollectedPickupsArray`, `GetActualPickupIndex`, `UpdateMoneyPerDay` and
+  `FindPickUpForThisObject` whole, plus a stolen-bytes stub at 0x4020BB that `CPickup::Remove` jumps to. The count is
+  rounded up to a multiple of ten because `GenerateNewOne`'s free-slot search is unrolled ten entries at a time.
+  A mod that reads 0x9788C0 directly sees the old, now unused, array.
 
 ## Roadmap
 
