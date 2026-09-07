@@ -31,6 +31,7 @@ static SafetyHookInline& Hook() { static SafetyHookInline h; return h; }
 int gReports = 0;
 long gSkipped = 0;
 long gStaleSkipped = 0;
+long gDumpCount = 0;
 volatile int gLastModel = -1;   // model of the entity RenderEntity is drawing right now
 
 // A CEntity: readable, a vtable somewhere in the executable's .rdata, a model index in range, and a
@@ -97,6 +98,24 @@ void __cdecl Hooked_RenderEntity(void* entity, float distance) {
                            model, (unsigned)(uintptr_t)rwObject);
             }
             return;
+        }
+    }
+
+    // Dump the RwObject of a model under investigation, each render, so the last line written before
+    // it faults shows the corrupt atomic - which field holds FFFFFFFF names what to trace. Capped so
+    // a model that renders fine for a while does not fill the log.
+    if (model == Settings::world.dumpRenderModel && gDumpCount < 240) {
+        gDumpCount++;
+        if (rwObject && !IsBadReadPtr(rwObject, 0x60)) {
+            const unsigned* w = (const unsigned*)rwObject;
+            Log::Write("dump: model %u rwobj %08X type %u: %08X %08X %08X %08X %08X %08X %08X %08X "
+                       "%08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X",
+                       model, (unsigned)(uintptr_t)rwObject, w[0] & 0xFF,
+                       w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8], w[9], w[10], w[11],
+                       w[12], w[13], w[14], w[15], w[16], w[17], w[18], w[19], w[20], w[21], w[22]);
+        } else {
+            Log::Write("dump: model %u rwobj %08X unreadable", model,
+                       (unsigned)(uintptr_t)rwObject);
         }
     }
 

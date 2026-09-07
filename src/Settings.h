@@ -56,6 +56,7 @@ struct WorldSettings {
     bool extendWorldSectors;               // double what the static world grids cover, so a region beyond +/-3000 renders
     bool linkRegionLods;                   // rebuild HD->LOD links from the source game's naming rule; off = LODs draw as plain objects
     std::vector<int> skipRenderModels;     // remapped model ids the render guard refuses to draw (a crash workaround while a model is diagnosed)
+    int dumpRenderModel;                    // remapped model id whose RwObject bytes to log each render, to catch the frame it corrupts; < 0 off
     bool debug;                      // verbose log, F8 diagnostics, water render statistics
 };
 
