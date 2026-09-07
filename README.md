@@ -338,6 +338,16 @@ All run in throwaway containers; nothing is installed on the host.
     default, it becomes the mode the same chain gives the donor. Nothing else is ever substituted, so the attached
     camera and the drive-by task, which also call it, are untouched. `tools/verify_weapon_types.py` reads that chain
     out of the executable and shows that only the `.308`'s `SNIPERRIFLE` donor gets a non-default answer.
+  - *The black around the scope is not in `CHud` at all.* `SNIPERcrosshair` is one **quadrant** of the scope —
+    128×128 DXT3, 29% of it opaque black in the outer corner, the white rim on the inner arc, a clear centre — and
+    `DrawCrossHairs` draws it four times mirrored about the screen centre. Four quadrants at 210 virtual units cover
+    420 of a 640-wide virtual screen, so the sides are left over, and they are filled black by **`Render2dStuff`**
+    (0x53E230): it reads the player's weapon type inline at 0x53E2D2, checks the camera is in one of six scope modes
+    (0x7, 0x27, 0x8, 0x28, 0x2E, 0x2D), and then draws five `CSprite2d::DrawRect` in RGBA(0,0,0,255) — but only if
+    the type is `SNIPERRIFLE` (0x53E31B) or 0x13 (0x53E320). A new type fails that and scopes with clear sides.
+    `Render2dStuff` is the whole 2D pass and calls `CHud::Draw` at 0x53E4FF, so the lend is confined to those six
+    camera modes and `CHud::DrawWeaponIcon` is hooked to put our own type back for its call, keeping the wheel icon
+    the gun the player is holding.
   - *The scope's reticle*, which took two goes. The branch that draws a weapon's own `CROSSHAIR` texture is 0x58E7A0,
     reached from exactly three tests — `type == CAMERA` (0x58E6E0), `type == SNIPERRIFLE` (0x58E703) and a script
     global (0x58E70C); anything else falls through to camera-mode tests at 0x58E719 and ends on the shared `siteM16`
