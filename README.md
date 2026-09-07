@@ -232,7 +232,12 @@ where its doorways are. `Interior<N>` is that switch, one box per room, and `src
 does what script command 04BB does — store `CGame::currArea` and call
 `CStreaming::RemoveBuildingsNotInArea` — from a hook on `CEntryExitManager::Update`, so it runs in
 the same frame slot as SA's own "has the player entered an interior" check and backs off entirely
-whenever SA owns the area. Boxes for the same area may be repeated for an interior that is not one
+whenever SA owns the area. It also stamps the new code on the player and on whatever they are
+driving, as `CEntryExit::TransitionFinished` does at 0x4406BB and 0x4406CE: the player's own model
+is gated on it like any other entity, and `CColStore::EnsureCollisionIsInMemory` (0x410AF5) and
+`CIplStore::SetIplsRequired` read the *player's* code and give up when it does not match
+`currArea`, so without it collision would stop streaming and the player would drop through the
+world. Boxes for the same area may be repeated for an interior that is not one
 room. Entry uses the box as written, exit the box plus two units, so a doorway cannot flicker.
 
 Entry/exit markers were the alternative and are the wrong tool here: `enex` exists to *teleport* the

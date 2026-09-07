@@ -46,6 +46,7 @@
 // reach their collision is to be inside, which is when they are visible.
 #include <plugin.h>
 #include <CPlayerPed.h>
+#include <CVehicle.h>
 #include <CWorld.h>
 #include <safetyhook.hpp>
 #include <cstdint>
@@ -100,9 +101,20 @@ bool Inside(const MapRegion& r, const InteriorVolume& v, const CVector& p, float
            z >= v.minZ - grow && z <= v.maxZ + grow;
 }
 
-void SetArea(int area) {
+void SetArea(int area, CPlayerPed* player) {
     CurrArea = area;
     CallRemoveBuildingsNotInArea(area);
+
+    // The player carries an area code of their own, and the game reads it as much as it reads
+    // currArea. CEntryExit::TransitionFinished stamps it on the player and on whatever they are
+    // driving at 0x4406BB and 0x4406CE, and it has to be done: CRenderer::SetupEntityVisibility
+    // gates the player's own model on it, so leaving it at 0 would make them invisible in the room,
+    // and worse, CColStore::EnsureCollisionIsInMemory (0x410AF5) and CIplStore::SetIplsRequired
+    // read the PLAYER's code and give up when it does not match currArea - collision would stop
+    // streaming and the player would drop through the world.
+    player->m_nAreaCode = (unsigned char)area;
+    if (CVehicle* vehicle = FindPlayerVehicle(-1, false))
+        vehicle->m_nAreaCode = (unsigned char)area;
 }
 
 void Forget() {
@@ -148,7 +160,7 @@ void Update() {
     gRegion = region;
     if (want == gOurArea) return;   // a second box for the same interior; the area is already right
 
-    SetArea(want);
+    SetArea(want, player);
     gOurArea = want;
     if (want)
         Log::Write("[%s] interior: area %d (%s) at SA (%.1f, %.1f, %.1f)", region->name.c_str(),
