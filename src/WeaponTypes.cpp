@@ -390,12 +390,62 @@ struct Lent {
     ~Lent() { if (at) *at = was; }
 };
 
-bool gSaidCrossHair = false;
-
-// TheCamera.m_aCams[m_nActiveCam].m_nMode, for the one diagnostic line below.
+// TheCamera.m_aCams[m_nActiveCam].m_nMode, and TheCamera.PlayerWeaponMode.m_nMode at +0x830, which
+// is what CPed::UpdateCameraWeaponModes writes and the camera turns into the active mode.
 int ActiveCameraMode() {
     const unsigned active = *(const uint8_t*)0xB6F081;
     return *(const uint16_t*)(0xB6F1A8 + (uintptr_t)active * 0x238);
+}
+
+int PlayerWeaponMode() { return *(const uint16_t*)0xB6F858; }
+
+// Which of CHud::DrawCrossHairs' three drawing blocks a frame will take, worked out from the same
+// tests the function itself makes, so that one run says where a reticle came from instead of
+// another round of guessing. CHud::Sprites is at 0xBAB1FC and [1] - 0xBAB200 - is siteM16, which is
+// what both of the first two blocks draw; only the third reads the weapon's own CROSSHAIR texture.
+const char* CrossHairBranch(int type, int mode) {
+    const bool firstPerson = mode == 7 || mode == 8 || mode == 0x10 || mode == 0x22 ||
+                             mode == 0x2D || mode == 0x2E || mode == 0x33;
+    const bool aimMode = mode == 0x35 || mode == 0x37 || mode == 0x41;
+    // bl, from the camera-mode test at 0x58E10E and the weapon-type chain at 0x58E1AE. A sniper
+    // rifle is in neither, which is why San Andreas' own reaches the third block.
+    const bool typeSetsBl = (type >= 0x16 && type <= 0x1F) || type == 0x20 || type == 0x21 ||
+                            type == 0x25 || type == 0x26;
+    const bool bl = mode == 0x27 || mode == 0x28 || mode == 0x2A || mode == 0x34 ||
+                    (aimMode && typeSetsBl);
+    if (!firstPerson && !bl) return "nothing: neither gate at 0x58E1E1 is open";
+    if (bl && aimMode) return "siteM16, the four-quadrant block at 0x58E24A";
+    if (mode == 0x22 || mode == 0x29 || mode == 0x2A || mode == 0x2D)
+        return "siteM16, the first-person block at 0x58E4DF - the weapon's own reticle is not "
+               "reached from here";
+    return "the weapon's own CROSSHAIR texture, the block at 0x58E7A0 that the stand-in opens";
+}
+
+// One line per distinct camera mode, not one line ever: the first engage told us only that the
+// player was walking about with the gun, which is not the frame anybody was asking about. The same
+// is said for San Andreas' own two rifles, so that one session's log has the mode a working scope
+// runs in beside the mode ours runs in, which is the comparison that settles it.
+bool gModeSaid[256] = {};
+bool gDonorModeSaid[256] = {};
+
+void SayCrossHairFrame(int mine, int donor, int model) {
+    const int mode = ActiveCameraMode();
+    if (mode < 0 || mode > 255 || gModeSaid[mode]) return;
+    gModeSaid[mode] = true;
+    Log::Write("weapon types: crosshair stand-in - type %d drawn as %d out of model %d; active "
+               "camera mode %d (0x%X), player weapon mode %d (0x%X); this frame draws %s",
+               mine, donor, model, mode, mode, PlayerWeaponMode(), PlayerWeaponMode(),
+               CrossHairBranch(donor, mode));
+}
+
+void SayVanillaFrame(int type) {
+    const int mode = ActiveCameraMode();
+    if (mode < 0 || mode > 255 || gDonorModeSaid[mode]) return;
+    gDonorModeSaid[mode] = true;
+    Log::Write("weapon types: for comparison, San Andreas' own weapon type %d - active camera mode "
+               "%d (0x%X), player weapon mode %d (0x%X); this frame draws %s",
+               type, mode, mode, PlayerWeaponMode(), PlayerWeaponMode(),
+               CrossHairBranch(type, mode));
 }
 
 void __cdecl DrawCrossHairsHook() {
@@ -431,6 +481,9 @@ void __cdecl DrawCrossHairsHook() {
             int32_t* held = (int32_t*)((uintptr_t)ped + kPedWeapons +
                                        (unsigned)slot * kPedWeaponStride);
             const int mine = *held;
+            // San Andreas' country rifle and sniper rifle, logged for the comparison and otherwise
+            // left completely alone - nothing is lent, nothing is written.
+            if (mine == 33 || mine == 34) SayVanillaFrame(mine);
             if (mine >= kFirstNewType && mine <= kLastNewType) {
                 const int donor = gDonor[mine - kFirstNewType];
                 const int32_t ours = *(const int32_t*)(kWeaponInfoArray +
@@ -440,13 +493,7 @@ void __cdecl DrawCrossHairsHook() {
                     if (ours > 0)
                         model.Lend((int32_t*)(kWeaponInfoArray + (uintptr_t)donor * kWeaponInfoStride +
                                               kModelId1), ours);
-                    if (!gSaidCrossHair) {
-                        gSaidCrossHair = true;
-                        Log::Write("weapon types: the crosshair stand-in is running - weapon type "
-                                   "%d is drawn as %d for one HUD pass, out of model %d's own "
-                                   "dictionary; camera mode %d",
-                                   mine, donor, (int)ours, ActiveCameraMode());
-                    }
+                    SayCrossHairFrame(mine, donor, (int)ours);
                 }
             }
         }

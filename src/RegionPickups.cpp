@@ -104,7 +104,8 @@ typedef void(__cdecl* RemovePickUpFn)(int handle);
 const RemovePickUpFn CallRemovePickUp = reinterpret_cast<RemovePickUpFn>(0x4573D0);
 
 struct Pickup {
-    int  weaponType;   // -1 when the line names a model instead
+    int  weaponType;   // resolved from weaponName at placement; -1 when the line names a model
+    std::string weaponName;   // as written in the file, looked up when placing - see ReadPickupFile
     int  modelId;      // -1 when the line names a weapon
     int  type;         // ePickupType, 2 = PICKUP_ON_STREET
     int  ammo;
@@ -209,14 +210,18 @@ bool ReadPickupFile(RegionState& rs) {
         p.weaponType = -1;
         p.modelId = -1;
         if (_stricmp(t[0].c_str(), "weapon") == 0) {
-            p.weaponType = RegionWeapons::WeaponType(t[1].c_str());
-            if (p.weaponType < 0) {
-                if (unknownWeapon < 5)
-                    Log::Write("[%s] pickups: San Andreas has no weapon called %s; the pickup is "
-                               "left out", rs.region->name.c_str(), t[1].c_str());
-                unknownWeapon++;
-                continue;
-            }
+            // Kept as written and looked up when the pickup is placed, not now.
+            //
+            // A file names the import rather than the San Andreas weapon it borrows from -
+            // LASERSCOPE, not SNIPERRIFLE - because two imports can share a donor, and when the
+            // .308 moved onto the sniper rifle Vice City's own sniper was already there, so both
+            // lines read the same and both handed over the .308. Asking for the import by its own
+            // name settles that. But those names do not exist yet at this point: this file is read
+            // while the plugin starts, and the new weapon types are not claimed until the region's
+            // weapons.dat is applied much later. Resolving here dropped every one of them as a
+            // weapon San Andreas has never heard of, which took the guns out of the streets
+            // altogether.
+            p.weaponName = t[1];
         } else if (_stricmp(t[0].c_str(), "model") == 0) {
             p.modelId = atoi(t[1].c_str());
         } else {
@@ -268,8 +273,12 @@ void PlaceAll() {
                 continue;
             }
 
+            // Now that the region's weapons.dat has been applied, an imported gun answers to its
+            // own name, so this is the first moment the lookup can succeed.
+            int weaponType = p.weaponName.empty() ? -1 : RegionWeapons::WeaponType(p.weaponName.c_str());
+            if (!p.weaponName.empty() && weaponType < 0) { noModel++; continue; }
             int model = p.modelId;
-            if (p.weaponType >= 0) model = RegionWeapons::WeaponModel(p.weaponType);
+            if (weaponType >= 0) model = RegionWeapons::WeaponModel(weaponType);
             if (model <= 0) { noModel++; continue; }
 
             float x = p.x + rs.region->originX;
