@@ -310,11 +310,13 @@ void PlaceAll() {
                        "out; the region's pickups must stay above them or a save game would carry "
                        "them", rs.region->name.c_str(), strayed);
         if (noRoom && grown)
-            Log::Write("[%s] pickups: the array has %d entries and only %d of them are above San "
-                       "Andreas' own 620, which is the only part a region may use; the rest of this "
-                       "region needs a larger PickupReserve or fewer placements",
+            Log::Write("[%s] pickups: the array holds %d entries and %d of them are above San "
+                       "Andreas' own %d, which is the only part a region may use - and they are "
+                       "gone. The array was sized to fit every placement, so something else has "
+                       "taken them: raise PickupReserve, which is counted into that size",
                        rs.region->name.c_str(), PickupSlots::Count(),
-                       PickupSlots::Count() - PickupSlots::VanillaCount());
+                       PickupSlots::Count() - PickupSlots::VanillaCount(),
+                       PickupSlots::VanillaCount());
         if (noRoom && !grown)
             Log::Write("[%s] pickups: the array could not be enlarged, so the region is sharing San "
                        "Andreas' %d slots and its own script wants a large part of them; lower "
