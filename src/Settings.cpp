@@ -87,6 +87,7 @@ namespace Settings {
         world.dummyPoolLimit = -1;         // vanilla 2500, same
         world.ptrNodePoolLimit = -1;       // vanilla 70000 plus what the regions need
         world.extendWorldSectors = true;
+        world.linkRegionLods = true;
 
         IniFile ini;
         if (!ini.Load(PLUGIN_PATH("MapExpander.ini"))) {
@@ -119,6 +120,7 @@ namespace Settings {
             world.dummyPoolLimit = w->GetInt("DummyPoolLimit", -1);
             world.ptrNodePoolLimit = w->GetInt("PtrNodePoolLimit", -1);
             world.extendWorldSectors = w->GetBool("ExtendWorldSectors", true);
+            world.linkRegionLods = w->GetBool("LinkRegionLods", true);
             if (world.compressedPositionScale <= 0.0f) world.compressedPositionScale = 4.0f;
             world.gxtFiles = SplitPaths(w->GetString("Gxt", ""));
             world.gxtLogMisses = w->GetBool("GxtLogMisses", false);

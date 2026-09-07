@@ -613,9 +613,12 @@ std::vector<Inst> CollectInsts(const RegionState& rs, const std::string& source,
     // and one is in another file - the rule reconstructs nearly every link there is. The nearest
     // match by position settles a model placed more than once. The convention lives in the source
     // game's names; the region's are tagged, so names.txt supplies the originals.
-    bool needsPairing = false;
-    for (const Inst& inst : kept)
-        if (!inst.hadLodColumn) { needsPairing = true; break; }
+    bool needsPairing = Settings::world.linkRegionLods;
+    if (needsPairing) {
+        needsPairing = false;
+        for (const Inst& inst : kept)
+            if (!inst.hadLodColumn) { needsPairing = true; break; }
+    }
     if (needsPairing) {
         auto original = [&](const std::string& name) {
             auto o = rs.originals.find(Lower(name));
