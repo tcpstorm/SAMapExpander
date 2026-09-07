@@ -30,6 +30,7 @@
 #include <vector>
 #include "CityLoader.h"
 #include "ModelLimits.h"
+#include "RegionWeapons.h"
 #include "Settings.h"
 #include "Log.h"
 
@@ -334,7 +335,7 @@ int FreeIdsLeft() {
 
 // ---------------------------------------------------------------- IDE
 
-enum class IdeSection { None, Objs, Tobj, Anim, Txdp, Skip };
+enum class IdeSection { None, Objs, Tobj, Anim, Weap, Txdp, Skip };
 
 // Mirrors CFileLoader::LoadObject (0x5B3C60) closely enough to recover the flag word, which decides
 // whether the line lands in the atomic store or in the 70-entry damage-atomic store.
@@ -355,7 +356,7 @@ bool ObjsIsDamageable(const std::string& line) {
 }
 
 struct StoreBudget {
-    int atomic, damage, time, clump;
+    int atomic, damage, time, clump, weapon;
 };
 
 StoreBudget CurrentBudget() {
@@ -364,6 +365,10 @@ StoreBudget CurrentBudget() {
     b.damage = kDamageStoreMax - (int)StoreCount(kDamageStore);
     b.time = ModelLimits::TimeCapacity() - (int)StoreCount(ModelLimits::TimeStore());
     b.clump = kClumpStoreMax - (int)StoreCount(kClumpStore);
+    // Vanilla San Andreas fills 50 of the weapon store's 51, so a region's weapon models only fit
+    // when RegionWeapons has moved that store to the heap; if it has not, this is 1 and the weap
+    // lines are dropped with the same message as any other full store.
+    b.weapon = RegionWeapons::Capacity() - (int)StoreCount(RegionWeapons::Store());
     return b;
 }
 
@@ -429,7 +434,12 @@ std::string TranslateIde(RegionState& rs, const std::string& source) {
             else if (head == "tobj") section = IdeSection::Tobj;
             else if (head == "anim") section = IdeSection::Anim;
             else if (head == "txdp") section = IdeSection::Txdp;
-            else if (head == "peds" || head == "cars" || head == "weap" || head == "hier" ||
+            // weap lines only travel when the region asked for its guns: they cost a weapon model
+            // info each, and a region that is not replacing any weapon has nothing to point at them.
+            else if (head == "weap")
+                section = RegionWeapons::Active() && !rs.region->weaponFile.empty()
+                        ? IdeSection::Weap : IdeSection::Skip;
+            else if (head == "peds" || head == "cars" || head == "hier" ||
                      head == "path" || head == "2dfx")
                 section = IdeSection::Skip;
             else continue;
@@ -454,6 +464,7 @@ std::string TranslateIde(RegionState& rs, const std::string& source) {
         int* pool = nullptr;
         if (section == IdeSection::Tobj) pool = &budget.time;
         else if (section == IdeSection::Anim) pool = &budget.clump;
+        else if (section == IdeSection::Weap) pool = &budget.weapon;
         else pool = ObjsIsDamageable(line) ? &budget.damage : &budget.atomic;
         if (*pool <= 0) { rs.droppedNoStore++; continue; }
 
@@ -763,9 +774,10 @@ void LoadModelDefinitions() {
     gNextFreeId = Settings::world.freeModelIdStart;
     int available = FreeIdsLeft();
     StoreBudget budget = CurrentBudget();
-    Log::Write("models: %d free id(s) in %d..%d; store headroom atomic %d, damage %d, time %d, clump %d",
+    Log::Write("models: %d free id(s) in %d..%d; store headroom atomic %d, damage %d, time %d, "
+               "clump %d, weapon %d",
                available, Settings::world.freeModelIdStart, FreeIdEnd(),
-               budget.atomic, budget.damage, budget.time, budget.clump);
+               budget.atomic, budget.damage, budget.time, budget.clump, budget.weapon);
 
     for (RegionState& rs : Regions()) {
         LoadNameMap(rs);
@@ -801,11 +813,12 @@ void LoadModelDefinitions() {
                        "FreeModelIdEnd if it was lowered)", rs.region->name.c_str(),
                        Settings::world.freeModelIdStart, FreeIdEnd());
         if (rs.droppedNoStore)
-            Log::Write("[%s] models: a model-info store ran out (atomic %d, damage %d, time %d, clump %d "
-                       "in total; tobj lines need the time store, and anim lines the clump store, "
-                       "which vanilla SA fills exactly) - this is the hard wall, not the id range",
+            Log::Write("[%s] models: a model-info store ran out (atomic %d, damage %d, time %d, clump %d, "
+                       "weapon %d in total; tobj lines need the time store, anim lines the clump store, "
+                       "and weap lines the weapon store, which vanilla SA fills exactly) - this is "
+                       "the hard wall, not the id range",
                        rs.region->name.c_str(), AtomicLimit(), kDamageStoreMax,
-                       ModelLimits::TimeCapacity(), kClumpStoreMax);
+                       ModelLimits::TimeCapacity(), kClumpStoreMax, RegionWeapons::Capacity());
     }
 }
 
@@ -1021,6 +1034,8 @@ int RegionTxdCount() {
                     if (low == "objs") section = IdeSection::Objs;
                     else if (low == "tobj") section = IdeSection::Tobj;
                     else if (low == "anim") section = IdeSection::Anim;
+                    else if (low == "weap" && RegionWeapons::Active() &&
+                             !rs.region->weaponFile.empty()) section = IdeSection::Weap;
                     continue;
                 }
                 if (low == "end") { section = IdeSection::None; continue; }

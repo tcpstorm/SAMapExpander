@@ -89,6 +89,9 @@ namespace Settings {
         world.extendWorldSectors = true;
         world.linkRegionLods = true;
         world.dropUnlinkedLods = true;
+        world.regionWeapons = true;
+        world.regionPickups = true;
+        world.pickupReserve = 200;
 
         IniFile ini;
         if (!ini.Load(PLUGIN_PATH("MapExpander.ini"))) {
@@ -123,6 +126,9 @@ namespace Settings {
             world.extendWorldSectors = w->GetBool("ExtendWorldSectors", true);
             world.linkRegionLods = w->GetBool("LinkRegionLods", true);
             world.dropUnlinkedLods = w->GetBool("DropUnlinkedLods", true);
+            world.regionWeapons = w->GetBool("RegionWeapons", true);
+            world.regionPickups = w->GetBool("RegionPickups", true);
+            world.pickupReserve = w->GetInt("PickupReserve", 200);
             for (const std::string& s : SplitPaths(w->GetString("DebugSkipModels", ""))) world.skipRenderModels.push_back(atoi(s.c_str()));
             if (world.compressedPositionScale <= 0.0f) world.compressedPositionScale = 4.0f;
             world.gxtFiles = SplitPaths(w->GetString("Gxt", ""));
@@ -151,6 +157,8 @@ namespace Settings {
             r.iplFiles = SplitPaths(s.GetString("Ipl", ""));
             r.zoneFiles = SplitPaths(s.GetString("Zones", ""));
             if (s.Has("ZoneNames")) r.zoneNamesFile = ResolveGamePath(s.GetString("ZoneNames", ""));
+            if (s.Has("Weapons")) r.weaponFile = ResolveGamePath(s.GetString("Weapons", ""));
+            if (s.Has("Pickups")) r.pickupFile = ResolveGamePath(s.GetString("Pickups", ""));
             r.zoneInfoLabel = s.GetString("ZoneInfoLabel", "SAN_AND");
             r.regionName = s.GetString("RegionName", "");
 
