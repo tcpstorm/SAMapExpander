@@ -1222,10 +1222,61 @@ def rename_ipl(text, renames):
     return "\n".join(out) + "\n"
 
 
-def rename_col(data, renames):
+COL_DAYLIGHT = 255        # what a fully lit outdoor surface reads in San Andreas own collision
+
+
+def light_col1(out, at, end):
+    """Give a COL1 model's surfaces the daylight value San Andreas expects. Returns faces touched.
+
+    San Andreas lights a ped, a car, anything dynamic, partly from the ground beneath it:
+    CEntity::GetLightingFromCol (0x5447B0) reads the brightness the entity picked up from the
+    surface it is standing on and adds it to the ambient of the time cycle. That brightness comes
+    from a byte per collision face - material, flag, brightness, light - and San Andreas' own
+    collision uses the whole range, 255 being both "fully lit" and much its most common value.
+
+    III and Vice City never used the field. Every face, sphere and box in both games reads zero,
+    because their engines lit dynamic objects some other way. Carried across as they are, a ped who
+    steps off San Andreas' ground onto an imported street is told the ground gives off no light at
+    all and visibly darkens, which is what makes peds look wrong on these maps and only on these
+    maps.
+
+    There is nothing to preserve here - the source is uniformly zero, so no information is lost by
+    replacing it - and outdoors, fully lit, is both the sane default for a city street and what San
+    Andreas writes most often itself. The layout is: bounds, then a count and that many spheres of
+    20 bytes, a count of lines, a count and that many boxes of 28, a count and that many vertices
+    of 12, then a count and that many faces of 16, each ending in the four surface bytes.
+    """
+    p = at + 32 + 40                         # header, then bounds
+    faces = 0
+    try:
+        count = struct.unpack_from("<I", out, p)[0]; p += 4
+        for _ in range(count):               # spheres: radius, centre, surface
+            out[p + 19] = COL_DAYLIGHT
+            p += 20
+        p += 4                               # the line count, always zero in both games
+        count = struct.unpack_from("<I", out, p)[0]; p += 4
+        for _ in range(count):               # boxes: min, max, surface
+            out[p + 27] = COL_DAYLIGHT
+            p += 28
+        count = struct.unpack_from("<I", out, p)[0]
+        p += 4 + count * 12                  # vertices
+        count = struct.unpack_from("<I", out, p)[0]; p += 4
+        if p + count * 16 > end:
+            return 0                         # not the layout assumed; leave the model alone
+        for _ in range(count):               # faces: a, b, c, surface
+            out[p + 15] = COL_DAYLIGHT
+            p += 16
+            faces += 1
+    except (struct.error, IndexError):
+        return 0
+    return faces
+
+
+def rename_col(data, renames, relight=True):
     """A .col archive is a run of COLL/COL2/COL3 entries: fourcc, u32 size, char name[22], u16 id."""
     out = bytearray(data)
     at = 0
+    lit = 0
     while at + 8 <= len(out):
         fourcc = bytes(out[at:at + 4])
         if fourcc not in (b"COLL", b"COL2", b"COL3", b"COL4"):
@@ -1235,8 +1286,10 @@ def rename_col(data, renames):
         new = renames.get(name.lower() + ".dff")
         if new:
             out[at + 8:at + 30] = new.encode("latin-1")[:21].ljust(22, b"\0")
+        if relight and fourcc == b"COLL":
+            lit += light_col1(out, at, at + 8 + size)
         at += 8 + size
-    return bytes(out)
+    return bytes(out), lit
 
 
 # ---------------------------------------------------------------- namespacing
@@ -1532,6 +1585,7 @@ def main():
     # Split the archive: models/textures into the new IMG, collision into loose files,
     # radar tiles into PNGs. Everything else (audio, misc) is dropped.
     packed, cols, tiles, skipped = [], 0, 0, 0
+    col_faces_lit = 0
     txd_parts = {}
     dff_refs = {}
     tex_done, tex_failed, txds = 0, 0, 0
@@ -1565,7 +1619,11 @@ def main():
             continue
         elif ext == ".col":
             with open(os.path.join(out, "col", name), "wb") as f:
-                f.write(rename_col(blob, renames))
+                data, faces = rename_col(blob, renames)
+
+                f.write(data)
+
+                col_faces_lit += faces
             cols += 1
         elif ext == ".txd":
             txds += 1
@@ -1695,6 +1753,10 @@ def main():
         total = write_img_v2(os.path.join(out, region + ".img"), packed)
         print("%s.img: %d models/textures, %.1f MB; %d collision files, %d radar tiles, %d other entries dropped"
               % (region, len(packed), total / 1e6, cols, tiles, skipped))
+        if col_faces_lit:
+            print("collision: %d face(s) given San Andreas daylight, which is where a ped standing "
+                  "on them takes its lighting from - both source games leave it at zero"
+                  % col_faces_lit)
         print("textures: %d raster(s) in %d TXD(s) rewritten from D3D8 to San Andreas' D3D9%s"
               % (tex_done, txds, "" if not tex_failed else
                  "; %d raster(s) in %d dictionar%s left alone and will render white (%s)"
@@ -1732,7 +1794,11 @@ def main():
         with open(p, "rb") as f:
             blob = f.read()
         with open(os.path.join(out, "col", os.path.basename(p)), "wb") as f:
-            f.write(rename_col(blob, renames))
+            data, faces = rename_col(blob, renames)
+
+            f.write(data)
+
+            col_faces_lit += faces
         cols += 1
 
     ide_out, ipl_out = [], []
