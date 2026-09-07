@@ -584,8 +584,27 @@ int Capacity() { return gStoreCapacity; }
 // and what should really lie in Vice City's street is the gun that borrowed it - the Python, not
 // the Desert Eagle. Only this lookup is redirected: San Andreas' own code never comes through here.
 int WeaponType(const char* name) {
+    // An import answers to its own name first.
+    //
+    // A pickup file names the gun it means to hand over, and for an imported one that is the
+    // import's own name rather than the San Andreas weapon it borrows from - LASERSCOPE, not
+    // SNIPERRIFLE - because two imports can share a donor. The .308 moved onto the sniper rifle,
+    // Vice City's own sniper was already pointing there, and naming the donor made both lines mean
+    // the same gun. Asking by the import's name is what tells them apart.
+    //
+    // Which only works if the name is looked for. Going through WeaponTypeByName alone asks San
+    // Andreas what it calls its own weapons, and it has never heard of LASERSCOPE, so every line
+    // naming an import came back as nothing and the guns were simply missing from the streets.
+    for (const RegionArms& arms : Arms())
+        for (const Line& line : arms.lines)
+            if (line.type >= 0 && !line.newName.empty() &&
+                _stricmp(line.newName.c_str(), name) == 0)
+                return line.type;
+
     const int donor = WeaponTypeByName(name);
     if (donor < 0 || !gAdding) return donor;
+    // A file that still names the donor - one written before imports had names of their own - keeps
+    // working: the donor resolves to whichever import took it, as it always did.
     for (const RegionArms& arms : Arms())
         for (const Line& line : arms.lines)
             if (line.donor == donor && line.type != donor) return line.type;
