@@ -8,9 +8,9 @@ Numbers are from those files, not from documentation.
 
 ## The short version
 
-Namespace **model names, TXD dictionary names and COL model names**. Do **not** namespace texture
-names or the DFF material references that point at them. Prefer a readable prefix; use a hash only
-when the prefix would overflow the field. Do not namespace GXT keys — import selectively instead.
+Namespace **model names, TXD dictionary names, COL model names and GXT keys** (with the zone labels
+that name them). Do **not** namespace texture names or the DFF material references that point at
+them. Prefer a readable prefix; use a hash only when the prefix would overflow the field.
 
 That is a much smaller job than "namespace everything", because two thirds of the names in an
 archive live in a scope that cannot collide in the first place.
@@ -76,8 +76,9 @@ The binding constraint is **19 characters of stem**, enforced independently in t
 | TXD `TextureNative` name | struct + 8 | 32 B | 31 | — |
 | TXD `TextureNative` mask | struct + 40 | 32 B | 31 | — |
 | DFF `Texture` chunk strings | RW String chunk | variable, padded to 4 | ≤ 31 | bounded by `RwTexture::name[32]` |
-| GXT key (III/VC) | TKEY entry + 4 | 8 B | 8, not terminated | `Gxt.cpp` entry size 12 |
+| GXT key (III/VC) | TKEY entry + 4 | 8 B | **7** | `Gxt.cpp` entry size 12, and the zone label below |
 | GXT key (SA) | TKEY entry | u32 hash | n/a | `CKeyArray::Search` 0x6A0008 |
+| Zone text/info label | `CZone` + 0, + 8 | 8 B | **7** | `CTheZones::CreateZone` 0x5728A0: `push 7` + `strncpy` at 0x572935 and 0x572978, terminator written at byte 7 (0x57294B, 0x57298E) |
 | IFP anim block | `CAnimBlock` | 16 B | 15 | `RegisterAnimBlock` 0x4D3E50, `strncpy(dst, src, 0x10)` |
 
 San Andreas' own longest archive entry is 23 characters — a 19-character stem plus `.dff`.
@@ -110,9 +111,10 @@ only as an overflow fallback.
 
 ## Recommended scheme
 
-*Implemented in `tools/import_city.py` (`make_renames`, `sa_name_keys`, `assert_namespaces`) and
-read back by the loader through the region's `Names` key. Items 1–7 and 10's key-hash part are
-in; archive filtering (8) and the GXT allow-list (10) are not yet.*
+*Implemented in `tools/import_city.py` (`make_renames`, `sa_name_keys`, `assert_namespaces` for the
+assets; `make_gxt_renames`, `sa_gxt_keys`, `assert_gxt_namespace`, `rewrite_gxt`, `rename_zon` for
+the text) and read back by the loader through the region's `Names` key. Items 1–7 and 10 are in;
+archive filtering (8) is not yet.*
 
 1. **Tag: two characters, `v_` / `l_`.** Share of Vice City's 6,015 entries that keep a fully
    readable name within the 19-character budget: `v` 99.2%, **`v_` 98.2%**, `vc_` 96.4%,
@@ -158,11 +160,53 @@ in; archive filtering (8) and the GXT allow-list (10) are not yet.*
 9. **Filter the archive to what is referenced.** 1,059 entries and 63.6 MB are not referenced by any
    `objs`/`tobj`/`anim` line. Dropping them halves the clash surface at no cost.
 
-10. **GXT: import selectively rather than namespacing.** Prefixing keys is pointless, because
-    nothing would then ask for the prefixed key — the only consumer under our control is
-    `Zones.cpp`. Replace the wholesale merge with an allow-list of the keys a region actually needs,
-    plus an opt-in override for anyone who wants the donor's wording. The 8-character III/VC key
-    field is not a constraint, since `Gxt.cpp` computes the hash itself.
+10. **GXT: namespace the keys, in seven characters.** The earlier recommendation here was to
+    import selectively instead, on the grounds that nothing would ask for a prefixed key. That was
+    wrong about what the prefix is for: the point is not that something asks for the new key, it is
+    that nothing asks for the old one any more. An untagged donor table answers San Andreas' own
+    lookups, and last writer wins.
+
+    So tag every key, the same way and for the same reason as a model name, only inside a much
+    narrower field. `CTheZones::CreateZone` (0x5728A0) `strncpy`s a zone label at seven characters
+    and writes the terminator itself, and `Gxt.cpp` reads at most seven out of a III/VC TKEY entry,
+    so seven is the budget for the whole namespace — a key any zone might want to use has to fit
+    where a zone label fits.
+
+    | | |
+    |---|---|
+    | Tag | one character, `V` / `L`. Two would leave five for the name and hash almost everything |
+    | Readable | `tag + key`, when that is ≤ 7 characters and the key is plain `[A-Z0-9_]` |
+    | Fallback | `tag + ~ + 5 base-36 digits` of the tagged key's `CKeyGen` key (36⁵ = 60,466,176) |
+
+    A source key never contains `~`, so a hashed key can never equal a readable one, and two tags
+    never equal each other — which is what makes an import of one region safe without knowing the
+    other's key set. That leaves two things to check and both are checked before anything is
+    written: two hashed keys of the same region colliding, and a renamed key landing on a hash San
+    Andreas already uses (all five of `text/*.gxt`, 16,615 keys).
+
+    Measured over the retail files:
+
+    | Set | Keys | Readable | Hashed | Clash with SA | Clash with the other region |
+    |---|---|---|---|---|---|
+    | Vice City, as it came | 4,779 | — | — | **1,139** | 0 |
+    | GTA III, as it came | 2,660 | — | — | **717** | **940** |
+    | Vice City, tagged `V` | 4,779 | 1,970 | 2,809 | **0** | **0** |
+    | GTA III, tagged `L` | 2,660 | 1,445 | 1,215 | **0** | **0** |
+
+    Of the 1,134 keys Vice City shares with San Andreas' `american.gxt`, 694 carry different text —
+    those are the strings a player actually reads wrong. For GTA III it is 468 of 717.
+
+    Every reference is rewritten with the key. In an imported region there is exactly one class of
+    them: the name column of a `.zon` line, which is the zone's GXT key. The IDE `2dfx` sections
+    carry only light, particle and attractor data, no III/VC IPL has a `zone` or `enex` section,
+    and nothing else in the source data names a string. Two keys are reserved rather than renamed —
+    `MXTABLE`, the sentinel `Gxt.cpp` uses to recognise its own table, and `MXREG<n>`, the
+    whole-grid region name `Zones.cpp` registers. Both are ours already and San Andreas answers to
+    neither.
+
+    Because the whole table is 4,707 strings for the sake of twelve area names, the importer also
+    writes `zone_names.txt` — the display name of every zone it creates, under its new key — so a
+    region reads correctly with the `Gxt` line left off entirely.
 
 ## Bugs this study found, independent of which scheme is adopted
 
@@ -176,8 +220,10 @@ in; archive filtering (8) and the GXT allow-list (10) are not yet.*
 - **`generic.txd` takes San Andreas' `generic` TXD slot**, which `CGame::Init1` creates, `Create`s
   and `AddRef`s, and which eight built-in model infos point at.
 
-- **647 San Andreas strings are overwritten by Vice City's GXT**: `UZI` becomes "Uz-1", `WIN_TTL`
-  names Vice City, `FEH_MPH` replaces the PC pause-map help text, plus roughly 600 credits keys.
+- **694 San Andreas strings are overwritten by Vice City's GXT** (468 by GTA III's): `UZI` becomes
+  "Uz-1", `TOPFUN` turns "Berkley's RC Van" into "Top Fun", `TTUTOR` rewrites the taxi tutorial,
+  `WIN_TTL` names Vice City, `FEH_MPH` replaces the PC pause-map help text, plus roughly 600
+  credits keys. Fixed by item 10.
 
 - **`[:19]` truncation collides silently.** `veg_fern_balcny_kb1` and `veg_fern_balcny_kb2` both
   become `vc_veg_fern_balcny_`, which is the existing log line about a model with no `.dff` in any

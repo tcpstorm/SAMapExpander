@@ -4,6 +4,13 @@
 // SA looks a string up by CKeyGen::GetUppercaseKey -- CRC32 (0xEDB88320, no final inversion) over
 // the upper-cased key -- so our table is keyed by the same hash. That is also the only thing an
 // SA-format GXT stores: its TKEY entries carry the hash, not the name.
+//
+// A donor game's keys are meant to arrive namespaced: tools/import_city.py rewrites the region's
+// american.gxt so every key carries the region's tag ("V", "L"), because 1,134 of Vice City's
+// 4,707 keys and 717 of GTA III's 2,649 spell the same words as San Andreas' own, and the merge
+// below is last-writer-wins. Untagged, "UZI" turned "Micro SMG" into "Uz-1" and 693 other strings
+// went the same way. Nothing here enforces the tagging - a GXT is just a file and a user may load
+// whichever they like - so Audit() reports what a loaded table takes over, loudly, every time.
 #include <plugin.h>
 #include <safetyhook.hpp>
 #include <algorithm>
@@ -221,6 +228,11 @@ void __fastcall Hooked_TextLoad(void* self, void* /*edx*/, bool keepMissionPack)
 
 // Compares our keys against the block CText::Load just produced (real pointers by now): which of
 // ours the game also has, and what it answers for a key nobody has.
+//
+// With a namespaced region GXT the override count is zero, and that is the point of the line: an
+// override means a San Andreas string a player will now read wrong, so it is worth saying out
+// loud rather than hiding behind Debug=1. The usual cause is a region folder imported before the
+// keys were tagged, or a hand-written GXT; the fix in both cases is to re-run the importer.
 void Audit(bool verbose) {
     int overrides = 0, same = 0;
     for (const auto& kv : Entries()) {
@@ -228,16 +240,22 @@ void Audit(bool verbose) {
         if (!theirs || !theirs->text) continue;
         if (kv.second.text == theirs->text) { same++; continue; }
         overrides++;
-        if (verbose && overrides <= 20) {
+        if (overrides <= 20) {
             char label[24];
             if (kv.second.name.empty()) snprintf(label, sizeof(label), "#%08X", kv.first);
             else snprintf(label, sizeof(label), "%s", kv.second.name.c_str());
-            Log::Write("GXT: %s overrides \"%s\" with \"%s\"", label, theirs->text, kv.second.text.c_str());
+            Log::Write("GXT: %s replaces the game's \"%s\" with \"%s\"", label, theirs->text,
+                       kv.second.text.c_str());
         }
     }
-    if (verbose && overrides > 20) Log::Write("GXT: ... and %d more overridden key(s)", overrides - 20);
-    Log::Write("GXT: %d of our %u key(s) override the game's text, %d repeat it unchanged",
+    if (overrides > 20) Log::Write("GXT: ... and %d more replaced key(s)", overrides - 20);
+    Log::Write("GXT: %d of our %u key(s) replace the game's text, %d repeat it unchanged",
                overrides, (unsigned)Entries().size(), same);
+    if (overrides)
+        Log::Write("GXT: WARNING: %d San Andreas string(s) now read as a region's. The importer "
+                   "tags a region's keys so that cannot happen -- re-run tools/import_city.py, or "
+                   "take the untagged file off the [World] Gxt list", overrides);
+    (void)verbose;   // the per-key list is no longer a Debug-only luxury
 }
 
 // Builds game-original + ours (ours wins on a shared hash) and hands the block to TheText.

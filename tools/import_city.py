@@ -10,6 +10,7 @@ Writes <SA game dir>/MapExpander/<region>/ with
     ide/, ipl/     the IDE and IPL files the source .dat lists, in its order
     tiles/         radar00.png .. radarNN.png decoded from the radar TXDs
     american.gxt, waterpro.dat, and the source's zone file (navig.zon/info.zon, or III's gta3.zon)
+    zone_names.txt the display name of every zone the region creates, under its namespaced key
     region.ini     the [region] keys to paste into MapExpander.ini, lists in .dat order, with the
                    origin the conversion this project follows places that city at
 
@@ -27,6 +28,12 @@ lines and the collision entry names, all together - and names.txt records what e
 A name is kept readable when it fits the game's 19-character field and takes a short hashed
 tail when it does not; every name is checked to be unique, and to share no CKeyGen key with
 anything San Andreas has, before the archive is written. See docs/asset-namespacing.md.
+
+The GXT keys and the zone labels that name them go the same way, under a one-character tag
+("V", "L") because a key is only seven characters wide - readable where that fits, a hashed
+"V~XXXXX" where it does not - so that a donor game's text adds to San Andreas' strings rather
+than silently replacing 694 of them. The emitted american.gxt is the source table with its keys
+replaced, the .zon files are rewritten to match, and names.txt records both.
 --no-rename skips all of it, which is only safe for a source that clashes with nothing.
 Runs on plain Python; Pillow is used for the PNGs if it is installed, else a built-in writer.
 """
@@ -1471,6 +1478,319 @@ def assert_namespaces(renames, sa_keys):
         by_ext[ext][key] = new
 
 
+# ---------------------------------------------------------------- GXT keys and zone labels
+#
+# The same problem one field narrower. A region's american.gxt is merged whole into San Andreas'
+# text lookup, and where a Vice City key spells the same word as a San Andreas one the donor's
+# string silently takes its place: measured over the retail files, 1,134 of Vice City's 4,707 keys
+# and 717 of GTA III's 2,649 already exist in San Andreas, and 694 respectively 468 of those carry
+# different text - "Micro SMG" becomes "Uz-1", "Berkley's RC Van" becomes "Top Fun", the taxi
+# tutorial and a pause-map help line are rewritten, and so are several hundred credits lines.
+# Adding a second region makes it worse, because the two donors collide with each other as well.
+#
+# So the keys are namespaced exactly as the model and dictionary names are, only the budget is
+# 7 characters rather than 19. Two places enforce it and both were read out of the exe:
+#
+#   * CTheZones::CreateZone (0x5728A0) upper-cases the caller's label in place and then calls
+#     strncpy(dst, src, 7) twice - 0x572935 for the info label, 0x572978 for the text label -
+#     writing the terminator itself at byte 7 (0x57294B, 0x57298E). A zone can therefore never be
+#     looked up by more than seven characters.
+#   * A III/VC TKEY entry is 12 bytes: a TDAT offset and an 8 byte, not necessarily terminated
+#     name. Gxt.cpp reads at most seven characters out of it for the same reason.
+#
+# San Andreas itself never sees a key name: CText::Get hashes with CKeyGen::GetUppercaseKey and
+# binary-searches the block by hash, and an SA-format GXT stores only that hash. The name is ours
+# to choose, and names.txt records what each one was.
+#
+# The scheme:
+#
+#   1. A one-character tag per source game, "V" for Vice City and "L" for GTA III. Two characters
+#      would leave five for the name and push almost everything into the hashed form; one leaves
+#      six, which keeps 1,918 of Vice City's keys and 1,444 of III's fully readable - including
+#      every zone label Vice City's navig.zon uses.
+#   2. tag + the key when that fits in seven characters and the key is plain [A-Z0-9_].
+#   3. Otherwise tag + "~" + five base-36 digits of the tagged key's CKeyGen key. The "~" is the
+#      same marker the model names use for a hashed tail, and it is what makes the scheme safe
+#      across regions without either import knowing about the other: a source key never contains
+#      "~", so a hashed key can never equal a readable one, and two tags never equal each other.
+#      The only collisions left to check are two hashed keys of the same region, and a renamed key
+#      landing on a hash San Andreas already uses; both are checked before anything is written.
+#
+# Every reference to a key is rewritten with it. In an imported region there is exactly one class
+# of them - the name column of a .zon line, which is the zone's GXT key - because the IDE 2dfx
+# sections carry only light and attractor data, no III/VC IPL has a "zone" or "enex" section, and
+# nothing else in the source data names a string. The keys the plugin registers itself (Gxt.cpp's
+# MXTABLE sentinel and Zones.cpp's MXREG<n> region names) are reserved rather than renamed: they
+# are ours already and nothing in San Andreas answers to them.
+
+GXT_BUDGET = 7            # CTheZones::CreateZone's strncpy(dst, src, 7), and Gxt.cpp's key reader
+GXT_TAG = {"gta_vc.dat": "V", "gta3.dat": "L"}
+GXT_HASH_MARK = "~"       # never appears in a source key, so it separates the two forms for good
+GXT_HASH_DIGITS = 5       # 36^5 = 60,466,176 - four orders of magnitude above a region's key count
+GXT_RESERVED = {"MXTABLE"} | {"MXREG%d" % i for i in range(10)}
+B36 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+
+def base36(value, digits):
+    out = ""
+    for _ in range(digits):
+        out = B36[value % 36] + out
+        value //= 36
+    return out
+
+
+def gxt_pair(data, at):
+    """(key block, key block size, TDAT block, TDAT size) for the pair of blocks starting at `at`.
+
+    `at` may point at eight bytes of table name first, which is how Vice City writes every table
+    but MAIN. Returns None when the blocks are not where the header says they are.
+    """
+    if data[at:at + 4] != b"TKEY" and data[at + 8:at + 12] == b"TKEY":
+        at += 8
+    if data[at:at + 4] != b"TKEY" or at + 8 > len(data):
+        return None
+    key_size = struct.unpack_from("<I", data, at + 4)[0]
+    key_block = at + 8
+    dat_header = key_block + key_size
+    if data[dat_header:dat_header + 4] != b"TDAT" or dat_header + 8 > len(data):
+        return None
+    dat_size = struct.unpack_from("<I", data, dat_header + 4)[0]
+    return key_block, key_size, dat_header + 8, dat_size
+
+
+def gxt_tables(data):
+    """(entry size, [pair, ...]) for a GXT file, whatever of the three formats it is.
+
+    Entry size is 12 for GTA III and Vice City, whose TKEY entries carry a name, and 8 for San
+    Andreas, whose entries carry only the CKeyGen hash.
+    """
+    if data[:4] == b"TKEY":                       # GTA III: no header, one table, 16 bit text
+        pair = gxt_pair(data, 0)
+        return 12, ([pair] if pair else [])
+    if data[:4] == b"TABL":                       # Vice City: a TABL of named tables, then pairs
+        size = struct.unpack_from("<I", data, 4)[0]
+        pairs = []
+        for e in range(8, 8 + size - 11, 12):
+            pair = gxt_pair(data, struct.unpack_from("<I", data, e + 8)[0])
+            if pair:
+                pairs.append(pair)
+        return 12, pairs
+    at = 4                                        # San Andreas: version/bits header, hashed keys
+    offsets = []
+    if data[at:at + 4] == b"TABL":
+        size = struct.unpack_from("<I", data, at + 4)[0]
+        for e in range(at + 8, at + 8 + size - 11, 12):
+            offsets.append(struct.unpack_from("<I", data, e + 8)[0])
+        at = at + 8 + size
+    pairs = []
+    first = gxt_pair(data, at)
+    if first:
+        pairs.append(first)
+    for off in offsets:
+        if first and at <= off < first[2] + first[3]:
+            continue                              # the main table, already taken
+        pair = gxt_pair(data, off)
+        if pair:
+            pairs.append(pair)
+    return 8, pairs
+
+
+def gxt_key_names(data):
+    """Every key name in a III/VC GXT, in file order, upper-cased, without repeats.
+
+    Empty for a San Andreas-format file: there are no names in one, only hashes.
+    """
+    entry_size, pairs = gxt_tables(data)
+    if entry_size != 12:
+        return []
+    names, seen = [], set()
+    for key_block, key_size, _dat, _dat_size in pairs:
+        for e in range(key_block, key_block + key_size - 11, 12):
+            name = data[e + 4:e + 12].split(b"\0")[0].decode("latin-1").upper()
+            if name and name not in seen:
+                seen.add(name)
+                names.append(name)
+    return names
+
+
+def gxt_strings(data):
+    """{upper-cased key name: text} for a III/VC GXT, converted the way Gxt.cpp converts it.
+
+    III and Vice City store 16 bit characters; San Andreas' font is 8 bit, and ASCII and the
+    Latin-1 range pass through unchanged because the code points line up. Anything else becomes
+    a question mark, which is exactly what the loader would show.
+    """
+    entry_size, pairs = gxt_tables(data)
+    if entry_size != 12:
+        return {}
+    out = {}
+    for key_block, key_size, dat, dat_size in pairs:
+        for e in range(key_block, key_block + key_size - 11, 12):
+            offset = struct.unpack_from("<I", data, e)[0]
+            if offset >= dat_size:
+                continue
+            name = data[e + 4:e + 12].split(b"\0")[0].decode("latin-1").upper()
+            chars, p = [], dat + offset
+            while p + 1 < dat + dat_size:
+                c = data[p] | (data[p + 1] << 8)
+                if not c:
+                    break
+                chars.append(chr(c) if (c < 0x80 or 0xA0 <= c <= 0xFF) else "?")
+                p += 2
+            out.setdefault(name, "".join(chars))
+    return out
+
+
+def rewrite_gxt(data, renames):
+    """The same GXT with every TKEY name replaced by its new one. Returns (bytes, [names missed]).
+
+    Only the eight name bytes change: the TDAT blocks, the offsets into them and the table layout
+    are untouched, so what the loader reads is the source file under a different set of keys.
+    `missed` is None for a San Andreas-format source, which has no names to rewrite.
+    """
+    out = bytearray(data)
+    entry_size, pairs = gxt_tables(data)
+    if entry_size != 12:
+        return bytes(out), None
+    missed = []
+    for key_block, key_size, _dat, _dat_size in pairs:
+        for e in range(key_block, key_block + key_size - 11, 12):
+            name = data[e + 4:e + 12].split(b"\0")[0].decode("latin-1").upper()
+            new = renames.get(name)
+            if not new:
+                missed.append(name)
+                continue
+            out[e + 4:e + 12] = new.encode("latin-1").ljust(8, b"\0")
+    return bytes(out), missed
+
+
+def sa_gxt_keys(sa):
+    """Every CKeyGen key San Andreas' own text already answers, from all of text/*.gxt.
+
+    All five languages are read rather than american.gxt alone: they cost nothing, and a key that
+    exists only in one of them is still San Andreas' and must not be taken over by a region.
+    """
+    keys = set()
+    folder = find_file(sa, "text")
+    if not folder or not os.path.isdir(folder):
+        return keys
+    for name in sorted(os.listdir(folder)):
+        if not name.lower().endswith(".gxt"):
+            continue
+        with open(os.path.join(folder, name), "rb") as f:
+            data = f.read()
+        entry_size, pairs = gxt_tables(data)
+        for key_block, key_size, _dat, _dat_size in pairs:
+            for e in range(key_block, key_block + key_size - (entry_size - 1), entry_size):
+                if entry_size == 12:
+                    keys.add(ckey(data[e + 4:e + 12].split(b"\0")[0].decode("latin-1")))
+                else:
+                    keys.add(struct.unpack_from("<I", data, e + 4)[0])
+    return keys
+
+
+def gxt_fallback(tag, key, salt):
+    """tag + ~ + five base-36 digits of the tagged key's CKeyGen key."""
+    seed = tag + key + ("#%d" % salt if salt else "")
+    return tag + GXT_HASH_MARK + base36(ckey(seed) % (36 ** GXT_HASH_DIGITS), GXT_HASH_DIGITS)
+
+
+def make_gxt_renames(names, sa_keys, tag):
+    """A new key for every source key, and why it looks the way it does.
+
+    Both maps are keyed by the upper-cased source key, which is the only form anything compares:
+    CKeyGen upper-cases, CTheZones::CreateZone upper-cases, and so does Gxt.cpp.
+    """
+    renames, reasons = {}, {}
+    used_names, used_keys = set(), set()
+    for name in names:
+        if name in GXT_RESERVED:
+            # A key the plugin registers itself. It is in our namespace already and San Andreas
+            # answers to nothing by that name, so it stays as it is rather than being renamed
+            # out of reach of the code that looks it up.
+            renames[name] = name
+            reasons[name] = "reserved for MapExpander, kept"
+            continue
+        plain = tag + name
+        if len(plain) <= GXT_BUDGET and re.fullmatch(r"[A-Z0-9_]+", name):
+            candidate, why = plain, "tag"
+        else:
+            candidate, why = gxt_fallback(tag, name, 0), "too long for the 7-character key"
+        salt = 0
+        while (candidate in used_names or ckey(candidate) in used_keys
+               or ckey(candidate) in sa_keys or candidate in GXT_RESERVED):
+            salt += 1
+            candidate = gxt_fallback(tag, name, salt)
+            why = "key clash, salted"
+        used_names.add(candidate)
+        used_keys.add(ckey(candidate))
+        renames[name] = candidate
+        reasons[name] = why
+    return renames, reasons
+
+
+def assert_gxt_namespace(renames, sa_keys):
+    """Refuse to write a region whose text could take San Andreas' strings. This is the guarantee."""
+    by_key = {}
+    for old, new in renames.items():
+        if len(new) > GXT_BUDGET:
+            sys.exit("gxt namespacing: %s -> %s is %d characters, over the %d a zone label holds"
+                     % (old, new, len(new), GXT_BUDGET))
+        key = ckey(new)
+        other = by_key.get(key)
+        if other is not None and other != new:
+            sys.exit("gxt namespacing: %s and %s share CKeyGen key %08X" % (other, new, key))
+        if key in sa_keys and new not in GXT_RESERVED:
+            sys.exit("gxt namespacing: %s has the same CKeyGen key as one San Andreas already uses" % new)
+        by_key[key] = new
+
+
+def zon_labels(text):
+    """Every GXT key a .zon file names: the zone's own name column and its optional label column."""
+    labels, section, seen = [], None, set()
+    for line in text.splitlines():
+        clean = line.split("#")[0].strip()
+        if not clean:
+            continue
+        tok = [t for t in re.split(r"[,\s]+", clean) if t]
+        if len(tok) == 1:
+            section = None if tok[0].lower() == "end" else tok[0].lower()
+            continue
+        if section not in (None, "zone") or len(tok) < 9:
+            continue
+        for label in (tok[0], tok[9] if len(tok) >= 10 else None):
+            if label and label.upper() not in seen:
+                seen.add(label.upper())
+                labels.append(label.upper())
+    return labels
+
+
+def rename_zon(text, renames):
+    """A .zon file with its zone name and label columns replaced by their namespaced keys.
+
+    Only those two columns are touched; the boxes travel unchanged, because Zones.cpp adds the
+    region's origin to them itself.
+    """
+    out, section = [], None
+    for line in text.splitlines(True):
+        body = line.rstrip("\r\n")
+        eol = line[len(body):]
+        clean = body.split("#")[0].strip()
+        tok = [t for t in re.split(r"[,\s]+", clean) if t]
+        if len(tok) == 1:
+            section = None if tok[0].lower() == "end" else tok[0].lower()
+            out.append(line)
+            continue
+        if section not in (None, "zone") or len(tok) < 9:
+            out.append(line)
+            continue
+        tok[0] = renames.get(tok[0].upper(), tok[0])
+        if len(tok) >= 10:
+            tok[9] = renames.get(tok[9].upper(), tok[9])
+        out.append(", ".join(tok) + eol)
+    return "".join(out)
+
+
 # ---------------------------------------------------------------- main
 
 def main():
@@ -1485,6 +1805,10 @@ def main():
             region = o.split("=", 1)[1]
     lite = "--lite" in opts
     do_rename = "--no-rename" not in opts and not lite
+    # The GXT keys are namespaced even for a --lite import. --lite leaves out the archive, so there
+    # are no model names to rename, but the text and the zone files still travel and they are the
+    # ones that were taking San Andreas' strings.
+    do_gxt_rename = "--no-rename" not in opts
 
     dat_name, ide_rel, ipl_rel, col_rel, texdict_rel, zon_rel = read_dat(src)
     prefix = "iii_" if dat_name.lower() == "gta3.dat" else "vc_"
@@ -1774,17 +2098,79 @@ def main():
         print("dropped %d later cop%s of a .dff name the archive already carries (the source game "
               "binds only the first): %s" % (len(dropped_dups), "y" if len(dropped_dups) == 1 else "ies",
                                              ", ".join(sorted(dropped_dups))))
-    if renames:
+    # The files that travel byte for byte or nearly so: the source's text, its water heights and
+    # its zone boxes. The list is built here rather than at the copy loop below because the GXT
+    # keys and the zone labels that name them have to be namespaced together, and names.txt -
+    # written a few lines down - records the result along with the model renames.
+    #
+    # GTA III has neither navig.zon nor info.zon: its zone boxes are in data/gta3.zon, which the
+    # .dat loads with an IPL line of its own. The lines are the same nine fields Zones.cpp already
+    # reads, with the GXT key optional at the end, so a zone file lands on the region's Zones key
+    # rather than its Ipl key - the IPL loader would only count it and move on. The two named
+    # paths are a safety net for a .dat that does not list them.
+    text_files = ([("text/american.gxt", "american.gxt"), ("data/waterpro.dat", "waterpro.dat"),
+                   ("data/navig.zon", "navig.zon"), ("data/info.zon", "info.zon")] +
+                  [(z, dat_base(z)) for z in zon_rel])
+
+    gxt_tag = GXT_TAG.get(dat_name.lower(), prefix[:1].upper())
+    gxt_renames, gxt_reasons, gxt_text = {}, {}, {}
+    gxt_source = find_file(src, "text/american.gxt")
+    if gxt_source:
+        with open(gxt_source, "rb") as f:
+            gxt_blob = f.read()
+        # Read whether or not the keys are being renamed: zone_names.txt takes its display names
+        # from here either way.
+        gxt_text = gxt_strings(gxt_blob)
+    if do_gxt_rename and gxt_source:
+        # Every key the region could ever be asked for: the ones in its own text, and the zone
+        # labels, which are keys in their own right whether or not the GXT defines them. A label
+        # left un-namespaced would go on doing exactly what this change exists to stop.
+        keys = gxt_key_names(gxt_blob)
+        seen = set(keys)
+        for _rel, dst in text_files:
+            if not dst.endswith(".zon"):
+                continue
+            p = find_file(src, _rel)
+            if not p:
+                continue
+            with open(p, "r", encoding="latin-1") as f:
+                for label in zon_labels(f.read()):
+                    if label not in seen:
+                        seen.add(label)
+                        keys.append(label)
+        if not keys:
+            print("  text/american.gxt is in San Andreas' own format, which stores hashes and not "
+                  "key names; its keys are left as they are and will still override San Andreas' text")
+        else:
+            sa_gxt = sa_gxt_keys(sa)
+            if not sa_gxt:
+                print("warning: no GXT found under %s/text; clashes with San Andreas' own keys not checked" % sa)
+            gxt_renames, gxt_reasons = make_gxt_renames(keys, sa_gxt, gxt_tag)
+            assert_gxt_namespace(gxt_renames, sa_gxt)
+            counts = {}
+            for why in gxt_reasons.values():
+                counts[why] = counts.get(why, 0) + 1
+            print("named %d GXT key(s) under the %s tag: %s (0 clash with San Andreas' %d key(s))"
+                  % (len(gxt_renames), gxt_tag,
+                     ", ".join("%d %s" % (n, w) for w, n in sorted(counts.items(), key=lambda kv: -kv[1])),
+                     len(sa_gxt)))
+
+    if renames or gxt_renames:
         counts = {}
         for why in reasons.values():
             counts[why] = counts.get(why, 0) + 1
-        print("named %d model/texture entries under the %s tag: %s"
-              % (len(renames), tag, ", ".join("%d %s" % (n, w) for w, n in sorted(counts.items(), key=lambda kv: -kv[1]))))
+        if renames:
+            print("named %d model/texture entries under the %s tag: %s"
+                  % (len(renames), tag, ", ".join("%d %s" % (n, w) for w, n in sorted(counts.items(), key=lambda kv: -kv[1]))))
         with open(os.path.join(out, "names.txt"), "w", encoding="latin-1") as f:
             f.write("# new name, original name, why - written by tools/import_city.py; the loader reads it\n")
             for low in sorted(renames, key=lambda k: renames[k].lower()):
                 ext = os.path.splitext(low)[1]
                 f.write("%s%s\t%s\t%s\n" % (renames[low], ext, low, reasons[low]))
+            # The GXT keys go in the same file so one place answers "what was this called?", under
+            # a .gxt extension that tells the loader they are text keys and not model names.
+            for old in sorted(gxt_renames, key=lambda k: gxt_renames[k]):
+                f.write("%s.gxt\t%s.gxt\t%s\n" % (gxt_renames[old], old, gxt_reasons[old]))
 
     for rel in ([] if lite else col_rel):
         p = find_file(src, rel)
@@ -1830,24 +2216,32 @@ def main():
     if not lite:
         print("%d IDE, %d IPL, %d collision files" % (len(ide_out), len(ipl_out), cols))
 
-    copied, zones_have = [], []
-    # GTA III has neither navig.zon nor info.zon: its zone boxes are in data/gta3.zon, which the
-    # .dat loads with an IPL line of its own. The lines are the same nine fields Zones.cpp already
-    # reads, with the GXT key optional at the end, so a zone file travels unchanged and lands on
-    # the region's Zones key rather than its Ipl key - the IPL loader would only count it and
-    # move on. The two named paths are a safety net for a .dat that does not list them.
-    for rel, dst in ([("text/american.gxt", "american.gxt"), ("data/waterpro.dat", "waterpro.dat"),
-                      ("data/navig.zon", "navig.zon"), ("data/info.zon", "info.zon")] +
-                     [(z, dat_base(z)) for z in zon_rel]):
+    copied, zones_have, gxt_missed = [], [], []
+    for rel, dst in text_files:
         p = find_file(src, rel)
         if not p or dst in copied:
             continue
-        with open(p, "rb") as f, open(os.path.join(out, dst), "wb") as g:
-            g.write(f.read())
+        with open(p, "rb") as f:
+            blob = f.read()
+        if gxt_renames and dst == "american.gxt":
+            # The emitted table is the source file with its TKEY names replaced: same tables, same
+            # TDAT blocks, same offsets, different keys. Nothing else understands this file - the
+            # game never reads it, Gxt.cpp does - so there is no format to keep faith with.
+            blob, gxt_missed = rewrite_gxt(blob, gxt_renames)
+        elif gxt_renames and dst.endswith(".zon"):
+            blob = rename_zon(blob.decode("latin-1"), gxt_renames).encode("latin-1")
+        with open(os.path.join(out, dst), "wb") as g:
+            g.write(blob)
         copied.append(dst)
         if dst.endswith(".zon"):
             zones_have.append(dst)
     print("copied: %s" % ", ".join(copied))
+    if gxt_missed:
+        # Cannot happen with the key list built above, which is the file's own names; if it ever
+        # does, the entries kept their original keys and would still override San Andreas' text.
+        print("WARNING: %d GXT entr%s kept its original key because no rename was worked out for it "
+              "(%s)" % (len(gxt_missed), "y" if len(gxt_missed) == 1 else "ies",
+                        ", ".join(sorted(set(gxt_missed))[:8])))
 
     # Which zone file the Zones key should name. San Andreas has 380 navigation-zone slots and
     # vanilla fills 379, so a region has room for a handful of zones, not for every file the source
@@ -1855,6 +2249,51 @@ def main():
     # names a player reads off the map, so prefer it where the source has one; GTA III has only
     # gta3.zon and it is the same nine-field format.
     zone_out = [z for z in zones_have if z == "navig.zon"] or zones_have[:1]
+
+    # zone_names.txt: the display name of every zone the loader will create, under its new key.
+    # The whole GXT is optional - it is 4,707 strings for the sake of twelve area names - so the
+    # names the zones actually need are written out in plain text as well, and the region reads
+    # right with [World] Gxt left off. Only types 0 and 1 are listed, which is what CreateZone
+    # puts in the navigation array and therefore all the HUD and the pause map can ever name.
+    zone_names, seen_keys = [], set()
+    was_called = {new: old for old, new in gxt_renames.items()}
+    for dst in zone_out:
+        with open(os.path.join(out, dst), "r", encoding="latin-1") as f:
+            section = None
+            for line in f:
+                clean = line.split("#")[0].strip()
+                tok = [t for t in re.split(r"[,\s]+", clean) if t]
+                if len(tok) == 1:
+                    section = None if tok[0].lower() == "end" else tok[0].lower()
+                    continue
+                if section not in (None, "zone") or len(tok) < 9 or tok[1] not in ("0", "1"):
+                    continue
+                key = (tok[9] if len(tok) >= 10 else tok[0]).upper()
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
+                # The .zon has already been rewritten, so the display name is looked up under the
+                # key this zone came from rather than the one it now carries.
+                original = was_called.get(key, key)
+                text = gxt_text.get(original)
+                note = ""
+                if text is None:
+                    # No string in the source game's own text either. Spell the original key out
+                    # rather than the tagged one - the better half of a bad choice - and say in
+                    # the file where the name came from.
+                    text = original.replace("_", " ").title()
+                    note = "   ; %s has no string in american.gxt" % original
+                zone_names.append((key, text, note))
+    zone_names_out = None
+    if zone_names:
+        zone_names_out = "zone_names.txt"
+        with open(os.path.join(out, zone_names_out), "w", encoding="latin-1") as f:
+            f.write("# key = display name, for the region's Zones lines - written by "
+                    "tools/import_city.py.\n# The keys are namespaced; names.txt says what each "
+                    "one was called in the source game.\n")
+            for key, text, note in zone_names:
+                f.write("%s = %s%s\n" % (key, text, note))
+        print("%s: %d zone display name(s)" % (zone_names_out, len(zone_names)))
 
     # Where the source map's own (0,0) sits in San Andreas. Vice City's comes from the VC2SAMP
     # placement, Liberty City's from LC2SAMP (spicybung's filterscript, itself a rework of Kye's):
@@ -1879,6 +2318,8 @@ def main():
         lines += ["Water        = %swaterpro.dat" % base, "WaterXOffset = %d" % (400 if prefix == "vc_" else 0)]
     if zone_out:
         lines.append("Zones        = " + ", ".join(base + n for n in zone_out))
+    if zone_names_out:
+        lines.append("ZoneNames    = %s%s" % (base, zone_names_out))
     lines += ["RegionName   = %s" % ("Vice City" if prefix == "vc_" else "Liberty City")]
     if not lite:
         lines += ["Img          = %s%s.img" % (base, region),
@@ -1886,10 +2327,12 @@ def main():
                   "Ipl          = " + ", ".join(base + "ipl\\" + n for n in ipl_out),
                   "Col          = %scol\\*.col" % base,
                   "Names        = %snames.txt" % base]
-    # [World] Gxt replaces San Andreas' own strings wholesale rather than merging by region, so a
-    # second city's text would take the first one's place. Left commented out for that reason.
-    lines += ["", "; [World] - one GXT at a time; this one replaces San Andreas' strings, not just",
-              "; the region's, so uncomment it only if the source game's text is what you want.",
+    # The emitted GXT carries namespaced keys, so it adds the region's strings to San Andreas'
+    # rather than replacing them, and two regions no longer take each other's place either. It is
+    # optional all the same: the zone names a player actually reads are in zone_names.txt, and
+    # the rest of a donor game's text is only worth loading if something is going to ask for it.
+    lines += ["", "; [World] Gxt takes a comma-separated list; the keys in this file are tagged",
+              "; \"%s\" so they add to San Andreas' strings instead of replacing them." % gxt_tag,
               "; Gxt = %samerican.gxt" % base]
     with open(os.path.join(out, "region.ini"), "w") as f:
         f.write("\n".join(lines) + "\n")

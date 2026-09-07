@@ -380,6 +380,11 @@ void LoadNameMap(RegionState& rs) {
         size_t tab2 = line.find('\t', tab + 1);
         std::string fresh = line.substr(0, tab);
         std::string original = line.substr(tab + 1, tab2 == std::string::npos ? std::string::npos : tab2 - tab - 1);
+        // names.txt also records the region's renamed GXT keys, under a ".gxt" extension. Those
+        // live in the text table's namespace and not the streamer's - a key and a model name that
+        // read alike are unrelated - so they are no use here and would only pollute the map the
+        // LOD pairing below looks originals up in.
+        if (fresh.size() > 4 && Lower(fresh.substr(fresh.size() - 4)) == ".gxt") continue;
         size_t dot = fresh.find_last_of('.');
         if (dot != std::string::npos) fresh = fresh.substr(0, dot);
         dot = original.find_last_of('.');

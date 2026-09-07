@@ -6,6 +6,14 @@
 // go into a bigger array -- the array is a fixed global, so all 62 code sites that name it are
 // re-pointed at load. And the zone labels are GXT keys that only exist in the other game's
 // american.gxt, so the display names are registered with Gxt, which merges them into the game's text table.
+//
+// Those labels are namespaced. A zone label is a GXT key and San Andreas has thousands of its own;
+// left as they came, Vice City's DTOWN and GTA III's PARK would answer for San Andreas' keys of the
+// same name. tools/import_city.py therefore rewrites the name column of every .zon line to the
+// region's tagged key ("VDTOWN", "L~GTBK2") in step with the GXT it emits, and writes a ZoneNames
+// file giving each of those keys its display name -- so a region reads correctly whether or not
+// the whole donor GXT is loaded. Nothing here has to know the scheme: a label is a key, and both
+// ends of it were renamed together. See docs/asset-namespacing.md.
 #include <plugin.h>
 #include <windows.h>
 #include <CWorld.h>
@@ -139,12 +147,20 @@ void MakeKey(const char* in, char out[8]) {
     for (int i = 0; i < 7 && in[i]; i++) out[i] = (char)toupper((unsigned char)in[i]);
 }
 
+// Last resort when nothing names a zone: spell its key out. The importer's keys are namespaced
+// (docs/asset-namespacing.md), so this reads as "V Beach3" rather than "Beach3" and is meant to
+// look wrong -- a region imported by tools/import_city.py ships a ZoneNames file that covers every
+// label, and this only shows up for a zone file somebody wrote by hand.
+//
+// The '~' a hashed key carries is turned into a space along with '_', and not because it is ugly:
+// CFont reads '~' as the start of a colour or button token and would eat the rest of the line,
+// which is the one way a bad zone name could do more than look silly.
 std::string DeriveName(const char* key) {
     std::string out;
     bool wordStart = true;
     for (const char* p = key; *p; p++) {
         char c = *p;
-        if (c == '_') { out.push_back(' '); wordStart = true; continue; }
+        if (c == '_' || c == '~') { out.push_back(' '); wordStart = true; continue; }
         out.push_back(wordStart ? (char)toupper((unsigned char)c) : (char)tolower((unsigned char)c));
         wordStart = false;
     }
@@ -435,12 +451,21 @@ namespace Zones {
         }
         if (Defs().empty()) return;
 
-        // A loaded GXT (the map's own american.gxt) already names its zones; only invent a name
-        // when nobody provides one.
+        // A loaded GXT (the map's own american.gxt) or a ZoneNames file already names its zones;
+        // only invent a name when nobody provides one. With a region the importer produced that
+        // is never -- zone_names.txt covers every label it writes -- so an invented name is worth
+        // naming in the log: it is the visible end of a zone file and a name file that disagree.
+        int invented = 0;
         for (const ZoneDef& d : Defs()) {
             std::string key(d.textLabel, strnlen(d.textLabel, 8));
-            if (!NameMap().count(key) && !Gxt::Has(key.c_str())) NameMap()[key] = DeriveName(key.c_str());
+            if (NameMap().count(key) || Gxt::Has(key.c_str())) continue;
+            NameMap()[key] = DeriveName(key.c_str());
+            if (++invented <= 10)
+                Log::Write("zones: nothing names the key '%s'; showing \"%s\". Add it to the "
+                           "region's ZoneNames file, or put the region's american.gxt on [World] Gxt",
+                           key.c_str(), NameMap()[key].c_str());
         }
+        if (invented > 10) Log::Write("zones: ... and %d more key(s) with no name of their own", invented - 10);
         Log::Debug("zones: registering %u fallback name(s)", (unsigned)NameMap().size());
         int named = 0;
         for (const auto& kv : NameMap())
