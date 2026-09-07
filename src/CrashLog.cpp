@@ -92,6 +92,35 @@ static LONG CALLBACK OnException(EXCEPTION_POINTERS* info) {
                 return EXCEPTION_CONTINUE_SEARCH;
         }
     }
+    // Survive a call through a junk pointer. The render path faults with eip = FFFFFFFF - a model's
+    // RpAtomic was freed while an entity still fades to it, and its render callback is now garbage.
+    // At that point the CPU has already pushed the return address and jumped to the junk, so esp
+    // points at where the call would have returned. Set eip back to it and step esp past it, and
+    // the bad call behaves as if it returned at once: that one atomic is not drawn, the frame
+    // finishes, the game lives. Only done when the return address really is code in gta_sa.exe, so
+    // recovery never jumps into more junk, and rate-limited so a storm of them cannot fill the log.
+    // This is a net over a streaming-lifetime bug, not its cure, but it turns a crash into a
+    // dropped atomic. Anything else falls through to the report below.
+    CONTEXT* ctx = info->ContextRecord;
+    const bool wildCall = code == EXCEPTION_ACCESS_VIOLATION &&
+                          (ctx->Eip == 0xFFFFFFFF || ctx->Eip < 0x10000);
+    if (wildCall && !IsBadReadPtr((void*)ctx->Esp, 4)) {
+        const DWORD ret = *(const DWORD*)ctx->Esp;
+        const bool retIsCode = (ret >= 0x401000 && ret < 0x860000) ||
+                               (ret >= 0x1556000 && ret < 0x1577000);
+        if (retIsCode) {
+            static LONG recovered = 0;
+            LONG n = InterlockedIncrement(&recovered);
+            if (n <= 20)
+                Log::Write("CRASH: recovered from a call through %08X (returning to %08X, model %d) "
+                           "- a freed model was still being drawn; that atomic is dropped this frame",
+                           (unsigned)ctx->Eip, (unsigned)ret, RenderGuard::LastRenderedModel());
+            ctx->Eip = ret;
+            ctx->Esp += 4;
+            return EXCEPTION_CONTINUE_EXECUTION;
+        }
+    }
+
     if (InterlockedCompareExchange(&gLogged, 1, 0) != 0) return EXCEPTION_CONTINUE_SEARCH;
 
     const CONTEXT& c = *info->ContextRecord;
