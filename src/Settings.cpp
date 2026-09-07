@@ -88,6 +88,7 @@ namespace Settings {
         world.ptrNodePoolLimit = -1;       // vanilla 70000 plus what the regions need
         world.extendWorldSectors = true;
         world.linkRegionLods = true;
+        world.dropUnlinkedLods = true;
 
         IniFile ini;
         if (!ini.Load(PLUGIN_PATH("MapExpander.ini"))) {
@@ -121,6 +122,7 @@ namespace Settings {
             world.ptrNodePoolLimit = w->GetInt("PtrNodePoolLimit", -1);
             world.extendWorldSectors = w->GetBool("ExtendWorldSectors", true);
             world.linkRegionLods = w->GetBool("LinkRegionLods", true);
+            world.dropUnlinkedLods = w->GetBool("DropUnlinkedLods", true);
             for (const std::string& s : SplitPaths(w->GetString("DebugSkipModels", ""))) world.skipRenderModels.push_back(atoi(s.c_str()));
             if (world.compressedPositionScale <= 0.0f) world.compressedPositionScale = 4.0f;
             world.gxtFiles = SplitPaths(w->GetString("Gxt", ""));

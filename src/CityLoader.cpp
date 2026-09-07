@@ -495,6 +495,8 @@ struct IplStats {
     int lodLost = 0;
     int lodPaired = 0;    // HD lines given a LOD by the source game's naming rule
     int lodOrphans = 0;   // LOD lines no HD in the same file claimed
+    int lodDropped = 0;   // orphan and whole-district LODs left out, having nothing to hide them
+    int districtLods = 0; // of those, the island-sized ones
     int scaled = 0;
     int interior = 0;
 };
@@ -650,6 +652,47 @@ std::vector<Inst> CollectInsts(const RegionState& rs, const std::string& source,
         for (const auto& group : lodsByKey)
             for (size_t j : group.second)
                 if (!claimed[j]) stats.lodOrphans++;
+
+        // Leave out the LODs nothing will ever hide.
+        //
+        // III and Vice City load a district at a time - the loading screen between them is the swap
+        // - and while you are in one district the others are not in memory. What stands in for them
+        // is a LOD: a per-object one whose HD lives in a file that is not loaded, or one of the
+        // island-sized meshes in islandsf.ipl and overview.ipl (IslandLODmainland, IslandLODcomIND
+        // and their kin, every one of them drawn out to 3000 units) that stands in for a whole
+        // district at once. San Andreas has no districts and streams the entire map, so the real
+        // geometry those LODs deputise for is always there, and both draw together: the low-poly
+        // stand-in sits inside and through the buildings it was meant to replace, which is the
+        // overlapping, low-resolution mess this leaves behind.
+        //
+        // A LOD an HD claimed above is fine - SA hides it while the HD draws. The ones dropped here
+        // are the rest: 14 orphans in Vice City and 213 in Liberty City, plus 4 and 5 island meshes.
+        // Nothing is lost with them, because what they were standing in for is loaded.
+        if (Settings::world.dropUnlinkedLods) {
+            std::vector<bool> drop(kept.size(), false);
+            for (size_t i = 0; i < kept.size(); i++) {
+                const std::string o = original(kept[i].name);
+                if (o.compare(0, 9, "islandlod") == 0) {
+                    drop[i] = true;
+                    stats.districtLods++;
+                } else if (o.size() > 3 && o.compare(0, 3, "lod") == 0 && !claimed[i]) {
+                    drop[i] = true;
+                }
+            }
+            std::vector<int> moved(kept.size(), -1);
+            std::vector<Inst> survivors;
+            survivors.reserve(kept.size());
+            for (size_t i = 0; i < kept.size(); i++) {
+                if (drop[i]) { stats.lodDropped++; continue; }
+                moved[i] = (int)survivors.size();
+                survivors.push_back(kept[i]);
+            }
+            // Every LOD an HD points at survived, so no link is broken by this; the indices behind
+            // the dropped lines still have to come down to match.
+            for (Inst& inst : survivors)
+                if (inst.lod >= 0) inst.lod = moved[inst.lod];
+            kept.swap(survivors);
+        }
     }
     return kept;
 }
@@ -1119,8 +1162,13 @@ void PlaceInstances() {
         if (stats.lodPaired || stats.lodOrphans)
             Log::Write("[%s] inst: %d HD placement(s) linked to their LOD by the source game's naming "
                        "rule, so SA hides the LOD while the HD draws; %d LOD placement(s) had no HD to "
-                       "claim them in their file and stay always-visible as before",
+                       "claim them in their file",
                        rs.region->name.c_str(), stats.lodPaired, stats.lodOrphans);
+        if (stats.lodDropped)
+            Log::Write("[%s] inst: %d LOD placement(s) left out - %d of them island-sized stand-ins "
+                       "for a whole district - having no HD to hide them and nothing left to stand "
+                       "in for, since San Andreas keeps the real geometry loaded",
+                       rs.region->name.c_str(), stats.lodDropped, stats.districtLods);
         if (stats.noArchiveEntry)
             Log::Write("[%s] inst: %d line(s) NOT placed - their model is defined by an IDE but has "
                        "no .dff in any registered archive, and asking the streamer for such a model "
