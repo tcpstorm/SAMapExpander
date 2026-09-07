@@ -120,29 +120,29 @@ void __cdecl Hooked_RenderEntity(void* entity, float distance) {
             // head, then each material's texture (+0x00) and pipeline (+0x0C) - a corrupt one of those
             // is where the render calls through FFFFFFFF.
             const void* geom = *(void* const*)((const uint8_t*)rwObject + 0x18);
-            if (geom && !IsBadReadPtr(geom, 0x30)) {
+            if (geom && !IsBadReadPtr(geom, 0x60)) {
                 const unsigned* g = (const unsigned*)geom;
-                Log::Write("dump: model %u geom %08X: flags %08X tris %u verts %u morphs %u | "
-                           "matArray %08X numMats %u", model, (unsigned)(uintptr_t)geom,
-                           g[2], g[3], g[4], g[5], g[6], g[7]);
-                void** mats = *(void** const*)((const uint8_t*)geom + 0x18);
-                const int numMats = *(const int*)((const uint8_t*)geom + 0x1C);
-                if (mats && numMats > 0 && numMats < 4096 && !IsBadReadPtr(mats, 4)) {
-                    for (int m = 0; m < numMats && m < 165; m++) {
-                        void* mat = mats[m];
-                        if (IsBadReadPtr(mat, 0x14)) {
-                            Log::Write("dump:   material %d ptr %08X UNREADABLE", m, (unsigned)(uintptr_t)mat);
-                            continue;
+                for (int base = 0; base < 0x18; base += 8)
+                    Log::Write("dump: model %u geom+%02X: %08X %08X %08X %08X %08X %08X %08X %08X",
+                               model, base * 4, g[base], g[base + 1], g[base + 2], g[base + 3],
+                               g[base + 4], g[base + 5], g[base + 6], g[base + 7]);
+                // Find the material list: the count 165 (0xA5) with a readable pointer just before it.
+                for (int i = 3; i < 0x16; i++) {
+                    if (g[i] == 165 && !IsBadReadPtr((void*)g[i - 1], 4)) {
+                        void** mats = (void**)g[i - 1];
+                        Log::Write("dump: model %u material array at geom+%02X = %08X, %u materials",
+                                   model, (i - 1) * 4, g[i - 1], g[i]);
+                        for (int m = 0; m < 165; m++) {
+                            void* mat = mats[m];
+                            const unsigned tex = IsBadReadPtr(mat, 0x14) ? 0xDEAD : *(const unsigned*)mat;
+                            const unsigned pipe = IsBadReadPtr(mat, 0x14) ? 0xDEAD : *(const unsigned*)((const uint8_t*)mat + 0x0C);
+                            const bool bad = IsBadReadPtr(mat, 0x14) || tex == 0xFFFFFFFF || pipe == 0xFFFFFFFF ||
+                                             (tex && IsBadReadPtr((void*)tex, 4)) || (pipe && IsBadReadPtr((void*)pipe, 4));
+                            if (bad || m < 2)
+                                Log::Write("dump:   material %d %08X: texture %08X pipeline %08X%s",
+                                           m, (unsigned)(uintptr_t)mat, tex, pipe, bad ? " <BAD>" : "");
                         }
-                        const unsigned tex = *(const unsigned*)mat;            // RwTexture*
-                        const unsigned pipe = *(const unsigned*)((const uint8_t*)mat + 0x0C);
-                        // Only log the suspicious ones, else 165 lines every frame.
-                        const bool badTex = tex && (tex == 0xFFFFFFFF || IsBadReadPtr((void*)tex, 4));
-                        const bool badPipe = pipe && (pipe == 0xFFFFFFFF || IsBadReadPtr((void*)pipe, 4));
-                        if (badTex || badPipe || m < 3)
-                            Log::Write("dump:   material %d %08X: texture %08X%s pipeline %08X%s", m,
-                                       (unsigned)(uintptr_t)mat, tex, badTex ? " <BAD>" : "",
-                                       pipe, badPipe ? " <BAD>" : "");
+                        break;
                     }
                 }
             } else {
