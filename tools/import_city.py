@@ -40,12 +40,12 @@ The GXT keys and the zone labels that name them go the same way, under a one-cha
 ("V", "L") because a key is only seven characters wide - readable where that fits, a hashed
 "V~XXXXX" where it does not - so that a donor game's text adds to San Andreas' strings rather
 than silently replacing 694 of them. The emitted american.gxt is the source table with its keys
-import time
 replaced, the .zon files are rewritten to match, and names.txt records both.
 --no-rename skips all of it, which is only safe for a source that clashes with nothing.
 Runs on plain Python; Pillow is used for the PNGs if it is installed, else a built-in writer.
 """
 import collections
+import time
 import os
 import re
 import struct
@@ -2210,6 +2210,55 @@ def rename_zon(text, renames):
 # are the two where both games have the same gun under two names, so a new type would buy nothing
 # but a different mesh. (Under Replace the four melee lines trade away the katana, the knife, the
 # shovel and the pool cue; comment them out if you are running that mode.)
+def repoint_pickup_weapons(blob, prefix):
+    """The mined pickup table, with each weapon column brought back into step with the weapon map.
+
+    A mined line names the San Andreas weapon the pickup should give, worked out when the table was
+    mined - `weapon, COUNTRYRIFLE, ...` for the .308 - and keeps what the source game called it in
+    the comment: `# laser`. That pairing is exactly what VC_WEAPON_MAP decides, so the moment the
+    map changes its mind the table is stale, and nothing notices.
+
+    It went wrong the first time the map was corrected. The .308 moved from COUNTRYRIFLE to
+    SNIPERRIFLE, because only the sniper rifle carries a camera mode and so only the sniper rifle
+    scopes; the mined table still said COUNTRYRIFLE, and with no import paired to that weapon any
+    more the pickup handed out San Andreas' own country rifle. Eight units from the Python it sits
+    beside in Vice City, which is exactly how it was found.
+
+    So the comment is the authority, not the column: where the source name in the comment is one
+    this map knows, the column is rewritten to whatever that name is paired with now. A line naming
+    a weapon the map has nothing to say about - the health, the armour, San Andreas' own sniper - is
+    left exactly as it is.
+    """
+    if prefix != "vc_":
+        return blob
+    # The script's own name for a gun is not always the name the map gives it - main.scm calls the
+    # .308 "laser" where the map calls it "LaserScope" - so match on either being a prefix of the
+    # other, and only when exactly one entry matches, so a short name cannot land on the wrong gun.
+    def donor_for(source):
+        if len(source) < 3:
+            return None
+        hits = {donor for name, donor, _live, _why in VC_WEAPON_MAP
+                if name.lower().startswith(source) or source.startswith(name.lower())}
+        return hits.pop() if len(hits) == 1 else None
+
+    out, changed = [], 0
+    for line in blob.decode("latin-1").splitlines():
+        body, _, comment = line.partition("#")
+        fields = [f.strip() for f in body.split(",")]
+        source = comment.strip().split()[0].lower() if comment.strip() else ""
+        donor = donor_for(source) if len(fields) == 7 and fields[0].lower() == "weapon" else None
+        if donor:
+            if fields[1].upper() != donor:
+                changed += 1
+                fields[1] = donor
+                body = ", ".join(fields) + "   "
+                line = body + "#" + comment
+        out.append(line)
+    if changed:
+        print("pickups.dat: %d weapon column(s) brought back into step with the weapon map" % changed)
+    return ("\n".join(out) + "\n").encode("latin-1")
+
+
 VC_WEAPON_MAP = [
     ("Python", "DESERT_EAGLE", True,
      "Vice City Python .357 - San Andreas' Desert Eagle is a re-skinned Python already: same fire "
@@ -3178,6 +3227,7 @@ def main():
     if os.path.exists(mined):
         with open(mined, "rb") as f:
             blob = f.read()
+        blob = repoint_pickup_weapons(blob, prefix)
         with open(os.path.join(out, "pickups.dat"), "wb") as f:
             f.write(blob)
         pickups_out = "pickups.dat"
