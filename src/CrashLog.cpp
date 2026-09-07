@@ -92,32 +92,37 @@ static LONG CALLBACK OnException(EXCEPTION_POINTERS* info) {
                 return EXCEPTION_CONTINUE_SEARCH;
         }
     }
-    // Survive a call through a junk pointer. The render path faults with eip = FFFFFFFF - a model's
-    // RpAtomic was freed while an entity still fades to it, and its render callback is now garbage.
-    // At that point the CPU has already pushed the return address and jumped to the junk, so esp
-    // points at where the call would have returned. Set eip back to it and step esp past it, and
-    // the bad call behaves as if it returned at once: that one atomic is not drawn, the frame
-    // finishes, the game lives. Only done when the return address really is code in gta_sa.exe, so
-    // recovery never jumps into more junk, and rate-limited so a storm of them cannot fill the log.
-    // This is a net over a streaming-lifetime bug, not its cure, but it turns a crash into a
-    // dropped atomic. Anything else falls through to the report below.
+    // Survive drawing a model whose RpAtomic was freed while an entity still fades to it: the render
+    // jumps to a garbage callback and faults with eip = FFFFFFFF. Recovery is to abandon that one
+    // entity's render and carry on. The junk was reached from deep inside RenderWare, sometimes by a
+    // jump rather than a call, so esp does not point at a usable return - the first attempt assumed
+    // it did and never fired. Instead scan up the stack for the return address back into
+    // CVisibilityPlugins::RenderEntity (0x732B40..0x732C80), which every path here passes through,
+    // and unwind to it: set eip to that return and esp just past its slot, exactly as if the entity
+    // render had returned. RenderEntity's own epilogue then cleans up. Guarded to the render fault
+    // (eip junk) so nothing else is masked, and rate-limited.
+    //
+    // A net over a streaming-lifetime bug, not its cure - it turns the crash into one entity not
+    // drawn for a frame. Anything else falls through to the report below.
     CONTEXT* ctx = info->ContextRecord;
     const bool wildCall = code == EXCEPTION_ACCESS_VIOLATION &&
                           (ctx->Eip == 0xFFFFFFFF || ctx->Eip < 0x10000);
-    if (wildCall && !IsBadReadPtr((void*)ctx->Esp, 4)) {
-        const DWORD ret = *(const DWORD*)ctx->Esp;
-        const bool retIsCode = (ret >= 0x401000 && ret < 0x860000) ||
-                               (ret >= 0x1556000 && ret < 0x1577000);
-        if (retIsCode) {
-            static LONG recovered = 0;
-            LONG n = InterlockedIncrement(&recovered);
-            if (n <= 20)
-                Log::Write("CRASH: recovered from a call through %08X (returning to %08X, model %d) "
-                           "- a freed model was still being drawn; that atomic is dropped this frame",
-                           (unsigned)ctx->Eip, (unsigned)ret, RenderGuard::LastRenderedModel());
-            ctx->Eip = ret;
-            ctx->Esp += 4;
-            return EXCEPTION_CONTINUE_EXECUTION;
+    if (wildCall) {
+        for (unsigned off = 0; off <= 0x100; off += 4) {
+            const DWORD slot = ctx->Esp + off;
+            if (IsBadReadPtr((void*)slot, 4)) break;
+            const DWORD ret = *(const DWORD*)slot;
+            if (ret >= 0x732B40 && ret < 0x732C80) {   // a return into RenderEntity
+                static LONG recovered = 0;
+                if (InterlockedIncrement(&recovered) <= 20)
+                    Log::Write("CRASH: recovered from a render call through %08X (unwound to %08X, "
+                               "model %d) - a freed model was still being drawn; it is dropped for "
+                               "this frame", (unsigned)ctx->Eip, (unsigned)ret,
+                               RenderGuard::LastRenderedModel());
+                ctx->Eip = ret;
+                ctx->Esp = slot + 4;
+                return EXCEPTION_CONTINUE_EXECUTION;
+            }
         }
     }
 
