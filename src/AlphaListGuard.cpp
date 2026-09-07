@@ -66,52 +66,54 @@ bool LooksLikeEntity(const void* p) {
     return model < (uint16_t)ModelLimits::TotalCount();
 }
 
-// Walk the fading list ahead of the game. If a node is not a node, or holds something that is not
-// an entity, splice it out for the length of the render and put the list back exactly as it was
-// afterwards. The list is transient - the game clears and rebuilds it every frame - so restoring
-// it rather than cutting it permanently is what keeps the node pool's free list intact; a permanent
-// cut orphans nodes without freeing them, which is its own corruption and made an earlier build
-// crash worse over time.
+// Walk the fading list ahead of the game and splice out ONLY the bad nodes, leaving the rest of
+// the list joined up, then put every splice back the moment the render returns.
+//
+// The earlier version cut the list at the first bad node and dropped everything after it. That is
+// why vehicles went invisible in a populated area: a car's alpha (its windows, and the fading car
+// itself) sits later in the list than the one dangling foliage entity, so cutting at the foliage
+// dropped the car's render too. Skipping just the bad node keeps every good entity, cars included.
+//
+// The list is transient - the game clears and rebuilds it every frame - so restoring the splices
+// keeps the node pool's free list intact rather than orphaning nodes, which was its own corruption.
+struct Splice { AlphaNode** loc; AlphaNode* original; };
+const int kMaxSplices = 32;
+
 void __cdecl Hooked_RenderFadingEntities() {
-    AlphaNode* node = *reinterpret_cast<AlphaNode**>(kListHead);
-    AlphaNode* previous = nullptr;
-    AlphaNode** cutPoint = nullptr;   // the next-pointer to restore after the render
-    AlphaNode* cutSaved = nullptr;
+    Splice splices[kMaxSplices];
+    int spliceCount = 0;
+
+    AlphaNode** link = reinterpret_cast<AlphaNode**>(kListHead);  // the pointer feeding the walk
     int index = 0;
-    while ((uintptr_t)node != kListSentinel) {
+    while ((uintptr_t)*link != kListSentinel && spliceCount < kMaxSplices && index <= 4096) {
+        AlphaNode* node = *link;
         const bool inRange = !IsBadReadPtr(node, sizeof(AlphaNode));
         const bool badNode = !inRange || !IsGameCode(node->callback);
         const bool badEntity = !badNode && !LooksLikeEntity(node->entity);
-        if (badNode || badEntity || index > 4096) {
-            if (gReports < 12) {
-                gReports++;
-                const uintptr_t a = (uintptr_t)node;
-                Log::Write("alpha list: node %d at %08X is bad (%s%s callback %08X, entity %08X); "
-                           "skipped for this frame, list restored after",
-                           index, (unsigned)a, inRange ? "readable," : "UNREADABLE,",
-                           badEntity ? " not an entity," : "",
-                           inRange ? (unsigned)(uintptr_t)node->callback : 0u,
-                           inRange ? (unsigned)(uintptr_t)node->entity : 0u);
-                if (previous && LooksLikeEntity(previous->entity)) {
-                    const uint8_t* e = (const uint8_t*)previous->entity;
-                    Log::Write("alpha list:   the good entity before it: model %d - the dangling one "
-                               "is probably its neighbour in this area", *(const int16_t*)(e + 0x22));
-                }
-            }
-            if (previous) { cutPoint = &previous->next; }
-            else { cutPoint = reinterpret_cast<AlphaNode**>(kListHead); }
-            cutSaved = *cutPoint;
-            *cutPoint = reinterpret_cast<AlphaNode*>(kListSentinel);
-            break;
+        if (!badNode && !badEntity) {          // good node - advance through its next pointer
+            link = &node->next;
+            index++;
+            continue;
         }
-        previous = node;
-        node = node->next;
-        index++;
+        if (gReports < 12) {
+            gReports++;
+            Log::Write("alpha list: a fading node holds %s (node %08X, callback %08X, entity %08X); "
+                       "spliced out for this frame, the rest of the list still renders",
+                       inRange ? "something that is not an entity" : "unreadable memory",
+                       (unsigned)(uintptr_t)node, inRange ? (unsigned)(uintptr_t)node->callback : 0u,
+                       inRange ? (unsigned)(uintptr_t)node->entity : 0u);
+        }
+        splices[spliceCount].loc = link;
+        splices[spliceCount].original = node;
+        spliceCount++;
+        // Skip past the bad node if we can read where it points; otherwise end the list here, since
+        // its next pointer cannot be trusted.
+        *link = inRange ? node->next : reinterpret_cast<AlphaNode*>(kListSentinel);
     }
 
     Hook().ccall<void>();
 
-    if (cutPoint) *cutPoint = cutSaved;   // put the list back for the game to clear itself
+    for (int i = spliceCount - 1; i >= 0; i--) *splices[i].loc = splices[i].original;
 }
 
 }  // namespace
