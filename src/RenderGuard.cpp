@@ -31,15 +31,21 @@ static SafetyHookInline& Hook() { static SafetyHookInline h; return h; }
 int gReports = 0;
 long gSkipped = 0;
 
-// A CEntity: readable, a vtable in the band the entity classes occupy (CBuilding, CTreadable,
-// CDummy at 0x8638C0, CObject and the rest cluster in 0x858000..0x867000), and a model index in
-// range. Recycled memory or an overwritten object fails at least one of the three.
+// A CEntity: readable, a vtable somewhere in the executable's .rdata, a model index in range, and a
+// type in the valid set. The vtable range has to be wide enough to hold every entity kind, not just
+// the map ones: an earlier version bounded it to 0x858000..0x867000, which is where CBuilding,
+// CTreadable, CDummy and CObject sit, and skipped every vehicle - their vtables are higher
+// (0x871120, 0x871528 were seen), so planes and cars rendered invisible. The band below covers all
+// of them and still excludes the heap, where an overwritten object's vtable points (176F8AC8, ~390
+// MB up); the type and model checks are the second and third gates.
 bool LooksLikeEntity(const void* p) {
     if (!p || IsBadReadPtr(p, 0x40)) return false;
     const uint8_t* e = (const uint8_t*)p;
     const uintptr_t vtable = *(const uintptr_t*)e;
-    if (vtable < 0x858000 || vtable >= 0x867000) return false;
-    return *(const uint16_t*)(e + 0x22) < (uint16_t)ModelLimits::TotalCount();
+    if (vtable < 0x840000 || vtable >= 0x8B0000) return false;   // entity vtables live in .rdata
+    if (*(const uint16_t*)(e + 0x22) >= (uint16_t)ModelLimits::TotalCount()) return false;
+    const unsigned type = e[0x36] & 7;   // CEntity::m_nType: building/vehicle/ped/object/dummy
+    return type >= 1 && type <= 5;
 }
 
 void __cdecl Hooked_RenderEntity(void* entity, float distance) {
