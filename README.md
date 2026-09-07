@@ -318,8 +318,11 @@ All run in throwaway containers; nothing is installed on the host.
   - *Still wrong.* `Events::ComputeDamageResponse` (0x4C0327) and `Events::ComputeDamageAnim` (0x4B44BB) branch on
     `type >= 47` into the arm for the pseudo weapons, and that bound cannot be raised without sending `RAMMEDBYCAR`
     with it — so a ped shot with a new gun takes the right damage but plays the generic reactions. `CHud::DrawWeaponIcon`
-    (0x58D7D0) draws a texture called `ICON` from the weapon model's own TXD, which an imported weapon TXD will not
-    have. `CDarkel` (0x43D7B6) will not hand a new gun back after a rampage. A savegame carrying one expects the mod.
+    (0x58D7D0) draws the HUD icon from a texture in the weapon model's own TXD named *model name* + `ICON` — SA's
+    `desert_eagle.txd` holds `desert_eagleicon`, and an imported `v_python.txd` holds only `python` and `gun_python`,
+    so the new guns show no icon in the wheel. Fixing it means the importer adding a `<model>icon` texture to each
+    weapon TXD it copies. `CDarkel` (0x43D7B6) will not hand a new gun back after a rampage. A savegame carrying one
+    expects the mod to still be installed.
 - All 13 of `CPed`'s weapon slots (`m_aWeapons` at +0x5A0, `0x1C` each) are used, and `Ped::GiveWeapon` indexes them
   without a bounds check — but a slot *groups* weapons rather than naming one (slot 2 already holds the pistol, the
   silenced pistol and the Desert Eagle, one at a time), so a new gun joins its donor's slot and none of this needs

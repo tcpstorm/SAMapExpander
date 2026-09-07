@@ -67,6 +67,12 @@
 // never reaches these - but plays the generic hit and death reactions rather than the pistol or
 // shotgun ones. CDarkel (0x43D7B6) will likewise not hand a new gun back after a rampage.
 //
+// The HUD icon is not patchable from here at all: CHud::DrawWeaponIcon (0x58D7D0) builds a texture
+// key from the weapon model's name with "ICON" appended and looks it up in the model's own texture
+// dictionary - desert_eagle.txd holds desert_eagleicon - and an imported weapon's dictionary has no
+// such texture, so the wheel shows the gun with no icon. That is the importer's to fix, by adding
+// one when it copies the dictionary.
+//
 // Every site is checked against the exact bytes San Andreas ships before anything is written, and
 // if a single one has been patched by another mod nothing at all is done and the game stays
 // vanilla. None of it runs under SA-MP; the caller sees to that.
