@@ -441,6 +441,8 @@ RW_304 = 0x30400          # ... and at which a material grew surface properties 
 
 # rpGeometryFlag: the bits of the geometry struct's first word that change how the rest is read.
 GEOM_TEXTURED, GEOM_PRELIT, GEOM_TEXTURED2, GEOM_NATIVE = 0x04, 0x08, 0x80, 0x01000000
+GEOM_TRISTRIP = 0x01      # the geometry's own "my meshes are strips" flag
+RW_BINMESH = 0x50E        # the mesh split the D3D pipeline instances from, one mesh per material
 
 # Plugin chunks GTA III and Vice City hang off their models that no San Andreas model carries:
 # 0x105, the morph plugin, on 2950 of III's geometries and 6118 of Vice City's, and 0x118 on 602
@@ -612,8 +614,12 @@ def convert_material(data, s, e, surface_props):
 
 
 def convert_material_list(data, s, e, surface_props):
-    """The material list: a count, then one index per material - negative where the material
-    follows, otherwise the earlier material it repeats - and then the materials themselves.
+    """The material list, expanded to one converted material per slot.
+
+    On the wire it is a count, then one index per material - negative where the material follows
+    inline, otherwise the earlier material it repeats - and then the materials themselves. The
+    repeats are expanded here so what comes back is simply the list of materials the geometry uses,
+    in slot order, which is what merge_materials compares and what the triangles index into.
     """
     kids = rw_children(data, s, e, "material list")
     if not kids or kids[0][0] != RW_STRUCT:
@@ -622,12 +628,58 @@ def convert_material_list(data, s, e, surface_props):
     count = struct.unpack_from("<i", data, ss)[0]
     if se - ss != 4 + 4 * count:
         raise RwError("material list struct: %d bytes for %d material(s)" % (se - ss, count))
-    out = [rw_chunk(RW_STRUCT, data[ss:se])]
+    indices = struct.unpack_from("<%di" % count, data, ss + 4) if count else ()
+    written = []
     for kind, _ver, cs, ce in kids[1:]:
         if kind != RW_MATERIAL:
             raise RwError("material list holds a %#x chunk" % kind)
-        out.append(convert_material(data, cs, ce, surface_props))
-    return rw_chunk(RW_MATLIST, b"".join(out)), count
+        written.append(convert_material(data, cs, ce, surface_props))
+    materials, taken = [], 0
+    for i in indices:
+        if i < 0:
+            if taken >= len(written):
+                raise RwError("material list: fewer materials written than indexed")
+            materials.append(written[taken])
+            taken += 1
+        elif i < len(materials):
+            materials.append(materials[i])
+        else:
+            raise RwError("material list: a material repeats one not yet written")
+    if taken != len(written):
+        raise RwError("material list: %d written, %d taken" % (len(written), taken))
+    return materials
+
+
+def material_list_chunk(materials):
+    """A material list written back out, every material inline."""
+    head = struct.pack("<i", len(materials)) + struct.pack("<%di" % len(materials),
+                                                           *([-1] * len(materials)))
+    return rw_chunk(RW_MATLIST, rw_chunk(RW_STRUCT, head) + b"".join(materials))
+
+
+def merge_materials(materials):
+    """Fold materials that are identical down to the byte into one, and say where each slot went.
+
+    Vice City's Little Haiti models are built from one material repeated per face: v_lithitsjm
+    carries 165 of them, every one the same colour, flags and texture (huspnk256hi), across 1592
+    triangles. RenderWare gives each material its own mesh, so the model reaches San Andreas' D3D
+    pipeline as 165 meshes - where San Andreas' own 16264 geometries never once exceed 57 - and the
+    instance it builds for them is what the render then calls through as garbage. Nothing in the
+    data is malformed, so it survives every structural check; it is simply far past the shape the
+    engine is built for.
+
+    Identical materials render identically, so they can be one, and 165 meshes become one. That is
+    the whole fix: it takes 16 Vice City models and 4 Liberty City ones back under San Andreas' own
+    ceiling without touching a vertex.
+    """
+    unique, remap, seen = [], [], {}
+    for material in materials:
+        at = seen.get(material)
+        if at is None:
+            at = seen[material] = len(unique)
+            unique.append(material)
+        remap.append(at)
+    return unique, remap
 
 
 def convert_geometry_struct(data, s, e, version):
@@ -670,12 +722,77 @@ def convert_geometry_struct(data, s, e, version):
     if at != e:
         raise RwError("geometry struct: %d bytes, its %s layout accounts for %d"
                       % (e - s, "3.4+" if version >= RW_34 else "pre-3.4", at - s))
-    head = struct.pack("<IiiI", (flags & 0xFF00FFFF) | (sets << 16), num_tri, num_vert, num_morph)
-    return rw_chunk(RW_STRUCT, head + data[tail:e]), (num_tri, num_vert)
+    out_flags = (flags & 0xFF00FFFF) | (sets << 16)
+    # Where the triangles sit inside the block that follows the head, so their material indices can
+    # be remapped when identical materials are merged.
+    triangles_at = (4 * num_vert if flags & GEOM_PRELIT else 0) + sets * 8 * num_vert
+    return out_flags, data[tail:e], triangles_at, (num_tri, num_vert)
+
+
+def triangles_readable(body, triangles_at, num_tri, materials, num_vert):
+    """True when the triangle block really is at `triangles_at` and can be rewritten.
+
+    Every triangle has to name a material the list holds and three vertices the geometry has. Both
+    are cheap to check and neither holds for data that is not a triangle array, so this is what
+    decides whether a geometry's materials may be merged or are left exactly as they came.
+    """
+    if triangles_at + 8 * num_tri > len(body):
+        return False
+    for t in range(num_tri):
+        v2, v1, material, v3 = struct.unpack_from("<HHHH", body, triangles_at + 8 * t)
+        if material >= materials or v1 >= num_vert or v2 >= num_vert or v3 >= num_vert:
+            return False
+    return True
+
+
+def rebuild_meshes(body, triangles_at, num_tri, remap, extension):
+    """Point the triangles at the merged materials and rebuild the mesh split to match.
+
+    A triangle is two words: its second and first vertex, then its material and its third - the
+    material sits at byte four of the eight, not at the end. Only the material is rewritten.
+
+    The mesh split is then regenerated from those triangles rather than edited, because merging
+    strips is not a matter of concatenating them - joining two would need degenerate triangles
+    stitched between them - whereas the triangle list is the geometry's own
+    authority on what belongs to which material, and a list-form mesh is what the pipeline reads
+    when the strip flag is clear. One mesh per surviving material, in material order.
+    """
+    body = bytearray(body)
+    groups = {}
+    for t in range(num_tri):
+        at = triangles_at + 8 * t
+        v2, v1, material, v3 = struct.unpack_from("<HHHH", body, at)
+        material = remap[material]
+        struct.pack_into("<H", body, at + 4, material)
+        groups.setdefault(material, []).extend((v1, v2, v3))
+    meshes, total = [], 0
+    for material in sorted(groups):
+        indices = groups[material]
+        meshes.append(struct.pack("<II", len(indices), material)
+                      + struct.pack("<%dI" % len(indices), *indices))
+        total += len(indices)
+    binmesh = struct.pack("<III", 0, len(meshes), total) + b"".join(meshes)
+    # Swap it into the extension that was already converted, leaving its other plugins alone.
+    inner, at, replaced = [], 12, False
+    while at + 12 <= len(extension):
+        kind, size, _lib = struct.unpack_from("<III", extension, at)
+        if kind == RW_BINMESH:
+            inner.append(rw_chunk(RW_BINMESH, binmesh))
+            replaced = True
+        else:
+            inner.append(extension[at:at + 12 + size])
+        at += 12 + size
+    if not replaced:
+        inner.append(rw_chunk(RW_BINMESH, binmesh))
+    return bytes(body), rw_chunk(RW_EXTENSION, b"".join(inner))
 
 
 def convert_geometry(data, s, e, version):
-    """One geometry: its struct, its material list, and its extension."""
+    """One geometry: its struct, its material list, and its extension.
+
+    Materials identical to the byte are merged here, and where any were the triangles and the mesh
+    split are rewritten to match - see merge_materials for why that is worth doing.
+    """
     kids = rw_children(data, s, e, "geometry")
     if not kids or kids[0][0] != RW_STRUCT:
         raise RwError("geometry: no struct")
@@ -683,17 +800,38 @@ def convert_geometry(data, s, e, version):
     # A material older than 3.0.4.0 has no surface properties of its own and takes the geometry's,
     # which is the only thing the twelve bytes being dropped here are ever read for.
     surface_props = data[ss + 16:ss + 28] if version < RW_34 else struct.pack("<fff", 1.0, 1.0, 1.0)
-    chunk, counts = convert_geometry_struct(data, ss, se, version)
-    out, extension, materials = [chunk], None, 0
+    flags, body, triangles_at, counts = convert_geometry_struct(data, ss, se, version)
+    num_tri, num_vert = counts
+    materials, extension, others = None, None, []
     for kind, _ver, cs, ce in kids[1:]:
         if kind == RW_MATLIST:
-            piece, materials = convert_material_list(data, cs, ce, surface_props)
-            out.append(piece)
+            materials = convert_material_list(data, cs, ce, surface_props)
         elif kind == RW_EXTENSION:
             extension = convert_extension(data, cs, ce, "geometry")
         else:
-            out.append(rw_chunk(kind, data[cs:ce]))
-    return rebuild(RW_GEOMETRY, out, extension), counts + (materials,)
+            others.append(rw_chunk(kind, data[cs:ce]))
+    if materials is None:
+        raise RwError("geometry: no material list")
+    unique, remap = merge_materials(materials)
+    # Merging rewrites the triangles in place, so it is only safe where they are exactly where this
+    # expects them. 224 of Vice City's models - its LOD set, whose geometry is laid out differently
+    # enough that the triangles are not found at the offset computed above - fail that test, and
+    # they are simply left with their materials as they came. Merging is an optimisation, not part
+    # of the conversion, so a geometry that cannot be read this way still converts; it just keeps
+    # every material it had. None of them are near the mesh ceiling anyway.
+    merged = len(unique) < len(materials) and triangles_readable(body, triangles_at, num_tri,
+                                                                 len(materials), num_vert)
+    if merged and not flags & GEOM_NATIVE:
+        if extension is None:
+            extension = rw_chunk(RW_EXTENSION, b"")
+        body, extension = rebuild_meshes(body, triangles_at, num_tri, remap, extension)
+        flags &= ~GEOM_TRISTRIP     # the meshes written above are lists, not strips
+    else:
+        unique, merged = materials, False
+    head = struct.pack("<IiiI", flags, num_tri, num_vert,
+                       struct.unpack_from("<I", data, ss + 12)[0])
+    out = [rw_chunk(RW_STRUCT, head + body), material_list_chunk(unique)] + others
+    return rebuild(RW_GEOMETRY, out, extension), (num_tri, num_vert, len(unique), merged)
 
 
 def convert_geometry_list(data, s, e, version):
@@ -858,15 +996,15 @@ def convert_dff(data):
     importer can name the model it left alone rather than quietly writing out a guess.
     """
     if len(data) < 12:
-        return data, False
+        return data, False, 0
     kind, _size, library_id = struct.unpack_from("<III", data, 0)
     if kind != RW_CLUMP:
-        return data, False
+        return data, False, 0
     try:
-        out, _counts = convert_clump(data, 12, len(data), rw_version(library_id))
+        out, counts = convert_clump(data, 12, len(data), rw_version(library_id))
     except (struct.error, IndexError, ValueError) as err:
         raise RwError("%s: %s" % (type(err).__name__, err))
-    return out, True
+    return out, True, sum(1 for c in counts if len(c) > 3 and c[3])
 
 
 def write_png(path, width, height, rgba):
@@ -1367,7 +1505,7 @@ def main():
     txd_parts = {}
     dff_refs = {}
     tex_done, tex_failed, txds = 0, 0, 0
-    dff_done, dffs = 0, 0
+    dff_done, dffs, dff_merged = 0, 0, 0
     failed_txds = []
     failed_dffs = []
     dropped_dups = []
@@ -1418,8 +1556,9 @@ def main():
             dff_refs[key.lower().rsplit(".", 1)[0]] = dff_texture_names(blob)
             dffs += 1
             try:
-                blob, done = convert_dff(blob)
+                blob, done, merged = convert_dff(blob)
                 dff_done += done
+                dff_merged += merged
             except RwError as err:
                 # One model San Andreas may not be able to read is a model that does not draw;
                 # a whole import that stops on it is a region that does not exist. Pass it
@@ -1536,6 +1675,9 @@ def main():
                  "; %d could not be read and went through as %s came (%s)"
                  % (len(failed_dffs), "it" if len(failed_dffs) == 1 else "they",
                     "; ".join(sorted(failed_dffs)[:6]))))
+        if dff_merged:
+            print("meshes: %d geometry/geometries had identical materials merged, so the D3D "
+                  "pipeline instances one mesh per material instead of one per face" % dff_merged)
     if dropped_dups:
         print("dropped %d later cop%s of a .dff name the archive already carries (the source game "
               "binds only the first): %s" % (len(dropped_dups), "y" if len(dropped_dups) == 1 else "ies",
