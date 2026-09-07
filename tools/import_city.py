@@ -2860,12 +2860,28 @@ def main():
                 f.write("%s = %s%s\n" % (key, text, note))
         print("%s: %d zone display name(s)" % (zone_names_out, len(zone_names)))
 
-    # Where the source map's own (0,0) sits in San Andreas. Vice City's comes from the VC2SAMP
-    # placement, Liberty City's from LC2SAMP (spicybung's filterscript, itself a rework of Kye's):
-    # every one of its CreateObject calls is the III IPL position plus a constant, and matching
-    # 1102 model names across the two gives SA = III + (-5350, -200, 0) with no scatter at all.
-    # The two landmasses then sit either side of San Andreas without touching it or each other.
-    ORIGIN = {"vc_": (5998.5, 1052.5, -6.0), "iii_": (-5350.0, -200.0, 0.0)}
+    # Where the source map's own (0,0) sits in San Andreas.
+    #
+    # Vice City's comes from the VC2SAMP placement. Liberty City's could come from LC2SAMP
+    # (spicybung's filterscript, itself a rework of Kye's) - every one of its CreateObject calls is
+    # the III IPL position plus a constant, and matching 1102 model names across the two gives
+    # SA = III + (-5350, -200, 0) with no scatter at all - and that is where this used to put it.
+    #
+    # It is not used, because of what it costs. San Andreas files every static entity into a grid
+    # that is a fixed 120 x 120 sectors however much ground it covers, so the price of a placement
+    # is how far it drags the corners of that grid apart: the cell grows, and every per-frame scan
+    # over it - the renderer's, the streamer's, CCollision's camera cache - walks proportionally
+    # more entities. LC2SAMP's placement puts Liberty City off the west coast while Vice City sits
+    # off the east, which stretches the grid across -7350..7998 and gives 128 unit cells, six and a
+    # half times a vanilla sector's ground in every scan. That is a measurable frame rate cost and
+    # it is what the west coast placement was reported for.
+    #
+    # North of San Andreas instead, the two cities bracket it on one axis rather than opposite ends
+    # of another: -3000..7998 across and -3000..8000 up, 92 unit cells, a little over three times
+    # vanilla instead of six and a half. Same map, same distance from anything, half the scan cost.
+    # (The proper answer is to grow the grid's arrays so the cell stays at vanilla's 50 wherever a
+    # map is put, which is being written; this is the placement that costs least until then.)
+    ORIGIN = {"vc_": (5998.5, 1052.5, -6.0), "iii_": (0.0, 6000.0, 0.0)}
     origin_x, origin_y, origin_z = ORIGIN[prefix]
 
     base = "MapExpander\\%s\\" % region
