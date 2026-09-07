@@ -81,6 +81,8 @@ struct WorldSettings {
     int buildingPoolLimit, dummyPoolLimit; // CPools' entity pools; < 0 = vanilla + the regions' inst lines
     int ptrNodePoolLimit;                  // CPools' sector pointer-node pool; < 0 = vanilla + what the regions need
     bool extendWorldSectors;               // double what the static world grids cover, so a region beyond +/-3000 renders
+    bool packRegions;                      // move each region up against the map instead of leaving it where its ini put it
+    float regionGap;                       // world units of clear ground packing leaves between a region and its neighbour
     bool linkRegionLods;                   // rebuild HD->LOD links from the source game's naming rule; off = LODs draw as plain objects
     bool dropUnlinkedLods;                 // leave out LODs no HD hides - orphans and whole-district island meshes - which SA would draw through the real geometry
     std::vector<int> skipRenderModels;     // remapped model ids the render guard refuses to draw (a crash workaround while a model is diagnosed)

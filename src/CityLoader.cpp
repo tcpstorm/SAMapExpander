@@ -112,6 +112,16 @@ constexpr uintptr_t kPtrNodePoolSizeOperand = 0x550F46;  // imm32 of `push 70000
 constexpr uintptr_t kPtrNodeDoubleLinkPoolSizeOperand = 0x550F82;  // imm32 of `push 3200` in CPools::Initialise
 constexpr int kVanillaPtrNodePool = 70000;
 constexpr int kVanillaPtrNodeDoubleLinkPool = 3200;
+// Eight is a budget for VANILLA 50-unit sectors - a building spanning 3 x 3 of them, with slack -
+// and it stays an over-estimate however the world grid is fitted, which is why nothing here has to
+// know the cell size. WorldSectors stretches a fixed 120 x 120 grid over whatever ground is in use,
+// so the cell is span/120; San Andreas' own map is already 6000 units, and any world with a region
+// in it is wider, so the cell is always more than 6000/120 = 50 and a building always covers no
+// more sectors than it would in vanilla. San Andreas itself gets by on 70000 nodes for a pool of
+// 13000 entities - 5.4 each at 50 units - so eight a line has room in hand at any cell this can
+// produce. It is the other direction that would need re-doing: if the grid ever covered less
+// ground than the whole world at a time, cells could reach 50 and this would be the number to
+// check first.
 constexpr int kPtrNodesPerInstLine = 8;
 constexpr int kPtrNodePoolMargin = 1024;
 

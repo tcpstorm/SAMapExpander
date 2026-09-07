@@ -29,9 +29,38 @@
 // So fit both constants to the ground actually in use instead. San Andreas' own map plus the
 // region spans -3000..7998, which 120 cells cover at 92 units each rather than 200 - a third of the
 // scan cost, and the smallest cell the array size allows. Cells stay larger than vanilla's 50
-// because 120 of those only ever cover 6000 units; getting back to 50 means making the arrays
-// bigger, which means repointing every instruction that indexes them, and that is a far larger job
-// than repointing the two constants they are indexed by.
+// because 120 of those only ever cover 6000 units.
+//
+// Getting back to 50 would mean more cells, and that cannot be done. It is not the size of the job
+// - the arrays are easy to find and the addressing is uniform - it is the instruction encoding.
+// tools/scan_sector_array_sites.py enumerates everything a bigger grid would have to change and
+// tools/sector_array_sites.txt is its report; the short version:
+//
+//     CWorld::ms_aSectors      0xB7D0B8   120 x 120 of 8 bytes   74 indexed accesses
+//     CWorld::ms_aLodPtrLists  0xB99EB8    30 x 30  of 4 bytes    6 indexed accesses
+//
+// Every access has one shape - `imul reg, reg, 120`, add the column, `[reg*8 + 0xB7D0B8]` - and all
+// 80 of them have their row-stride multiply in front of them, so nothing walks a sector pointer
+// along a row instead and nothing forms the address another way. The base displacement would move
+// the way ModelLimits moves the streaming arrays, and the row stride is not a problem either:
+// `imul reg, reg, imm8` is three bytes and so is `shl reg, imm8`, so a power-of-two stride can be
+// written straight over it.
+//
+// The clamp is the wall. Every index reaches the array through clamp(v, 0, N-1); the lower half is
+// the sign-mask idiom and carries no constant, and the upper half is `cmp reg, imm8` at all 136
+// fine and 13 coarse sites - three bytes, immediate sign-extended, largest value 127. Widening it
+// to `cmp reg, imm32` takes six bytes and the three it would eat are the branch that reads its
+// result. The reachable index range is therefore [0, 127] and the grid can be at most 128 a side:
+// a 6.7% smaller cell, against the 307 a side that San Andreas plus two cities at 50 units needs.
+//
+// Which leaves two ways to a vanilla-sized cell, neither of them in this file yet. One is to stop
+// covering the whole world at once and fit the 120 cells to the ground the player is standing on,
+// re-filing every static entity when they cross into another map - no new sites, but a Remove-all
+// and Add-all pass that has to be exactly symmetric or it leaves dangling pointers in sector lists.
+// The other is to not spread the maps so far apart in the first place, which costs nothing at all
+// and is what Settings' PackRegions does: the cell is the world span over 120, so a world packed
+// to 10500 units gets 88-unit sectors where one spread over 15348 gets 128, and that is less than
+// half the per-frame scan for the same two cities the same distance from Los Santos.
 //
 // The +/-3000 clamps in CEntity::Add and CEntity::Remove - the only two places that clamp a
 // coordinate before converting it - move to the new bounds to match.
@@ -204,6 +233,15 @@ void Install() {
                "over it - the renderer's, the streamer's, and CCollision's camera cache - walks "
                "that much more of the world; the grids are the same size as before and savegames "
                "are unaffected", ratio);
+    // The cell is the world span over 120 and 120 is not negotiable - the index that reaches the
+    // array is clamped with a three-byte `cmp reg, imm8` at every one of the 136 sites that do it,
+    // so no index above 127 can be expressed. Say so once, here, rather than leaving the next
+    // person to wonder why the arrays were not simply made bigger.
+    if (ratio > 1.5f)
+        Log::Write("note: the only way to a smaller sector is a smaller world, because the grid is "
+                   "a fixed 120x120 and cannot be grown past 128 (see tools/sector_array_sites.txt "
+                   "for why). Placing the regions against the map instead of where their ini puts "
+                   "them is what shrinks the span - [World] PackRegions");
 
     WidenStoreQuadTrees();
 }
