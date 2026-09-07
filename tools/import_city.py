@@ -40,6 +40,7 @@ replaced, the .zon files are rewritten to match, and names.txt records both.
 --no-rename skips all of it, which is only safe for a source that clashes with nothing.
 Runs on plain Python; Pillow is used for the PNGs if it is installed, else a built-in writer.
 """
+import collections
 import os
 import re
 import struct
@@ -1206,6 +1207,98 @@ def rename_ide(text, renames, drop_flags=0):
                 line = ", ".join(tok)
         out.append(line)
     return "\n".join(out) + "\n"
+
+
+def area_placements(text):
+    """[(area, x, y, z)] for every inst line of an IPL that names an interior.
+
+    Area 0 is the outside world and 13 is "everywhere", so neither describes a room; both are left
+    out. See interior_boxes for what this is gathered for.
+    """
+    out, section = [], None
+    for line in text.splitlines():
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue
+        low = s.lower()
+        if low in ("inst", "end") or (len(low) == 4 and low.isalpha()):
+            section = low if low != "end" else None
+            continue
+        if section != "inst":
+            continue
+        t = [x.strip() for x in s.split(",")]
+        if len(t) < 6:
+            continue
+        try:
+            area, x, y, z = int(t[2]), float(t[3]), float(t[4]), float(t[5])
+        except ValueError:
+            continue
+        if 0 < area < 256 and area != 13:
+            out.append((area, x, y, z, t[1].lower()))
+    return out
+
+
+# A group smaller than this is a stray rather than a room, and gets no box.
+MIN_INTERIOR_PIECES = 3
+# A room whose floor is above this is not somewhere the player can walk to. Vice City's three
+# stadium events are arenas floating at z 248..326 over the Hyman Memorial Stadium, which the game
+# only ever teleported the player into from a mission; their collision is up there either way, but
+# switching one on because someone flew through that airspace would black out the whole world. Those
+# boxes are still written, commented out, so anyone who wants them can see them and uncomment.
+MAX_REACHABLE_FLOOR = 120.0
+
+
+def interior_boxes(placements, radius=90.0, slack=2.0):
+    """A box per interior, worked out from where that interior's own pieces are.
+
+    The point of this is that nobody should have to measure a room by hand. Vice City's interiors
+    sit at real coordinates inside the buildings and every piece of one carries its area code, so
+    the extent of an area's placements IS the room - the data already says where it is, and the
+    importer is the thing holding that data.
+
+    What stops a plain bounding box working is that an area is not always one room. Some carry
+    pieces that are nowhere near it: the Malibu's area also holds a fake skyline out to x 575 that
+    exists to be seen through the windows, area 2 holds two island LODs Vice City mislabelled, and
+    a couple of areas hold cutscene backdrops parked well outside. Bound those together with the
+    room and the box swallows streets - which is exactly how the police station came out six units
+    too tall and the width of the block.
+
+    So group each area's placements by proximity first and keep the crowd: seed at every placement,
+    take everything within `radius` horizontally, and the largest such group is the room. Anything
+    left over is either a second room of the same interior, kept when there is enough of it to be
+    real, or a stray, dropped. `slack` is then the only fudge left, and it is small and uniform: a
+    placement's coordinates are its model's origin, so the walls stand a little outside the
+    outermost origin. It is not tuning; the plugin's own margins handle the doorway.
+    """
+    by_area = collections.defaultdict(list)
+    for area, x, y, z, name in placements:
+        by_area[area].append((x, y, z, name))
+    boxes = []
+    for area in sorted(by_area):
+        rest = by_area[area]
+        while len(rest) >= MIN_INTERIOR_PIECES:
+            best = max((([p for p in rest if abs(p[0] - s[0]) <= radius and abs(p[1] - s[1]) <= radius])
+                        for s in rest), key=len)
+            keep = set(best)
+            rest = [p for p in rest if p not in keep]
+            # A group of one or two is a stray the clustering could not attach to anything - a lone
+            # ceiling fixture, a prop left over the road - and a box round it is a box round nothing.
+            if len(best) < MIN_INTERIOR_PIECES:
+                continue
+            # Some of what carries a room's area code is not the room, and must not be allowed to
+            # stretch the box. The Malibu Club's area also holds club_exterior01..12, a fake skyline
+            # standing out in the street to be seen through the club's windows; the police station
+            # has cop_fake_ext, the lawyers' office a pair of cutscene backdrops. Bound those with
+            # the room and the box reaches out over the pavement, which is the one failure that
+            # matters, because there it blacks out the world. They name themselves, so the box is
+            # measured from the room's own pieces and the scenery is only allowed to come along.
+            room = [p for p in best if not ("exterior" in p[3] or "_ext" in p[3] or "fake" in p[3])]
+            if len(room) < MIN_INTERIOR_PIECES:
+                continue
+            xs, ys, zs = [p[0] for p in room], [p[1] for p in room], [p[2] for p in room]
+            boxes.append((area, min(xs) - slack, min(ys) - slack, min(zs) - slack,
+                          max(xs) + slack, max(ys) + slack, max(zs) + slack, len(room)))
+    return boxes
 
 
 def rename_ipl(text, renames):
@@ -2398,6 +2491,7 @@ def main():
         with open(os.path.join(out, "ide", name), "w", encoding="latin-1") as f:
             f.write(rename_ide(text, renames, ide_drop_flags))
         ide_out.append(name)
+    inst_areas = []
     for rel in ipl_rel:
         p = find_file(src, rel)
         if not p:
@@ -2406,6 +2500,7 @@ def main():
         with open(p, "r", encoding="latin-1") as f:
             text = f.read()
         name = os.path.basename(p).lower()
+        inst_areas += area_placements(text)
         with open(os.path.join(out, "ipl", name), "w", encoding="latin-1") as f:
             f.write(rename_ipl(text, renames) if renames else text)
         ipl_out.append(name)
@@ -2543,6 +2638,29 @@ def main():
                   "Names        = %snames.txt" % base]
         if object_dat:
             lines.append("ObjectData   = %s%s" % (base, object_dat))
+        # One box per interior, measured off the placements rather than written by hand - see
+        # interior_boxes. Emitted with the area and a count so the file says what it is looking at.
+        boxes = interior_boxes(inst_areas)
+        if boxes:
+            lines += ["", "; Interiors, one box per room, in this region's own coordinates, worked",
+                      "; out from where each area's own pieces are. The plugin switches the room on",
+                      "; when the player is inside one; it applies its own margins at the edges, so",
+                      "; these are the rooms and not the doorways."]
+            live = 0
+            for i, (area, x0, y0, z0, x1, y1, z1, n) in enumerate(boxes, 1):
+                out_of_reach = z0 > MAX_REACHABLE_FLOOR
+                if out_of_reach:
+                    lines.append("; This one floats at z %.0f, too high to walk to - see the note in"
+                                 " the importer.\n; Switching it on because something flew through"
+                                 " that airspace would black out the world." % z0)
+                else:
+                    live += 1
+                lines.append("%sInterior%-4d = %d, %.0f, %.0f, %.0f, %.0f, %.0f, %.0f  ; %d piece(s)"
+                             % (";" if out_of_reach else "", i, area, x0, y0, z0, x1, y1, z1, n))
+            print("interiors: %d box(es) over %d area(s), measured from %d placement(s)%s"
+                  % (live, len({b[0] for b in boxes if b[3] <= MAX_REACHABLE_FLOOR}), len(inst_areas),
+                     "" if live == len(boxes) else
+                     "; %d left commented, too high to walk to" % (len(boxes) - live)))
     # The emitted GXT carries namespaced keys, so it adds the region's strings to San Andreas'
     # rather than replacing them, and two regions no longer take each other's place either. It is
     # optional all the same: the zone names a player actually reads are in zone_names.txt, and

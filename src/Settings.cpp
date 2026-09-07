@@ -25,6 +25,27 @@ namespace Settings {
         return _stricmp(a.c_str(), b.c_str()) == 0;
     }
 
+    // The region.ini of every region folder that has one, in name order. The importer writes one
+    // as it builds a region, so this is how a freshly imported city is found without anyone
+    // editing MapExpander.ini - see the note at the discovery loop below.
+    static std::vector<std::string> RegionIniPaths(const std::string& root) {
+        std::vector<std::string> out;
+        WIN32_FIND_DATAA found;
+        HANDLE search = FindFirstFileA((root + "\\*").c_str(), &found);
+        if (search == INVALID_HANDLE_VALUE) return out;
+        do {
+            if (!(found.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
+            if (found.cFileName[0] == '.') continue;   // . and ..
+            std::string path = root + "\\" + found.cFileName + "\\region.ini";
+            DWORD attributes = GetFileAttributesA(path.c_str());
+            if (attributes != INVALID_FILE_ATTRIBUTES && !(attributes & FILE_ATTRIBUTE_DIRECTORY))
+                out.push_back(path);
+        } while (FindNextFileA(search, &found));
+        FindClose(search);
+        std::sort(out.begin(), out.end());
+        return out;
+    }
+
     static void AddPath(std::vector<std::string>& out, const std::string& path) {
         for (const std::string& have : out)
             if (SameFile(have, path)) return;   // listed twice, or by name and again by a wildcard
@@ -171,8 +192,49 @@ namespace Settings {
             world.modelIdLimit = w->GetInt("ModelIdLimit", 25000);
         }
 
+        // Take the regions the importer has already described, then anything the user has written
+        // by hand.
+        //
+        // The importer writes a complete MapExpander\<region>\region.ini beside every region it
+        // builds - archives, IDEs, IPLs, collision, names, object data, zones, interiors, the lot -
+        // because it is the thing that knows what it just made. Reading those directly is what
+        // makes the mod work from a retail install without the user editing anything: import a
+        // game, run it, and the region is there. Nothing has to be copied into this file, which
+        // also ends a whole class of bug, since every key the importer learned to write was one
+        // more line that had to be pasted into an existing MapExpander.ini or silently do nothing.
+        //
+        // A section here still wins: it is loaded after, and a region of the same name replaces the
+        // discovered one outright, so a hand-written override is still a hand-written override.
+        std::vector<IniFile> regionInis;      // kept alive: the sections below point into these
+        std::vector<const IniFile::Section*> described;
         for (auto& s : ini.Sections()) {
             if (s.name.empty() || s.name == "World" || s.name == "General") continue;
+            described.push_back(&s);
+        }
+        for (const std::string& path : RegionIniPaths(ResolveGamePath("MapExpander"))) {
+            regionInis.emplace_back();
+            if (!regionInis.back().Load(path)) {
+                Log::Write("region: %s could not be read", path.c_str());
+                regionInis.pop_back();
+                continue;
+            }
+            for (auto& s : regionInis.back().Sections()) {
+                if (s.name.empty() || s.name == "World" || s.name == "General") continue;
+                bool overridden = false;
+                for (const IniFile::Section* have : described)
+                    if (SameFile(have->name, s.name)) { overridden = true; break; }
+                if (overridden) {
+                    Log::Write("region: [%s] found in %s, but MapExpander.ini describes it; using "
+                               "MapExpander.ini", s.name.c_str(), path.c_str());
+                    continue;
+                }
+                described.push_back(&s);
+                Log::Write("region: [%s] described by %s", s.name.c_str(), path.c_str());
+            }
+        }
+
+        for (const IniFile::Section* sp : described) {
+            const IniFile::Section& s = *sp;
 
             MapRegion r;
             r.name = s.name;
