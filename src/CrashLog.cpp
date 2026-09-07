@@ -104,28 +104,10 @@ static LONG CALLBACK OnException(EXCEPTION_POINTERS* info) {
     //
     // A net over a streaming-lifetime bug, not its cure - it turns the crash into one entity not
     // drawn for a frame. Anything else falls through to the report below.
-    CONTEXT* ctx = info->ContextRecord;
-    const bool wildCall = code == EXCEPTION_ACCESS_VIOLATION &&
-                          (ctx->Eip == 0xFFFFFFFF || ctx->Eip < 0x10000);
-    if (wildCall) {
-        for (unsigned off = 0; off <= 0x100; off += 4) {
-            const DWORD slot = ctx->Esp + off;
-            if (IsBadReadPtr((void*)slot, 4)) break;
-            const DWORD ret = *(const DWORD*)slot;
-            if (ret >= 0x732B40 && ret < 0x732C80) {   // a return into RenderEntity
-                static LONG recovered = 0;
-                if (InterlockedIncrement(&recovered) <= 20)
-                    Log::Write("CRASH: recovered from a render call through %08X (unwound to %08X, "
-                               "model %d) - a freed model was still being drawn; it is dropped for "
-                               "this frame", (unsigned)ctx->Eip, (unsigned)ret,
-                               RenderGuard::LastRenderedModel());
-                ctx->Eip = ret;
-                ctx->Esp = slot + 4;
-                return EXCEPTION_CONTINUE_EXECUTION;
-            }
-        }
-    }
-
+    // (An earlier build tried to recover from the render's wild call by unwinding the stack here.
+    //  It worked once and then unwound to a wrong slot and corrupted esp, crashing inside this
+    //  module - VEH stack surgery is too fragile. The stale entity is now stopped before it renders,
+    //  in RenderGuard, which is a safe point; this handler only reports.)
     if (InterlockedCompareExchange(&gLogged, 1, 0) != 0) return EXCEPTION_CONTINUE_SEARCH;
 
     const CONTEXT& c = *info->ContextRecord;

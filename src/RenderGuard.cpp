@@ -30,6 +30,7 @@ typedef void(__cdecl* RenderEntityFn)(void* entity, float distance);
 static SafetyHookInline& Hook() { static SafetyHookInline h; return h; }
 int gReports = 0;
 long gSkipped = 0;
+long gStaleSkipped = 0;
 volatile int gLastModel = -1;   // model of the entity RenderEntity is drawing right now
 
 // A CEntity: readable, a vtable somewhere in the executable's .rdata, a model index in range, and a
@@ -69,11 +70,32 @@ void __cdecl Hooked_RenderEntity(void* entity, float distance) {
         }
         return;
     }
-    // A valid entity can still carry a stale RwObject - a model streamed out from under a fade -
-    // and RenderEntity dereferences it past where this hook sits. Leave a breadcrumb so the crash
-    // log names the model, and clear it after, so a model that renders cleanly is not blamed for a
-    // later crash outside RenderEntity.
-    gLastModel = *(const uint16_t*)((const uint8_t*)entity + 0x22);
+    // A valid entity can still carry a stale RwObject: its model was streamed out from under it -
+    // evicted while the entity was in a fade - and its m_pRwObject was left pointing at freed RW
+    // memory whose render callback is now garbage. RenderEntity dereferences that past where a
+    // vtable check reaches, so catch it by the model's streaming state instead. CStreamingInfo's
+    // load state (at +0x10 of the 0x14-byte entry) is 0 when the model is not in memory; if the
+    // entity still has an RwObject while its model reads not-loaded, the object is stale, so do not
+    // draw it. This is a safe skip at the top of the function, not stack surgery mid-fault.
+    const uint16_t model = *(const uint16_t*)((const uint8_t*)entity + 0x22);
+    const void* rwObject = *(void* const*)((const uint8_t*)entity + 0x18);
+    if (rwObject && model < ModelLimits::TotalCount()) {
+        const uint32_t loadState = *(const uint32_t*)(ModelLimits::StreamingInfo() +
+                                                      (uintptr_t)model * 0x14 + 0x10);
+        if (loadState == 0) {   // LOADSTATE_NOTLOADED: the model has been evicted
+            gStaleSkipped++;
+            if (gReports < 16) {
+                gReports++;
+                Log::Write("render guard: model %u has an entity still holding an RwObject %08X but "
+                           "is streamed out; not drawn (stale after eviction)",
+                           model, (unsigned)(uintptr_t)rwObject);
+            }
+            return;
+        }
+    }
+
+    // Breadcrumb for the crash log: which model was drawing if something still faults past here.
+    gLastModel = model;
     Hook().ccall<void>(entity, distance);
     gLastModel = -1;
 }
