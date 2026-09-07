@@ -2237,7 +2237,13 @@ def repoint_pickup_weapons(blob, prefix):
     def donor_for(source):
         if len(source) < 3:
             return None
-        hits = {donor for name, donor, _live, _why in VC_WEAPON_MAP
+        # The IMPORT's own name, not the San Andreas weapon it borrows from. Naming the donor was
+        # wrong in a way that only showed once two imports shared one: the .308 moved onto the
+        # sniper rifle, and Vice City's plain sniper was already there, so both pickups read
+        # SNIPERRIFLE and both handed out the .308. The import has a weapon type and a name of its
+        # own, so ask for it by name and the question does not arise - and a pickup that really
+        # should give San Andreas' weapon still says so, because its source name is not one of ours.
+        hits = {name.upper() for name, _donor, _live, _why in VC_WEAPON_MAP
                 if name.lower().startswith(source) or source.startswith(name.lower())}
         return hits.pop() if len(hits) == 1 else None
 
