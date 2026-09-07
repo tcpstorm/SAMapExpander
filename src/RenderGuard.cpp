@@ -106,16 +106,29 @@ void __cdecl Hooked_RenderEntity(void* entity, float distance) {
     // a model that renders fine for a while does not fill the log.
     if (model == Settings::world.dumpRenderModel && gDumpCount < 240) {
         gDumpCount++;
-        if (rwObject && !IsBadReadPtr(rwObject, 0x60)) {
+        if (rwObject && !IsBadReadPtr(rwObject, 0xA0)) {
+            // The whole RpAtomic (~0x74) plus a little past, so the pipeline pointer near its end -
+            // where an instance failure leaves FFFFFFFF - is not cut off as an earlier dump did. Each
+            // word is labelled by byte offset for tracing.
             const unsigned* w = (const unsigned*)rwObject;
-            Log::Write("dump: model %u rwobj %08X type %u: %08X %08X %08X %08X %08X %08X %08X %08X "
-                       "%08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X",
-                       model, (unsigned)(uintptr_t)rwObject, w[0] & 0xFF,
-                       w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8], w[9], w[10], w[11],
-                       w[12], w[13], w[14], w[15], w[16], w[17], w[18], w[19], w[20], w[21], w[22]);
+            for (int base = 0; base < 0x28; base += 8)
+                Log::Write("dump: model %u rwobj+%02X: %08X %08X %08X %08X %08X %08X %08X %08X",
+                           model, base * 4, w[base], w[base + 1], w[base + 2], w[base + 3],
+                           w[base + 4], w[base + 5], w[base + 6], w[base + 7]);
+            // Follow the geometry pointer (RpAtomic+0x14) and dump its head too, where the material
+            // list and instance data live.
+            const void* geom = *(void* const*)((const uint8_t*)rwObject + 0x14);
+            if (geom && !IsBadReadPtr(geom, 0x40)) {
+                const unsigned* g = (const unsigned*)geom;
+                Log::Write("dump: model %u geom %08X: %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X",
+                           model, (unsigned)(uintptr_t)geom, g[0], g[1], g[2], g[3], g[4], g[5], g[6],
+                           g[7], g[8], g[9], g[10], g[11], g[12], g[13], g[14], g[15]);
+            } else {
+                Log::Write("dump: model %u geometry pointer %08X is %s", model,
+                           (unsigned)(uintptr_t)geom, geom ? "unreadable" : "NULL");
+            }
         } else {
-            Log::Write("dump: model %u rwobj %08X unreadable", model,
-                       (unsigned)(uintptr_t)rwObject);
+            Log::Write("dump: model %u rwobj %08X unreadable", model, (unsigned)(uintptr_t)rwObject);
         }
     }
 
