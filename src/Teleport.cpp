@@ -1,4 +1,8 @@
-// F7, with [World] Debug=1: stand in the first region.
+// F7, with [World] Debug=1: one press per stop, round the imported cities and home again.
+//
+// Each press moves to the next stop: every region in the order the ini lists them, then San
+// Andreas - and the San Andreas stop is wherever the player was standing when the lap began, so
+// the last press of a lap puts them back rather than somewhere they never asked for.
 //
 // A region sits thousands of units from anything the game will drive, fly or fade you to, so this
 // is the only practical way to go and look at one. The first attempt at it called CPed::Teleport by
@@ -154,6 +158,7 @@
 #include <CGame.h>
 #include <CMessages.h>
 #include <safetyhook.hpp>
+#include <string>
 #include <windows.h>
 #include <cstdint>
 #include <cstdio>
@@ -210,8 +215,27 @@ const float kProbeHeight = 1000.0f;
 // Where to put the player when that line hits nothing at all.
 const float kNoGroundHeight = 100.0f;
 
-void TeleportToFirstRegion() {
-    const MapRegion& r = Settings::regions.front();
+// Where F7 goes next, and where it came from.
+//
+// One press per stop: each region in the order the ini lists them, then San Andreas, then round
+// again. The San Andreas stop is deliberately not a fixed landmark - it is wherever the player was
+// standing when the cycle began, so the last press of a lap puts you back where you started rather
+// than somewhere in Los Santos you never asked for. Only if that is not known - the cycle was
+// already part way round when the game loaded, say - does it fall back to Grove Street, which is
+// as safe a piece of San Andreas as any: on the ground, out of the water, inside the streamed map.
+int gNextStop = 0;
+bool gHaveHome = false;
+CVector gHome;
+// Grove Street, for when nothing better is known.
+const CVector kSanAndreasFallback(2493.9f, -1682.0f, 13.5f);
+
+void TeleportToNextStop() {
+    // The stop list is every region, then San Andreas; the San Andreas one has no MapRegion behind
+    // it, which is what `region` being null below means.
+    const int stops = (int)Settings::regions.size() + 1;
+    if (gNextStop >= stops) gNextStop = 0;
+    const bool goingHome = gNextStop == (int)Settings::regions.size();
+    const MapRegion* region = goingHome ? nullptr : &Settings::regions[gNextStop];
 
     // The ped on screen during a cutscene is a CCutsceneObject and not this one, and the camera is
     // on a spline that a jump cut would fight.
@@ -244,9 +268,31 @@ void TeleportToFirstRegion() {
         return;
     }
 
-    CVector dest(r.originX, r.originY, r.originZ + kProbeHeight);
-    Log::Write("F7: going to [%s] at SA (%.1f, %.1f), moving %s through Teleport at %08X",
-               r.name.c_str(), dest.x, dest.y, what, (unsigned)slotAddr);
+    // Remember where the lap started, so its last press can bring the player back here. Taken
+    // before anything moves, and only at the top of a lap, so wandering around a region between
+    // presses does not overwrite it.
+    if (gNextStop == 0) {
+        gHome = player->GetPosition();
+        gHaveHome = true;
+    }
+
+    // The floor a region's heights are measured from; San Andreas' own is simply zero.
+    const float floorZ = region ? region->originZ : 0.0f;
+    CVector dest;
+    if (region) {
+        dest = CVector(region->originX, region->originY, floorZ + kProbeHeight);
+    } else if (gHaveHome) {
+        dest = CVector(gHome.x, gHome.y, gHome.z + kProbeHeight);
+    } else {
+        dest = CVector(kSanAndreasFallback.x, kSanAndreasFallback.y,
+                       kSanAndreasFallback.z + kProbeHeight);
+    }
+    const char* where = region ? region->name.c_str()
+                              : (gHaveHome ? "San Andreas, where you set off from"
+                                           : "San Andreas (Grove Street)");
+    Log::Write("F7: stop %d of %d - going to [%s] at SA (%.1f, %.1f), moving %s through Teleport "
+               "at %08X", gNextStop + 1, stops, where, dest.x, dest.y, what, (unsigned)slotAddr);
+    gNextStop++;
 
     // Everything from here to CTimer::Resume runs with the game clock stopped. The two streaming
     // calls below block until the disc has caught up, and a frame that takes two seconds of wall
@@ -273,11 +319,11 @@ void TeleportToFirstRegion() {
         dest.z = groundZ + CallDistanceToBaseOfModel(mover);
         Log::Write("F7: ground at z %.2f, so arriving at z %.2f", groundZ, dest.z);
     } else {
-        dest.z = r.originZ + kNoGroundHeight;
+        dest.z = floorZ + kNoGroundHeight;
         Log::Write("WARNING: F7 found nothing to stand on under (%.1f, %.1f) anywhere between z "
                    "%.1f and -1000 - the region's collision either did not load or does not cover "
                    "its origin. Arriving at z %.1f with nothing underneath.",
-                   dest.x, dest.y, r.originZ + kProbeHeight, dest.z);
+                   dest.x, dest.y, floorZ + kProbeHeight, dest.z);
     }
 
     // Sized by the arriving entity's own collision model, so a car clears more room than a man.
@@ -296,7 +342,7 @@ void TeleportToFirstRegion() {
     Log::Write("F7: arrived at SA (%.1f, %.1f, %.1f)", dest.x, dest.y, dest.z);
 
     char msg[128];
-    snprintf(msg, sizeof(msg), "MapExpander: %s (%.0f, %.0f)", r.name.c_str(), dest.x, dest.y);
+    snprintf(msg, sizeof(msg), "MapExpander: %s (%.0f, %.0f)", where, dest.x, dest.y);
     CMessages::AddMessageJumpQ(msg, 4000, 0, false);
 }
 
@@ -306,7 +352,7 @@ void __cdecl Hooked_ClockUpdate() {
     bool down = (GetAsyncKeyState(VK_F7) & 0x8000) != 0;
     bool justPressed = down && !gWasDown;
     gWasDown = down;
-    if (justPressed) TeleportToFirstRegion();
+    if (justPressed) TeleportToNextStop();
 }
 
 }  // namespace
@@ -325,8 +371,10 @@ void Install() {
         return;
     }
 
-    const MapRegion& r = Settings::regions.front();
-    Log::Write("F7 teleports to [%s] at SA (%.0f, %.0f)", r.name.c_str(), r.originX, r.originY);
+    std::string tour;
+    for (const MapRegion& r : Settings::regions) tour += r.name + " -> ";
+    Log::Write("F7 cycles one stop per press: %sSan Andreas (back where you set off) -> round again",
+               tour.c_str());
     if (Settings::RunningUnderSaMp())
         Log::Write("note: under SA-MP the server owns where the player is and will pull you back, "
                    "so F7 is only of use in single player");
