@@ -275,6 +275,7 @@ All run in throwaway containers; nothing is installed on the host.
 - `tools/gen_functions.py` → `tools/sa_functions.txt` — 9.6k named addresses merged from gta-reversed and plugin-sdk, used to label scanner output.
 - `tools/montage.py`, `tools/montage_orders.py`, `tools/tile_order_score.py` — stitch tiles and score the eight possible grid orderings to verify a tile set's numbering.
 - `tools/scan_model_limit_sites.py` → `tools/model_limit_sites.txt` → `tools/gen_model_limit_sites.py` → `src/ModelLimitSites.h` — the 1407 instructions `ModelIdLimit` rewrites, with the candidates it deliberately leaves alone and why. `tools/verify_model_limit_sites.py` re-reads every one of them out of `gta_sa.exe` and must pass 100% before the table ships.
+- `tools/verify_weapon_types.py` — the same idea for the added weapons: it simulates `WidenDispatch` and `RouteDispatch` out of `src/WeaponTypes.cpp` and asserts that every new weapon type resolves to exactly the address its donor resolves to, in all seven switches, and decodes the camera mode each one ends up with. The plugin makes the same comparison at load time and logs an error if it fails.
 
 ## Engine facts worth knowing
 
@@ -325,6 +326,18 @@ All run in throwaway containers; nothing is installed on the host.
     the function the donor's number for the length of the call and putting ours back on the way out — no
     hand-assembled code: `CHud::DrawCrossHairs` and `CPlayerPed::ProcessAnimGroups` (0x6099D4/D9, which walk and run
     animations the player uses while holding it).
+  - *The camera mode is decided twice.* `CPed::UpdateCameraWeaponModes` is a switch and is widened above, but
+    `CTaskSimplePlayerOnFoot::ProcessPlayerWeapon` works the mode out again every frame the player is on foot and
+    overwrites it — and that one is an equality chain on the type read at 0x685B45: `0x23`→8, `0x24`→0x33,
+    `0x22`→7, `0x2B`→0x2E, **everything else→0x22**, then `CCamera::SetPlayerWeaponMode`. A new type falls to that
+    default, so a new sniper rifle was handed the M4's camera mode however correctly the switch had routed it — and
+    0x22 is one of the four values `CHud::DrawCrossHairs` tests at 0x58E4C3, which is what sent the frame into the
+    `siteM16` block and past every reticle fix. The chain cannot be lengthened and the function around it must not be
+    lent the donor's type (it is where the weapon is actually *used*, so it would fire the donor's gun), so the small
+    function at the end of it is hooked: when the player holds one of ours **and** the mode being set is that
+    default, it becomes the mode the same chain gives the donor. Nothing else is ever substituted, so the attached
+    camera and the drive-by task, which also call it, are untouched. `tools/verify_weapon_types.py` reads that chain
+    out of the executable and shows that only the `.308`'s `SNIPERRIFLE` donor gets a non-default answer.
   - *The scope's reticle*, which took two goes. The branch that draws a weapon's own `CROSSHAIR` texture is 0x58E7A0,
     reached from exactly three tests — `type == CAMERA` (0x58E6E0), `type == SNIPERRIFLE` (0x58E703) and a script
     global (0x58E70C); anything else falls through to camera-mode tests at 0x58E719 and ends on the shared `siteM16`
