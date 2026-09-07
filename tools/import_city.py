@@ -444,6 +444,26 @@ GEOM_TEXTURED, GEOM_PRELIT, GEOM_TEXTURED2, GEOM_NATIVE = 0x04, 0x08, 0x80, 0x01
 GEOM_TRISTRIP = 0x01      # the geometry's own "my meshes are strips" flag
 RW_BINMESH = 0x50E        # the mesh split the D3D pipeline instances from, one mesh per material
 
+# How far to lift a vertex's baked lighting towards white: out = in + (255 - in) * PRELIT_LIFT.
+#
+# III and Vice City light the map twice. The colours baked into a geometry are only part of it -
+# ambient light from the time cycle is added on top at run time - so a surface that reads almost
+# black in the file still comes out lit in the game. San Andreas does not do that: for map models
+# the baked colour is the whole of the vertex lighting, modulating the texture directly. Imported
+# straight across, Vice City's roads therefore render at a fraction of their brightness, and the
+# black vertices among them - up to 47 per cent on the mainland - drag dark patches across the
+# tarmac. That is the blotchy, unlit look the streets have.
+#
+# Measured, the gap is plain. San Andreas' own road models average a vertex luma of 92 to 115;
+# Vice City's mainland roads average 20 to 45. One model the two games share, nt_roadblockci,
+# comes out at 112.0 in San Andreas and 112.1 here, which says the conversion carries the colours
+# across exactly and that the difference is in what each engine does with them afterwards.
+#
+# Lifting towards white rather than adding a constant keeps the ordering intact and moves the dark
+# end furthest, which is where the missing ambient went: at 0.30 a road at 25 comes out at 94 and
+# one already at 100 only reaches 146, so the baked shading survives instead of being flattened.
+PRELIT_LIFT = 0.30
+
 # Plugin chunks GTA III and Vice City hang off their models that no San Andreas model carries:
 # 0x105, the morph plugin, on 2950 of III's geometries and 6118 of Vice City's, and 0x118 on 602
 # of III's atomics. Neither id appears once across the 16264 geometries and 12953 clumps of San
@@ -726,7 +746,17 @@ def convert_geometry_struct(data, s, e, version):
     # Where the triangles sit inside the block that follows the head, so their material indices can
     # be remapped when identical materials are merged.
     triangles_at = (4 * num_vert if flags & GEOM_PRELIT else 0) + sets * 8 * num_vert
-    return out_flags, data[tail:e], triangles_at, (num_tri, num_vert)
+    body = data[tail:e]
+    # Put back the ambient light San Andreas will not add for itself - see PRELIT_LIFT. Only the
+    # colour is touched; the alpha a vertex carries is what fades and blends it and stays as it was.
+    if PRELIT_LIFT and flags & GEOM_PRELIT and not flags & GEOM_NATIVE and num_vert:
+        body = bytearray(body)
+        for v in range(num_vert):
+            at = 4 * v
+            for c in range(3):
+                body[at + c] += int((255 - body[at + c]) * PRELIT_LIFT)
+        body = bytes(body)
+    return out_flags, body, triangles_at, (num_tri, num_vert)
 
 
 def triangles_readable(body, triangles_at, num_tri, materials, num_vert):
