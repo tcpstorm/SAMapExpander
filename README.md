@@ -84,6 +84,8 @@ handy for placing an origin against a known landmark. Leave it off for normal pl
 | `WorldOriginZ` | height added to everything the region loads (water levels, zone boxes, IPL and inst coordinates) when the map was placed higher or lower than in its own game; default 0 |
 | `WorldMinX/MaxX/MinY/MaxY` | alternative to the origin: extent in SA space; the origin becomes its centre |
 | `Img`, `Ide`, `Ipl`, `Col` | the region's own map assets — see *Loading a city's own assets* |
+| `Weapons` | the source game's guns written over the San Andreas weapon types nearest to them — see *Weapons and pickups*. Changes those weapons for the whole game, so the importer writes the key commented out. Ignored under SA-MP. |
+| `Pickups` | the world pickups the source game's main script leaves around its map, in the region's own coordinates. Ignored under SA-MP. |
 
 Vice City as shipped in the example: 8×8 tiles of 500 covering local −2000..2000, origin
 `5998.5, 1052.5` (VC is placed by `SA = VC + offset` in the VC2SAMP conversion, so its landmass spans
@@ -106,6 +108,9 @@ SA x 4171..6963, y −778..2626).
 | `ModelIdLimit` | 25000 | number of DFF model ids; 20000 turns it off, 26400 is the ceiling. Skipped under SA-MP. Savegames are not compatible across a change. |
 | `FreeModelIdStart`, `FreeModelIdEnd` | 18631, `ModelIdLimit`−1 | model ids region IDEs may claim |
 | `AtomicModelInfoLimit` | grows with `ModelIdLimit` (14000 stock) | capacity of SA's atomic model-info store; set only if another limit adjuster changed it |
+| `RegionWeapons` | 1 | master switch for every region's `Weapons` file. Skipped under SA-MP. |
+| `RegionPickups` | 1 | master switch for every region's `Pickups` file. Skipped under SA-MP. |
+| `PickupReserve` | 200 | how many of SA's 620 pickup slots to keep back for its own script, which asks for them after the regions are placed |
 | `Debug` | 0 | verbose log, F8 diagnostics, water render statistics |
 
 ### Region data (feature branches)
@@ -227,6 +232,21 @@ All run in throwaway containers; nothing is installed on the host.
 - Path nodes (`nodes*.dat`) are `int16 / 8` at ~490 inline sites: traffic and ped paths cannot be extended past ±4096 without a rewrite. Irrelevant under SA-MP.
 - Audio zone boxes and occluders are also `int16 / 8` and stay limited to ±4096.
 - Every streamable resource shares one id space: DFF 0 (20000), TXD 20000 (5000), COL 25000 (255), IPL 25255 (256), DAT 25511 (64), IFP 25575 (180), RRR 25755 (475), SCM 26230 (82), plus 4 list-head sentinels — 26316 `CStreamingInfo` entries. `ModelIdLimit` shifts every base above the DFF range and reallocates the three arrays that size with it (`ms_aInfoForModel`, `ms_modelInfoPtrs`, `ms_atomicModelInfoStore`); the streaming lists link entries with `int16` indices, hence the 26400 ceiling. The other model-info stores keep their vanilla capacities (damage 70, time 169, weapon 51, clump 92, vehicle 212, ped 278, 2dfx 100) and none of them is bounds-checked.
+
+- **San Andreas cannot be given a new weapon type.** `CWeaponInfo::FindWeaponType` (0x743D10) looks a weapon.dat
+  name up in a fixed table of 49 `char*` at 0x8D6150 and answers 0 — `UNARMED` — for anything else, so an
+  unknown name silently overwrites unarmed combat rather than being skipped. The records are `aWeaponInfo[80]`
+  at 0xC8AAB8, `0x70` each, and `GetWeaponInfo` (0x743C60) indexes them as `type + {POOR 25, STD 0, PRO 36, COP 47}`
+  with no bounds check, so the eleven skill-varied weapons (types 22–32) sit immediately behind the 47 real ones and
+  there is no free index. Only 54 instructions name the array, so relocating it is easy next to `ModelIdLimit`'s 1407 —
+  but every switch keyed on weapon type (`CWeapon::Fire` 0x742880, `CWeapon::FireInstantHit` 0x740C85, the firing
+  audio at 0x504F9F) is a compare against the vanilla maximum followed by `ja default`, so a new type would draw
+  in the hand and do nothing when fired, in silence. Hence *Weapons* replaces rather than adds.
+- All 13 of `CPed`'s weapon slots (`m_aWeapons` at +0x5A0, `0x1C` each) are used, and `Ped::GiveWeapon` indexes them
+  without a bounds check, so a weapon cannot be given a slot of its own either.
+- `CPickups::aPickUps` is 620 entries of `0x20` at 0x9788C0 (type at +0x1C, model at +0x18, positions `int16 / scale`).
+  `GenerateNewOne` (0x456F20) returns −1 when full, and `CPickups::Save` writes the whole array into a savegame — so
+  the array is deliberately *not* relocated, and regions are capped by `PickupReserve` instead.
 
 ## Roadmap
 
