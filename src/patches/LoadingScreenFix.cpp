@@ -75,7 +75,8 @@ namespace LoadingScreenFix {
 
 void Install() {
     uint8_t replacement[6] = { 0xE8, 0x00, 0x00, 0x00, 0x00, 0x90 };   // call rel32; nop
-    const int32_t rel = (int32_t)((intptr_t)&AdvanceSplashBounded - (intptr_t)(kAdvanceSite + 5));
+    const intptr_t target = reinterpret_cast<intptr_t>(&AdvanceSplashBounded);
+    const int32_t rel = (int32_t)(target - (intptr_t)(kAdvanceSite + 5));
     std::memcpy(replacement + 1, &rel, sizeof(rel));
 
     if (MemPatch::ReplaceBytes(kAdvanceSite, ORIGINAL, replacement, sizeof(replacement)))
