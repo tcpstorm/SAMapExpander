@@ -261,6 +261,27 @@ bool PlayerOver(const RegionState& rs, const CVector& at, float margin) {
            at.y >= rs.minY - margin && at.y <= rs.maxY + margin;
 }
 
+// San Andreas' own map, which owns its own traffic and must not have ours put on top of it.
+//
+// This is the seam rule, and it is written down rather than left to happen. San Andreas generates
+// traffic from its path nodes, which exist only inside +/-3000; this module generates traffic from
+// a region's carriageways, which begin at x 4176 for Vice City and y 4389 for Liberty City. The
+// two sets do not overlap, so in practice neither ever spawns on the other's ground - but "in
+// practice" depends on where a region's ini puts it, and a region placed over San Andreas would
+// otherwise give one stretch of road two lots of traffic from two systems that cannot see each
+// other's cars. So the boundary is checked rather than assumed.
+//
+// What this does NOT do is fill the gap between the maps. There is no road there - about 1170
+// units of open ground unpacked, 500 with PackRegions - so traffic thins out at San Andreas' edge
+// exactly as it does today, and picks up again when the imported city's roads begin. A road
+// between the two would be content, not code.
+constexpr float kVanillaMapEdge = 3000.0f;
+
+bool SanAndreasOwnsThis(const CVector& at) {
+    return at.x > -kVanillaMapEdge && at.x < kVanillaMapEdge &&
+           at.y > -kVanillaMapEdge && at.y < kVanillaMapEdge;
+}
+
 // The next node to head for, preferring to carry straight on rather than double back. A dead end
 // turns the car round, which is what the game's own traffic does when a road runs out.
 int NextNode(const RegionState& rs, int from, int to) {
@@ -433,6 +454,9 @@ void SpawnSome(RegionState& rs, const CVector& player, int wanted) {
         int to = rs.links[n.firstLink + (rand() % n.linkCount)];
         int lane = rand() % (int)n.lanes;
         CVector at = LanePoint(rs, from, to, lane);
+        // The seam: inside San Andreas' own map its own traffic generator owns the road, and two
+        // systems that cannot see each other's cars must not both be putting cars on it.
+        if (SanAndreasOwnsThis(at)) continue;
         float dx = at.x - player.x, dy = at.y - player.y;
         float dist = sqrtf(dx * dx + dy * dy);
         if (dist < kMinSpawnDistance) continue;
