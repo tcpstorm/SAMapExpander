@@ -632,16 +632,11 @@ int32_t* HeldWeaponField() {
     return (int32_t*)((uintptr_t)ped + kPedWeapons + (unsigned)slot * kPedWeaponStride);
 }
 
-// The one stand-in that spans a whole frame's 2D pass rather than a single function, so that the
-// others can see past it to what the player is really carrying.
-int32_t* gSpanLentAt = nullptr;
-int32_t gSpanLentWas = 0;
-
-// The new weapon actually in the player's hands, seeing through a lend that is in place right now.
+// The new weapon in the player's hands, or -1 when it is not one of ours.
 int HeldNewWeapon() {
     int32_t* held = HeldWeaponField();
     if (!held) return -1;
-    const int type = (gSpanLentAt == held) ? gSpanLentWas : *held;
+    const int type = *held;
     return (type >= kFirstNewType && type <= kLastNewType) ? type : -1;
 }
 
@@ -686,14 +681,18 @@ void __fastcall SetPlayerWeaponModeHook(void* self, void*, int mode, int a, int 
 // reticle and clear sides. Nothing in CHud could have fixed that, which is why the reticle work
 // looked complete and was not.
 //
-// Render2dStuff is the whole 2D pass and it calls CHud::Draw at 0x53E4FF, so lending it the donor's
-// number wholesale would also hand the weapon wheel the donor's icon. Two things keep that honest:
-// the lend only happens while the camera is in one of the six modes the fill needs - there is
-// nothing to gain outside them - and CHud::DrawWeaponIcon is hooked to put our own number back for
-// the length of its call, so the icon stays the gun the player is holding.
+// The three weapons a player thinks of as scoped do NOT share a mechanism, which is worth writing
+// down because looking for one wasted a round. San Andreas ships exactly two <model>crosshair
+// textures: SNIPERcrosshair, 28% opaque black, and cameraCrosshair, none at all. The heat-seeker has
+// no crosshair texture whatever - it falls through to the camera-mode arm at 0x58E719 and draws a
+// plain HUD sprite - and neither the camera (0x2B) nor the launcher (0x23/0x24) is a type this fill
+// accepts. Only the sniper gets black sides, and only from here.
+//
+// Nothing is hooked for it. See ClaimScopeFill below: San Andreas' second test is dead and is simply
+// given away, which needs no lend, cannot reach the weapon wheel, and is one byte.
 
-constexpr uintptr_t kRender2dStuff = 0x53E230;
-const uint8_t kRender2dStuffOp[5] = { 0xA1, 0x24, 0x7B, 0xC9, 0x00 };
+// WEAPONTYPE_ROCKET, which no ped can hold - see ClaimScopeFill below.
+constexpr int kDeadRocketType = 19;
 
 // Where Render2dStuff reads the ped's weapon type, so the tests below are known to be the ones that
 // go with it.
@@ -730,70 +729,41 @@ bool ScopeFillWantsType(int type) {
     return false;
 }
 
-bool ScopeFillWantsMode(int mode) {
-    for (int i = 0; i < 6; i++) if (gScopeFillMode[i] == mode) return true;
-    return false;
-}
+bool gScopeFillTaken = false;
 
-// Whether a scope is actually raised, which is when the lend is worth making.
+// The second test is San Andreas' own spare, and giving it to a new gun is the whole fix.
 //
-// Not the same question as ScopeFillWantsMode, and confusing the two is why the first attempt at
-// this drew nothing. Render2dStuff reads the active camera mode and compares it against those six,
-// but only to set a flag; the gate on the whole black-fill block, at 0x53E31B, is the weapon type
-// and nothing else. So the fill does not need the camera to be in one of the six - and while a
-// scope is up it is not in one of them, it is in 0x22, which is why a lend conditioned on them
-// never happened and the sides stayed clear.
+// Its operand is 0x13 - WEAPONTYPE_ROCKET - and no ped can hold that. 19, 20 and 21 are the
+// projectile definitions the rocket launcher and the freefall bomb fire; the launcher a player
+// carries is 35 or 36. The number is a leftover from Vice City, where 19 WAS the rocket launcher,
+// and it is why San Andreas' own launcher does not get this fill either although the camera modes
+// beside it - 8 and 0x28, MODE_ROCKETLAUNCHER and its runabout - were plainly written for it.
 //
-// These are the modes CHud::DrawCrossHairs treats as looking down a sight, at 0x58E4C3. Lending
-// only in them keeps the donor's number out of ordinary play, which is the whole reason for
-// narrowing it: while the lend is up the weapon wheel shows the donor's icon, and that is worth
-// wearing for the seconds a scope is raised and not a moment longer.
-bool LookingDownASight(int mode) {
-    return mode == 0x22 || mode == 0x2A || mode == 0x29 || mode == 0x2D;
-}
-
-SafetyHookInline& Render2dOriginal() { static SafetyHookInline h; return h; }
-bool gSaidScopeFill = false;
-
-void __cdecl Render2dStuffHook() {
-    Lent type;
-    const int mine = HeldNewWeapon();
-    if (mine >= 0 && gScopeFillKnown) {
-        const int donor = gDonor[mine - kFirstNewType];
-        // Only when the donor is one of the two types the fill is drawn for, and only in the camera
-        // modes it is drawn in. Outside those the lend would buy nothing and be visible to the rest
-        // of the 2D pass for no reason at all.
-        // Either set: the six the fill's own flag looks at - which includes 7, the mode a raised
-        // scope actually runs in - or the ones CHud treats as looking down a sight. Narrowing this
-        // to one set has now been wrong twice in both directions, and the cost of being too wide is
-        // only that the wheel shows the donor's icon a moment longer.
-        const int mode = ActiveCameraMode();
-        const bool wantMode = ScopeFillWantsMode(mode) || LookingDownASight(mode);
-        if (!gSaidScopeFill)
-            Log::Write("weapon types: scope-fill gate - holding type %d, donor %d, camera mode %d "
-                       "(0x%X); fill knows its site: %s, donor is a filled type: %s, mode wanted: "
-                       "%s", mine, donor, mode, mode, gScopeFillKnown ? "yes" : "NO",
-                       (donor >= 0 && ScopeFillWantsType(donor)) ? "yes" : "NO",
-                       wantMode ? "yes" : "NO");
-        if (donor >= 0 && ScopeFillWantsType(donor) && wantMode) {
-            int32_t* held = HeldWeaponField();
-            if (held) {
-                type.Lend(held, donor);
-                gSpanLentAt = held;
-                gSpanLentWas = mine;
-                if (!gSaidScopeFill) {
-                    gSaidScopeFill = true;
-                    Log::Write("weapon types: scope-fill stand-in - weapon type %d is drawn as %d "
-                               "for one 2D pass, so Render2dStuff fills the sides of the scope "
-                               "black as it does for type %d", mine, donor, donor);
-                }
-            }
-        }
+// So the test is dead code, and pointing it at a new weapon type costs San Andreas nothing that it
+// is using: no San Andreas weapon is type 19 in anybody's hands, the SNIPERRIFLE test beside it is
+// untouched, and the fill then runs for our gun through the game's own path with no hook, no lend,
+// nothing borrowed for the length of a call and nothing that could reach the weapon wheel. One byte.
+//
+// It is one weapon only, because there is one spare test. That is enough: of the ten imported guns
+// exactly one has a donor this fill is drawn for, which tools/verify_weapon_types.py prints.
+bool ClaimScopeFill(int type, int donorType) {
+    if (!gScopeFillKnown || gScopeFillTaken) return false;
+    if (!ScopeFillWantsType(donorType)) return false;      // the donor gets no fill either
+    if (gScopeFillType[1] != kDeadRocketType) {
+        Log::Write("weapon types: Render2dStuff's spare weapon test at 0x%X reads %d rather than "
+                   "the unreachable %d, so it is left alone; %s will scope with clear sides",
+                   (unsigned)kScopeFillTypeAt[1], gScopeFillType[1], kDeadRocketType,
+                   gNames[type] ? gNames[type] : "the new gun");
+        return false;
     }
-    Render2dOriginal().ccall<void>();
-    gSpanLentAt = nullptr;
+    patch::SetUChar(kScopeFillTypeAt[1] + 2, (unsigned char)type);
+    gScopeFillTaken = true;
+    Log::Write("weapon types: weapon type %d now gets the black San Andreas fills in around a "
+               "scope - Render2dStuff's second test at 0x%X asked for weapon type %d, which no ped "
+               "can hold, and now asks for ours; its SNIPERRIFLE test is untouched",
+               type, (unsigned)kScopeFillTypeAt[1], kDeadRocketType);
+    return true;
 }
-
 
 bool gStandIns = false;
 
@@ -951,30 +921,16 @@ int Add(const char* name, int donorType) {
             Log::Write("weapon types: CTaskSimplePlayerOnFoot::ProcessPlayerWeapon's camera-mode "
                        "chain at 0x685B4C is not what San Andreas ships, so it is left alone; a new "
                        "sniper rifle will zoom with the M4's camera mode and the wrong reticle");
-        // The black filled in around the scope, which Render2dStuff draws only for two weapon
-        // types. The icon hook goes with it and is pointless without it.
-        if (ReadScopeFill()) {
-            HookStandIn(kRender2dStuff, kRender2dStuffOp, sizeof(kRender2dStuffOp),
-                        reinterpret_cast<void*>(&Render2dStuffHook), Render2dOriginal(),
-                        "Render2dStuff", "a new scoped gun will zoom with clear sides, not black");
-            // CHud::DrawWeaponIcon is deliberately NOT hooked.
-            //
-            // It would be the tidy thing to do: the lend below runs across the whole 2D pass and
-            // CHud::Draw hangs off it, so while the scope is up the wheel shows the donor's icon
-            // rather than the gun the player is holding. Putting our own number back for that one
-            // call fixes it in principle. In practice an inline hook on that function stops every
-            // weapon icon in the game from drawing - the imports, San Andreas' own, the fists -
-            // and it did exactly that when it shipped.
-            //
-            // A wrong icon for the seconds a scope is raised is a small price. No icons at all,
-            // ever, is not, so the lend is left visible there and the hook stays out until someone
-            // works out what that function does not tolerate.
-        } else {
+        // Read the shape of Render2dStuff's scope fill, so ClaimScopeFill below knows whether the
+        // spare test is there to be given away. Nothing is written yet.
+        if (!ReadScopeFill())
             Log::Write("weapon types: Render2dStuff's scope fill at 0x53E2D2 is not what San "
                        "Andreas ships, so it is left alone; a new scoped gun will zoom with clear "
                        "sides rather than black");
-        }
     }
+
+    // And, for a gun whose donor is one San Andreas fills the sides in for, take that spare test.
+    ClaimScopeFill(type, donorType);
 
     // Only worth an inline hook if one of the guns actually is a rifle; a pistol answers the same
     // either way, and a hook not installed cannot go wrong.

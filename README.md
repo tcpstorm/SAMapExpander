@@ -338,6 +338,24 @@ All run in throwaway containers; nothing is installed on the host.
     default, it becomes the mode the same chain gives the donor. Nothing else is ever substituted, so the attached
     camera and the drive-by task, which also call it, are untouched. `tools/verify_weapon_types.py` reads that chain
     out of the executable and shows that only the `.308`'s `SNIPERRIFLE` donor gets a non-default answer.
+  - *The black around the scope is not in `CHud` at all.* `SNIPERcrosshair` is one **quadrant** of the scope —
+    128×128 DXT3, 29% of it opaque black in the outer corner, the white rim on the inner arc, a clear centre — and
+    `DrawCrossHairs` draws it four times mirrored about the screen centre. Four quadrants at 210 virtual units cover
+    420 of a 640-wide virtual screen, so the sides are left over, and they are filled black by **`Render2dStuff`**
+    (0x53E230): it reads the player's weapon type inline at 0x53E2D2, checks the camera is in one of six scope modes
+    (0x7, 0x27, 0x8, 0x28, 0x2E, 0x2D), and then draws five `CSprite2d::DrawRect` in RGBA(0,0,0,255) — but only if
+    the type is `SNIPERRIFLE` (0x53E31B) or **0x13** (0x53E320). The second test is dead: 19 is `WEAPONTYPE_ROCKET`,
+    a projectile definition no ped can hold (a carried launcher is 35 or 36), and it is a Vice City leftover where
+    19 *was* the launcher — which is why SA's own rocket launcher gets no fill either, though the camera modes beside
+    it were plainly written for one. So the plugin simply **gives that spare test to the new gun**: one byte, no hook,
+    no lend, nothing borrowed across a call that could reach the weapon wheel, and SA's `SNIPERRIFLE` test untouched.
+    One weapon only, which is enough — `tools/verify_weapon_types.py` shows exactly one of the ten has a donor this
+    fill is drawn for.
+  - *The three "scoped" weapons do not share a mechanism*, which is worth writing down because looking for one cost a
+    round. SA ships exactly two `<model>crosshair` textures: `SNIPERcrosshair` (28% opaque black) and `cameraCrosshair`
+    (none). The heat-seeker has no crosshair texture at all — it falls through to the camera-mode arm at 0x58E719 and
+    draws a plain HUD sprite — and neither the camera (0x2B) nor either launcher (0x23/0x24) is a type the fill
+    accepts. Only the sniper gets black sides, and only from `Render2dStuff`.
   - *The scope's reticle*, which took two goes. The branch that draws a weapon's own `CROSSHAIR` texture is 0x58E7A0,
     reached from exactly three tests — `type == CAMERA` (0x58E6E0), `type == SNIPERRIFLE` (0x58E703) and a script
     global (0x58E70C); anything else falls through to camera-mode tests at 0x58E719 and ends on the shared `siteM16`
