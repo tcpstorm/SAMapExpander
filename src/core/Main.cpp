@@ -21,6 +21,8 @@
 #include "Interiors.h"
 #include "ModelLimits.h"
 #include "PathScale.h"
+#include "Fla.h"
+#include <string>
 #include "RegionWeapons.h"
 #include "RegionPickups.h"
 #include "RegionPeds.h"
@@ -36,6 +38,17 @@ public:
         Log::Open();
         CrashLog::Install();
         Settings::Load();
+
+        // Say once, at the top of the log, whether somebody else is already running the show. The
+        // path system and the world sector grid are both things fastman92's limit adjuster does
+        // properly and this plugin stands aside from, and knowing it is there explains a great
+        // many later lines that would otherwise read as failures.
+        if (Fla::Loaded()) {
+            std::string version = Fla::Version(), paths;
+            Fla::DescribePathEncoding(paths);
+            Log::Write("fastman92's limit adjuster is loaded%s%s; paths: %s",
+                       version.empty() ? "" : ", version ", version.c_str(), paths.c_str());
+        }
 
         ModelLimits::Install();   // must move the streaming arrays before the game initialises them
         // Before anything reads a path node, which is everything about traffic. It only rewrites

@@ -97,7 +97,9 @@
 #include "PathScaleSites.h"
 #include "MemPatch.h"
 #include "Settings.h"
+#include "Fla.h"
 #include "Log.h"
+#include <string>
 
 namespace {
 
@@ -304,6 +306,23 @@ float Reach() { return kInt16Reach / gUnitsPerMetre; }
 void Install() {
     if (!Settings::world.widenPathNodes) return;
     if (Settings::regions.empty()) return;
+    // Somebody else may already own the path encoding, and if they do this must not touch it.
+    //
+    // Verifying the 288 sites below is NOT enough to notice that on its own, which is the whole
+    // reason this check exists. fastman92's limit adjuster rewrites the 16-bit loads that FEED
+    // those multiplies rather than the multiplies themselves, and it keeps the 0.125 at 0x858C48
+    // because its extended coordinates are int32 at the same divide-by-eight scale. So under it
+    // every one of those sites still holds exactly the bytes expected here, the verification
+    // passes, and widening the scale would put every coordinate in the game out by that factor.
+    if (Fla::PathEncodingChanged()) {
+        std::string what;
+        Fla::DescribePathEncoding(what);
+        Log::Write("paths: the path encoding has already been changed by something else (%s)%s. "
+                   "The node scale is left exactly as it is - whoever did that owns the path "
+                   "system now", what.c_str(),
+                   Fla::Loaded() ? ", and fastman92's limit adjuster is loaded" : "");
+        return;
+    }
     // Widening the scale is a means, not an end: on its own it changes how San Andreas reads its
     // own path data and gives nothing back, because a region's roads are not in CPathFind until
     // RegionPaths puts them there. Shipping the risk without the payoff would be strictly worse
