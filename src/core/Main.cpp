@@ -17,6 +17,7 @@
 #include "Watchdog.h"
 #include "TxdProbe.h"
 #include "RenderGuard.h"
+#include "LoadingScreenFix.h"
 #include "Gxt.h"
 #include "Zones.h"
 #include "Interiors.h"
@@ -49,9 +50,10 @@ public:
             CityLoader::Install();
             // Only when this process is the one placing the region: under SA-MP the server owns
             // the objects and already handles distant ones, so the world grid is left alone.
-            if (CityLoader::PlacesOwnEntities() && Settings::world.extendWorldSectors)
+            if (CityLoader::PlacesOwnEntities() && Settings::world.extendWorldSectors) {
                 WorldSectors::Install();
                 MapWindow::Install();
+            }
             Interiors::Install();
         }
         if (Settings::world.fixPickupPositions || Settings::world.fixCarGeneratorPositions) PickupFix::Install();
@@ -62,6 +64,10 @@ public:
         Watchdog::Install();
         TxdProbe::Install();
         RenderGuard::Install();
+        // Bounds San Andreas' own loading-screen splash index, which runs one past its 7-entry
+        // array after 40 seconds of loading. Unconditional: it costs nothing and the load is long
+        // enough to reach it whether or not any region is configured.
+        LoadingScreenFix::Install();
 
         Log::Write("MapExpander initialised: %u region(s)", (unsigned)Settings::regions.size());
     }
