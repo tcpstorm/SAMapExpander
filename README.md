@@ -63,7 +63,9 @@ address, registers and stack even in a normal build.
 
 With `[World] Debug=1` the log becomes verbose and `F8` in game prints your SA coordinates and logs
 them together with the equivalent region-local coordinates and the zone the game resolves there —
-handy for placing an origin against a known landmark. Leave it off for normal play.
+handy for placing an origin against a known landmark. `F6` drops you straight through the world
+where you stand, which is the only practical way to try the fall recovery deliberately — a real fall
+needs a hole in the collision to be found first. Leave it off for normal play.
 
 ## Configuration
 

@@ -411,6 +411,44 @@ void Install() {
                "is left alone", *kFallFloor, kRingRadius[kRings - 1]);
 }
 
+// F6: put the player under the world where they stand, which is the one thing that is otherwise
+// hard to arrange on purpose - a hole in the collision has to be found first. The drop itself is
+// deliberately not special-cased anywhere above: what follows is exactly what follows a real fall,
+// including in San Andreas, where the game's own recovery answers it and you can see the difference.
+void DebugDrop() {
+    CPlayerPed* player = FindPlayerPed();
+    if (!player || !player->m_pRwObject) {
+        Log::Write("F6: no player to drop");
+        return;
+    }
+    CVehicle* vehicle = FindPlayerVehicle(-1, false);
+    CEntity* mover = vehicle ? static_cast<CEntity*>(vehicle) : static_cast<CEntity*>(player);
+    CVector from = mover->GetPosition();
+
+    void** vtable = *reinterpret_cast<void***>(mover);
+    void* slot = vtable ? vtable[kTeleportSlot] : nullptr;
+    uintptr_t slotAddr = reinterpret_cast<uintptr_t>(slot);
+    if (slotAddr < kCodeLow || slotAddr >= kCodeHigh) {
+        Log::Write("F6: the Teleport slot holds %08X, which is not code; not dropping",
+                   (unsigned)slotAddr);
+        return;
+    }
+
+    // Fifty units under the floor the game tests against, so the very next pass over the pool sees
+    // it however the frame counter happens to land.
+    RawVector to = { from.x, from.y, *kFallFloor - 50.0f };
+    reinterpret_cast<TeleportFn>(slot)(mover, to, false);
+    static_cast<CPhysical*>(mover)->m_vecMoveSpeed = CVector(0.0f, 0.0f, 0.0f);
+
+    const MapRegion* r = RegionAt(from.x, from.y, kFootprintMargin);
+    Log::Write("F6: dropped %s from (%.1f, %.1f, %.1f) to z %.1f, %s",
+               vehicle ? "the player's vehicle" : "the player", from.x, from.y, from.z, to.z,
+               !gInstalled ? "with the recovery not installed - San Andreas will answer this"
+                           : r ? "inside a region - the recovery should answer this"
+                               : "outside every region - San Andreas' own recovery should answer "
+                                 "this, and put you on its path graph");
+}
+
 void Describe(std::string& out) {
     char buffer[256];
     if (!gInstalled) {
