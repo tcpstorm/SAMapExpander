@@ -19,6 +19,7 @@
 #include "Gxt.h"
 #include "Zones.h"
 #include "Interiors.h"
+#include "FallRecovery.h"
 #include "ModelLimits.h"
 #include "RegionWeapons.h"
 #include "RegionPickups.h"
@@ -51,6 +52,7 @@ public:
             if (CityLoader::PlacesOwnEntities() && Settings::world.extendWorldSectors)
                 WorldSectors::Install();
             Interiors::Install();
+            FallRecovery::Install();
         }
         if (Settings::world.fixPickupPositions || Settings::world.fixCarGeneratorPositions) PickupFix::Install();
         if (Settings::world.fixMeleeBeyondMap) MeleeFix::Install();

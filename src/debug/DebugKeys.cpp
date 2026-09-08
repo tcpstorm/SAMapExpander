@@ -17,6 +17,7 @@
 #include "WeaponTypes.h"
 #include "RegionWeapons.h"
 #include "Interiors.h"
+#include "FallRecovery.h"
 #include "Gxt.h"
 #include "Watchdog.h"
 #include "Log.h"
@@ -124,6 +125,9 @@ static void OnFrame() {
     std::string interior;
     Interiors::Describe(interior);
     Log::Write("    interior: %s", interior.c_str());
+    std::string fall;
+    FallRecovery::Describe(fall);
+    Log::Write("    fall recovery: %s", fall.c_str());
     Zones::LogPlayerZone(pos.x, pos.y, pos.z);
 }
 
