@@ -121,54 +121,48 @@ nowhere to go.
 
 ---
 
-## Dying or being arrested in an imported city wakes you in San Andreas
+## Restart points: what an imported city still does not have
 
-Fall through the map and you now come back on the region's own ground — that is `FallRecovery`, and
-it is a different mechanism entirely (`CWorld::RemoveFallenPeds`, which relocates against the vehicle
-path graph). But **die** or **get arrested** in Vice City and you still wake in All Saints or in a
-Los Santos cell, thousands of units away.
+Dying or being arrested inside an imported city used to wake you in All Saints or a Los Santos cell,
+because every restart point San Andreas knows was registered from its own `main.scm` and "closest"
+from Vice City is by definition one of those. **That is fixed** — `RegionRestarts` gives each region
+its own hospitals and police stations, mined out of the donor's `main.scm` by the importer and
+answered through a hook on the two search functions rather than by adding anything to San Andreas'
+arrays. `MapExpander.ini` under `RegionRestartPoints` says what it does and why it is built that way;
+what follows is only what it still does not cover.
 
-**Why.** Death and arrest go through `CGameLogic::Update` (0x442AD0), which calls
-`CRestart::FindClosestHospitalRestartPoint` (0x460850) at +0x4A0 or
-`FindClosestPoliceRestartPoint` (0x460A50) at +0x84B and +0xAF6, and hands the answer to
-`CGameLogic::RestorePlayerStuffDuringResurrection` (0x442060). Every restart point the game has is
-registered from San Andreas' own `main.scm`, so "closest" from Vice City is by definition a San
-Andreas one. There is no distance limit and no fallback.
+**A region imported before this existed has no `restarts.dat`,** and then nothing changes for it: the
+call goes to San Andreas and death in that city still wakes you on the mainland. Re-import, or write
+the file by hand — it is five columns.
 
-**The data, read off the executable**, since it is most of the work of fixing this:
+**A region with points of only one kind borrows the other.** An arrest in a city with hospitals but no
+police station wakes you at a hospital. That is the wrong building in the right city, and it is
+deliberate: the alternative is the bug this whole feature exists to remove. The log says so once.
+Neither shipped region is in this position — GTA III has three of each and Vice City four.
 
-| | hospital | police |
-|---|---|---|
-| count (`uint16`) | 0xA4326C | 0xA43268 |
-| positions (`CVector[10]`) | 0xA43318 | 0xA43390 |
-| headings (`float[10]`) | 0xA432E8 | 0xA43298 |
-| town id (`int[10]`) | 0xA432C0 | 0xA43270 |
-| the call that fills a slot | `CRestart::AddHospitalRestartPoint` 0x460730 | `AddPoliceRestartPoint` 0x460780 |
+**A script that has spoken always wins.** If San Andreas' own script has named the next restart point
+(`0xA43264`), substituted the position the search runs from (`0xA43248`) or declared a restart radius
+(`0xA43258` for hospitals, `0xA43250` for police), the call is handed straight to the game even inside
+a region. A San Andreas mission that has said where the player belongs means it, and no mission of
+San Andreas' can be running out here anyway.
 
-Both arrays are **ten entries** — the gaps between the base addresses say so exactly — and San
-Andreas' `main.scm` uses **eight** hospital and **seven** police points (counted offline by walking
-the script for opcodes `016C` and `016D` and validating the five parameters of each hit). So two
-hospital and three police slots are genuinely free, which is enough for one of each in two regions.
-The town id is compared against `CStats::GetStatValue(0xB5)` at 0x460973, so a region point wants
-town 0 to be eligible from the start of the game.
+**Nothing happens under SA-MP,** where the server owns where a dead or arrested player comes back.
 
-**Why it is not done.** `CRestart::Save` (0x5D3620) writes those counts and then that many points
-into a savegame block, so adding region points changes the shape of a vanilla save block and puts
-Vice City coordinates inside it. A save made with the mod, loaded without it, would give a vanilla
-San Andreas two hospitals in the middle of the ocean — and `docs/save-compatibility.md` is explicit
-that imported content goes above the vanilla window, never inside it. Restart points have no window
-above: there are ten slots and the save copies all of the ones in use.
+**The town id is not carried and never will be.** San Andreas' fifth `ADD_HOSPITAL_RESTART` parameter
+holds a point back until an island is unlocked — the search skips any point whose town is above
+`CStats::GetStatValue(0xB5)`, the comparison at 0x460973 — and an imported city is open from the first
+frame. Since a region point never enters the array, nothing would ever read one.
 
-**What it would take.** Mine `ADD_HOSPITAL_RESTART` / `ADD_POLICE_RESTART` (III `0175`/`0176`, VC
-`016C`/`016D`) out of the donor `main.scm` the way `tools/import_city.py` already mines
-`SET_ZONE_PED_GROUP`, write them into the region folder as readable data, register them at the same
-point `RegionPickups` places pickups — and then either hook `CRestart::Save`/`Load` to write only
-San Andreas' own points, or hook the two `FindClosest...` functions instead and never put a region
-point in the array at all. The second is smaller, keeps the save byte-identical, and is the one to
-do: both are self-contained `__cdecl` and read
-`(CVector where, CVector* outPosition, float* outHeading)` — the vector by value, twelve bytes of
-stack, the two results by pointer — so a region point can be answered without the arrays ever
-knowing about it, and the savegame stays byte for byte what vanilla writes.
+**And the design constraint, because it is the reason the easy version was not built.**
+`CRestart::Save` (0x5D3620) copies the counts at 0xA4326C and 0xA43268 and then that many points
+straight into a savegame block, and a San Andreas save has no framing between blocks at all —
+`CGenericGameStorage::LoadDataFromWorkBuffer` (0x5D1300) is a plain sequential byte reader, so a block
+that changes size silently shifts every block behind it. Two free hospital slots and three free police
+slots really are there (ten each, of which San Andreas' script uses eight and seven), and using them
+would have been four lines. It would also have put Vice City coordinates inside a vanilla-shaped save
+and handed a game without this plugin two hospitals in the middle of the ocean. See
+`docs/save-compatibility.md`: imported content goes above San Andreas' own window, never inside it, and
+restart points have no window above.
 
 ---
 

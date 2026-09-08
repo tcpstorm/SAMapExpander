@@ -63,7 +63,9 @@ address, registers and stack even in a normal build.
 
 With `[World] Debug=1` the log becomes verbose and `F8` in game prints your SA coordinates and logs
 them together with the equivalent region-local coordinates and the zone the game resolves there —
-handy for placing an origin against a known landmark. `F6` drops you straight through the world
+handy for placing an origin against a known landmark. It also says where you would wake if you
+died and if you were arrested from exactly where you stand, which is how the region restart points
+can be checked without dying. `F6` drops you straight through the world
 where you stand, which is the only practical way to try the fall recovery deliberately — a real fall
 needs a hole in the collision to be found first. Leave it off for normal play.
 
@@ -115,6 +117,7 @@ SA x 4171..6963, y −778..2626).
 | `RegionWeaponMode` | `Add` | `Add` gives the region's guns weapon types of their own and leaves San Andreas' forty-seven exactly as they were (ten new types is the hard limit); `Replace` writes them over the nearest San Andreas weapon, which changes that weapon for the whole game |
 | `RegionPickups` | 1 | master switch for every region's `Pickups` file. Skipped under SA-MP. |
 | `FallRecovery` | 1 | fall out of the world inside a region and you come back on that region's own ground rather than on San Andreas' path graph. Falls outside a region are left to the game. Skipped under SA-MP. |
+| `RegionRestartPoints` | 1 | die or get arrested inside a region and you wake at that region’s own hospital or police station, mined from the donor’s `main.scm` into its `restarts.dat`. Answered by hooking the two `CRestart` searches: nothing is added to San Andreas’ restart arrays, so the savegame stays byte for byte what vanilla writes. Outside a region the game answers, untouched. Skipped under SA-MP. |
 | `PickupReserve` | 200 | how many free pickup slots to leave SA's own script once a region has taken what it wants. Counted into the enlarged array's size rather than deducted from SA's 620 |
 | `Debug` | 0 | verbose log, F8 diagnostics, water render statistics |
 
@@ -128,6 +131,7 @@ be hand-translated. Copy the files straight from the source game's `data\` folde
 | `Ipl=` (comma list) | `feature/ipl-sections` | `data\maps\*.ipl` | sections `cull enex tcyc jump pick cars grge auzo`; `inst`/`zone`/`occl` ignored. VC's own IPLs only carry `cull` and `pick`; the SA-only sections must be authored in SA format. The entry/exit quad tree is widened beyond ±3000. Pool limits are checked per line and headroom is logged; `tcyc` (20) and `auzo` spheres (3) are nearly full in vanilla. |
 | `Water=`, `WaterXOffset=` | `feature/water` | `data\waterpro.dat` (`WaterXOffset=400` for VC, 0 for III) or an SA `water.dat` | physics (swimming, boats, camera) use real levels beyond ±3000 via a hook on `CWaterLevel::GetWaterLevelNoWaves`, and the same quads are rendered in place of SA's endless ocean. `tools/waterpro_to_dat.py` converts offline. |
 | `Img=`, `Ide=`, `Ipl=`, `Col=` | `feature/city-loader` | `models\gta3.img`, `data\maps\*.ide`, `data\maps\*.ipl` | the region's own buildings; the `inst` section of an IPL is used here, the other sections by the IPL loader above. See *Loading a city's own assets*. |
+| `Restarts=` | this branch | mined from `datamain.scm` by the importer | the city’s own hospitals and police stations, in its own coordinates. `kind, x, y, z, heading`; a z of −100 or below is the script’s “put it on the ground here” sentinel and is resolved against the region’s collision. |
 | `Zones=`, `ZoneNames=` | `feature/zones` | `data\navig.zon`, `data\info.zon`, names from `text\american.gxt` | area names on VC through the vanilla zone system; their display names are merged into the game's own GXT key table. |
 
 ## Importing a city
@@ -294,6 +298,7 @@ All run in throwaway containers; nothing is installed on the host.
   one call is enough to render arbitrary water out there without touching the block grid.
 - Path nodes (`nodes*.dat`) are `int16 / 8` at ~490 inline sites: traffic and ped paths cannot be extended past ±4096 without a rewrite. Irrelevant under SA-MP.
 - Falling out of the world is `CWorld::RemoveFallenPeds` (0x565CB0) and `CWorld::RemoveFallenCars` (0x565E80), run from the tail of `CWorld::Process` on the frames where `CTimer::m_FrameCounter & 7` is 1 and 5. Below z −100 (the float at 0x859014) an ordinary ped or car is deleted and the player, their vehicle and mission entities are moved to `CPathFind::FindNodeClosestToCoors` with a distance limit of 999999.875 — i.e. no limit, the whole graph. Nothing about it is a restart point, and outside ±4096 there are no nodes, so it reaches back into San Andreas. `src/region/FallRecovery.cpp` answers that first for a fall over a region.
+- Death and arrest are `CGameLogic::Update` (0x442AD0) calling `CRestart::FindClosestHospitalRestartPoint` (0x460850) at +0x4A0 and `FindClosestPoliceRestartPoint` (0x460A50) at +0x84B and +0xAF6, then `RestorePlayerStuffDuringResurrection` (0x442060) — those three are the only callers in the executable. Both searches are `__cdecl (CVector where, CVector* outPos, float* outHeading)` over ten-entry arrays (counts 0xA4326C / 0xA43268, positions 0xA43318 / 0xA43390, headings 0xA432E8 / 0xA43298, town 0xA432C0 / 0xA43270), with no distance limit and no fallback, and a candidate in a different zone costs ×6.0 (0x858B44). `CRestart::Save` (0x5D3620) copies those counts and points into the savegame, so `src/region/RegionRestarts.cpp` hooks the searches instead of ever adding to the arrays.
 - Audio zone boxes and occluders are also `int16 / 8` and stay limited to ±4096.
 - Every streamable resource shares one id space: DFF 0 (20000), TXD 20000 (5000), COL 25000 (255), IPL 25255 (256), DAT 25511 (64), IFP 25575 (180), RRR 25755 (475), SCM 26230 (82), plus 4 list-head sentinels — 26316 `CStreamingInfo` entries. `ModelIdLimit` shifts every base above the DFF range and reallocates the three arrays that size with it (`ms_aInfoForModel`, `ms_modelInfoPtrs`, `ms_atomicModelInfoStore`); the streaming lists link entries with `int16` indices, hence the 26400 ceiling. The other model-info stores keep their vanilla capacities (damage 70, time 169, weapon 51, clump 92, vehicle 212, ped 278, 2dfx 100) and none of them is bounds-checked.
 

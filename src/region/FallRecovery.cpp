@@ -76,12 +76,12 @@
 //
 // WHAT IT DOES NOT DO
 //
-// Dying and being arrested are a different mechanism and are not touched. Those go through
-// CGameLogic::Update -> CRestart::FindClosestHospitalRestartPoint (0x460850) /
+// Dying and being arrested are a different mechanism and nothing here touches them. Those go
+// through CGameLogic::Update -> CRestart::FindClosestHospitalRestartPoint (0x460850) /
 // FindClosestPoliceRestartPoint (0x460A50) -> CGameLogic::RestorePlayerStuffDuringResurrection
-// (0x442060), and since every restart point San Andreas has is in San Andreas, dying in an
-// imported city still wakes you in an All Saints or a Los Santos police cell. See
-// docs/known-limitations.md for what giving a region its own restart points would cost.
+// (0x442060), and they are answered by RegionRestarts.cpp, which hooks those two searches and
+// gives them the region's own hospitals and police stations. The two are deliberately separate:
+// this one is about ground the collision forgot, that one about where the game thinks you belong.
 #include <plugin.h>
 #include <CWorld.h>
 #include <CTimer.h>
