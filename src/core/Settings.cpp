@@ -317,6 +317,8 @@ namespace Settings {
         world.regionPedDensity = 1.0f;
         world.regionPedRadius = 55.0f;
         world.regionPolice = true;
+        world.widenPathNodes = true;
+        world.pathNodeScale = 0.0f;        // derive from the world the regions actually make
 
         IniFile ini;
         if (!ini.Load(PLUGIN_PATH("MapExpander.ini"))) {
@@ -365,6 +367,8 @@ namespace Settings {
             world.regionPedDensity = w->GetFloat("RegionPedDensity", 1.0f);
             world.regionPedRadius = w->GetFloat("RegionPedRadius", 55.0f);
             world.regionPolice = w->GetBool("RegionPolice", true);
+            world.widenPathNodes = w->GetBool("WidenPathNodes", true);
+            world.pathNodeScale = w->GetFloat("PathNodeScale", 0.0f);
             for (const std::string& s : SplitPaths(w->GetString("DebugSkipModels", ""))) world.skipRenderModels.push_back(atoi(s.c_str()));
             if (world.compressedPositionScale <= 0.0f) world.compressedPositionScale = 4.0f;
             world.gxtFiles = SplitPaths(w->GetString("Gxt", ""));

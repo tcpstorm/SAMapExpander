@@ -20,6 +20,7 @@
 #include "Zones.h"
 #include "Interiors.h"
 #include "ModelLimits.h"
+#include "PathScale.h"
 #include "RegionWeapons.h"
 #include "RegionPickups.h"
 #include "RegionPeds.h"
@@ -36,6 +37,10 @@ public:
         Settings::Load();
 
         ModelLimits::Install();   // must move the streaming arrays before the game initialises them
+        // Before anything reads a path node, which is everything about traffic. It only rewrites
+        // operands, so it does not care what else has been installed - but it must be in place
+        // before CPathFind loads its first area.
+        PathScale::Install();
         Gxt::Install();
         if (!Settings::regions.empty()) {
             RadarOverlay::Install();

@@ -96,6 +96,8 @@ struct WorldSettings {
     float regionPedDensity;                // multiplier on how many of them, 1.0 being San Andreas' own
     float regionPedRadius;                 // world units around the player region peds live in
     bool regionPolice;                     // answer a wanted level in a region with cops on foot
+    bool widenPathNodes;                   // repoint the path coordinate scale so a node reaches a region
+    float pathNodeScale;                   // int16 units per world unit; <= 0 = derive from the world
     bool debug;                      // verbose log, F8 diagnostics, water render statistics
 };
 
