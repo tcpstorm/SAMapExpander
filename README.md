@@ -415,6 +415,14 @@ over San Andreas' own mesh ceiling, what a map placed far from San Andreas costs
 why the sector grid cannot be enlarged, and the rough edges left on the imported weapons. Each entry
 says how it was established and what a fix would take, so nobody rediscovers them the expensive way.
 
+[docs/streaming-distance.md](docs/streaming-distance.md) is the other one worth reading before
+touching the sector grid. The streamer's near-field radius used to follow the cell size, because
+`CStreaming::AddModelsToRequestList` converts its radius to a count of cells and that one
+conversion — a distance, not a position — was the single site the sector-grid scan could not see.
+Every improvement to the grid quietly shortened the streaming distance. `[World] StreamDistance`
+holds it at a fixed number of world units now; the file has the numbers, the audit of every other
+site where a distance and a position could have been confused, and what to check in game.
+
 ## Roadmap
 
 - **More than 26400 models.** `ModelIdLimit` frees DFF ids past 20000 and grows the atomic model-info
