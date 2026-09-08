@@ -365,14 +365,28 @@ bool RoomForACar() {
 }
 
 // Point the car at the far end of the road it is on, in its own lane, and let the game drive.
+//
+// The obvious thing here would be CCarCtrl::JoinCarWithRoadSystemGotoCoors, which is what San
+// Andreas itself calls when it puts a car on a goto-coordinates mission. It must not be used.
+// Reading its body (0x156A4A0, behind the HOODLUM jump at 0x42F870) it copies the destination into
+// the autopilot and then goes on to fill m_aPathFindNodesInfo - it builds a PATH NODE ROUTE to the
+// destination, and it does so with 0x497423FE, about a million, as the search radius. Out here
+// that would find San Andreas' nearest node thousands of units away and hand every car a route
+// leading off the edge of the city.
+//
+// So the destination is written directly and the route is emptied instead. MISSION_GOTOCOORDS_-
+// STRAIGHT is the variant that steers for the destination rather than following a route, which is
+// exactly what a car with no route needs; the node addresses are set to the game's own empty value
+// so that anything which does look at them sees "none" rather than a stale area index.
 void SetDestination(CVehicle* car, const RegionState& rs, const Driver& d) {
     CVector target = LanePoint(rs, d.to, NextNode(rs, d.from, d.to), d.lane);
-    car->m_autoPilot.m_vecDestinationCoors = target;
-    car->m_autoPilot.m_nCarMission = (eCarMission)kMissionGotoCoordsStraight;
-    // The road system join is what San Andreas itself calls when a car is put on a goto-coords
-    // mission, and it is the goto-coords variant specifically, so it wants a destination rather
-    // than a path node.
-    CCarCtrl::JoinCarWithRoadSystemGotoCoors(car, target, false, false);
+    CAutoPilot& pilot = car->m_autoPilot;
+    pilot.m_vecDestinationCoors = target;
+    pilot.m_nCarMission = (eCarMission)kMissionGotoCoordsStraight;
+    pilot.m_nPathFindNodesCount = 0;
+    pilot.m_currentAddress.Clear();
+    pilot.m_startingRouteNode.Clear();
+    pilot.field_8.Clear();
 }
 
 CVehicle* CreateCar(RegionState& rs, int from, int to, int lane, int model) {
