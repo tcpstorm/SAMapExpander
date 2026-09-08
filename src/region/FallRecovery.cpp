@@ -10,8 +10,8 @@
 //
 // Both walk their pool and pick out everything whose z has gone below the float at 0x859014,
 // which is -100. An ordinary ped or a car nobody cares about is deleted. The player, the player's
-// vehicle, and mission-owned entities are relocated instead, like this (read off 0x565D46 for the
-// ped and 0x565F63 for the car):
+// vehicle, and mission-owned entities are relocated instead, like this (read off the call at
+// 0x565D74 for the ped and 0x565F91 for the car, and the branches under each):
 //
 //     CPathFind::FindNodeClosestToCoors(pos, type, 999999.9f, ...)   ecx = ThePaths (0x96F050)
 //     if the search came back 0xFFFF:
