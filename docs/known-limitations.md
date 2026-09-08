@@ -63,13 +63,47 @@ touched: `CPathNode`'s x/y/z at +8/+0x0A/+0x0C are followed at +0x0E by a field 
 zero-extending access to those offsets exists anywhere in the path code. `CCarPathLink` keeps its
 lane counts in two nibbles at +0x0B and its direction in two signed bytes at +8/+9.
 
-**The other half — `RegionPaths` — is not done, and is off.** A region's roads are not in `CPathFind`
-until something merges them into the path areas its ground falls into, and **all 64 areas already
-hold nodes**, so there is no empty area to write into: it has to be a merge, with every node index
-remapped. None of that can be checked without running the game, and getting it wrong damages San
-Andreas' own traffic rather than only the imported city's. So `PathScale` refuses to patch anything
-unless `RegionPaths` is on — widening the scale alone would change how the game reads its own paths
-and buy nothing.
+**The other half — merging a region's roads into `CPathFind` — cannot be done for Vice City, and
+the reason is a second encoding limit nobody had found.**
+
+A vehicle link is addressed by a packed `uint16`: `area = id >> 10`, `index = id & 0x3FF`. Ten bits
+of index means **1024 `CCarPathLink` per area, hard**, and San Andreas already uses a good share of
+that. Measured against the real files:
+
+| | areas its ground clamps into | SA already uses | free of 1024 each | region needs |
+|---|---|---|---|---|
+| Vice City | 31, 39, 47, 55, 63 | 2451 | 2669 | **8404 — 3.1× the whole capacity** |
+| Liberty City | 57–62 | 2146 | 3998 | 3340 — fits, with 16% spare |
+
+There is no way round it by choosing different areas: everything past x 2250 clamps to column 7 by
+construction, and the alternative — redefining the 8×8 grid — would re-file San Andreas' own 64
+shipped node files against boundaries they were not authored for. So the merge could give Liberty
+City traffic and could not give Vice City any, which is not a feature worth the risk of rebuilding
+the game's path arrays.
+
+Other things the merge would have had to get right, recorded because they were expensive to find
+and any future attempt needs them:
+
+- **Node order is positional.** `m_anNumNodes = m_anNumVehicleNodes + m_anNumPedNodes`, with vehicle
+  nodes at `[0, numVehicleNodes)` and ped nodes after. Appending is not possible; the whole array
+  has to be rebuilt and every index remapped — a node's own id at `+0x14`, its first-link index at
+  `+0x10`, every `CNodeAddress` in the `+0xA44` array, and every `CCarPathLink+0x04`.
+- **`+0x17` is a connected-component id and `DoPathSearch` aborts if two nodes disagree on it.** The
+  flood fill that would recompute it is dead code in this build, so it comes only from the file.
+- **`+0x1A & 0x0F` is the traffic spawn rate**, rolled against `rand() & 0xF`. A region whose nodes
+  carry zero there would get one car in sixteen attempts even if everything else were right.
+- **The aux arrays carry a 192-entry dynamic-link reserve** (`+0x300`/`+0xC0` tails), handed out in
+  blocks of 12 by `AddDynamicLinkBetween2Nodes_For1Node`, whose free-block scan looks for `0xFFFF`.
+- **`LoadPathFindData` bounds-checks nothing** — it mallocs and freads exactly what the header says,
+  so a wrong count is heap corruption rather than a rejection.
+
+One useful negative: **borrowing a `CZoneInfo` slot costs nothing for car density.** `GetZoneInfo`
+searches only the info-zone array and falls back to zone 0 — the whole-map `SAN_AND` — so a player
+out at x 6000 gets the same popcycle row as one standing in the badlands. Creating type-2 info zones
+was never the blocker.
+
+So `RegionPaths` is off, and turning it on is refused: with no merge it would enable the scale and
+nothing else, changing how the game reads its own paths for nothing in return.
 
 **Where the maps join.** Vice City's ground clamps into areas 31, 39, 47, 55 and 63 (column 7,
 rows 3–7); Liberty City's into 57–62 (row 7, columns 1–6). They do not overlap each other. Driving

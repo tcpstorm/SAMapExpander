@@ -128,9 +128,23 @@ constexpr uintptr_t kLoadCallSites[] = {
 constexpr int kSaneNodeCount = 200000;
 
 // Whether anything actually consumes the widened scale yet. The site patching, the derivation and
-// the load-time rescale below are finished and measured; what is not written is the merge that
-// puts a region's own carriageways into CPathFind's area arrays, and without it the widening is
-// all cost and no benefit. Flip this with that work, not before.
+// the load-time rescale below are finished and measured. What does not exist is the merge that
+// would put a region's carriageways into CPathFind's area arrays - and it is not merely unwritten,
+// it is blocked by a second encoding limit that has nothing to do with the one above.
+//
+// A vehicle link is addressed by a packed uint16: area = id >> 10, index = id & 0x3FF. Ten bits of
+// index is 1024 CCarPathLink per area, hard, and San Andreas already uses a good part of it. Vice
+// City's ground clamps into areas 31, 39, 47, 55 and 63, where San Andreas has 2451 links and
+// leaves 2669 free of the 5120 those five areas can hold - and Vice City's roads need 8404, which
+// is three times the entire capacity. Liberty City would fit (3340 into 3998 free) but Vice City
+// cannot, and there is no choosing different areas: everything past x 2250 clamps to column 7 by
+// construction, and redefining the grid would re-file San Andreas' own 64 node files against
+// boundaries they were not authored for.
+//
+// So this stays false, and widening the scale stays off with it. docs/known-limitations.md carries
+// the rest of what a future attempt would need - the positional vehicle/ped split, the connected
+// component id at +0x17 that DoPathSearch refuses to cross, the spawn rate in the low nibble of
+// +0x1A, and the 192-entry dynamic link reserve in the tails of the auxiliary arrays.
 constexpr bool kRegionPathMergeExists = false;
 
 // Vanilla: 8 int16 units per world unit, so 32767/8 = +/-4095.875 in steps of 0.125.
