@@ -389,8 +389,34 @@ void SetDestination(CVehicle* car, const RegionState& rs, const Driver& d) {
     pilot.field_8.Clear();
 }
 
+// CCarCtrl::CreateCarForScript(modelId, posn, missionCleanup) and CPopulation::AddPedInCar, which
+// are called rather than patched - but checked the same way anything else here is checked, because
+// calling the wrong address is worse than not calling it.
+constexpr uintptr_t kCreateCarForScript = 0x431F80;
+constexpr uintptr_t kAddPedInCar = 0x613A00;
+const uint8_t kCreateCarPrologue[] = { 0x6A, 0xFF, 0x68, 0xBB, 0x74, 0x83, 0x00 };
+const uint8_t kAddPedInCarPrologue[] = { 0x83, 0xEC, 0x18, 0x53, 0x56, 0x57 };
+bool gCanDrive = false;
+
+bool VerifyCall(uintptr_t address, const uint8_t* expected, size_t length, const char* what) {
+    uint8_t here[8] = {};
+    memcpy(here, (const void*)address, length);
+    if (memcmp(here, expected, length) == 0) return true;
+    Log::Write("traffic: %s at 0x%X does not read as expected (%02X %02X %02X %02X...); no cars "
+               "will be put on the region's roads", what, (unsigned)address,
+               here[0], here[1], here[2], here[3]);
+    return false;
+}
+
 CVehicle* CreateCar(RegionState& rs, int from, int to, int lane, int model) {
     CVector at = LanePoint(rs, from, to, lane);
+    // CreateCarForScript does the whole placement properly - ground height, clearing space, adding
+    // to the world - and one thing that is wrong for us: at 0x43206C it calls
+    // CCarCtrl::JoinCarWithRoadSystem, the PATH-BASED join, which will attach the car to whichever
+    // San Andreas node the clamped area search happens to find. That is harmless and it is undone,
+    // because SetDestination below overwrites the mission and clears all three node addresses a
+    // moment later. It is written down because it looks like a loose end and is not one: doing the
+    // placement by hand instead would mean reproducing four calls this already gets right.
     CVehicle* car = CCarCtrl::CreateCarForScript(model, at, false);
     if (!car) return nullptr;
     // A random traffic car, not a mission one: this is what makes San Andreas remove it on its own
@@ -450,6 +476,7 @@ void ManageDrivers(RegionState& rs, const CVector& player) {
 }
 
 void SpawnSome(RegionState& rs, const CVector& player, int wanted) {
+    if (!gCanDrive) return;
     if ((int)rs.drivers.size() >= wanted) return;
     if (CTimer::m_snTimeInMilliseconds < gNextSpawn) return;
     gNextSpawn = CTimer::m_snTimeInMilliseconds + kSpawnIntervalMs;
@@ -542,8 +569,18 @@ void Install() {
         Regions().push_back(std::move(rs));
     }
     if (Regions().empty()) return;
-    Log::Write("traffic: %u region(s) will be driven on their own carriageways",
-               (unsigned)Regions().size());
+
+    gCanDrive = VerifyCall(kCreateCarForScript, kCreateCarPrologue, sizeof(kCreateCarPrologue),
+                           "CCarCtrl::CreateCarForScript") &&
+                VerifyCall(kAddPedInCar, kAddPedInCarPrologue, sizeof(kAddPedInCarPrologue),
+                           "CPopulation::AddPedInCar");
+    if (!gCanDrive) {
+        Regions().clear();
+        return;
+    }
+    Log::Write("traffic: %u region(s) will be driven on their own carriageways, up to %d car(s) "
+               "within %.0f units", (unsigned)Regions().size(), CarBudget(),
+               Settings::world.regionTrafficRadius);
 }
 
 }   // namespace RegionTraffic
