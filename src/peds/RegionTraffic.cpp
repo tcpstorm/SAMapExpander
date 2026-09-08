@@ -90,6 +90,10 @@ constexpr char kDrivingStyleStopForCars = 0;
 // terms. 2 is a mission car and would never be removed.
 constexpr unsigned char kVehicleCreatedByRandom = 1;
 
+// Ordinary town speed, and the crawl a car drops to while it is waiting its turn at a junction.
+constexpr char kCruiseSpeed = 18;
+constexpr char kYieldSpeed = 3;
+
 struct Node {
     float x, y, z;
     int firstLink, linkCount;
@@ -425,7 +429,7 @@ CVehicle* CreateCar(RegionState& rs, int from, int to, int lane, int model) {
     // Stop for other cars. Without traffic lights this is the whole of the give-way behaviour at a
     // junction, and it is the game's own - the same field its own traffic uses.
     car->m_autoPilot.m_nCarDrivingStyle = (eCarDrivingStyle)kDrivingStyleStopForCars;
-    car->m_autoPilot.m_nCruiseSpeed = 18;
+    car->m_autoPilot.m_nCruiseSpeed = kCruiseSpeed;
     // Face along the road rather than along whatever axis the constructor left it on.
     CVector b = NodeWorld(rs, to);
     car->SetHeading(atan2f(-(b.x - at.x), b.y - at.y));
@@ -433,6 +437,50 @@ CVehicle* CreateCar(RegionState& rs, int from, int to, int lane, int model) {
     rs.drivers.push_back(Driver{ CPools::GetVehicleRef(car), from, to, lane });
     SetDestination(car, rs, rs.drivers.back());
     return car;
+}
+
+// ------------------------------------------------------------------ giving way at a junction
+//
+// What San Andreas does for us, checked rather than assumed:
+//
+//   CCarCtrl::ScanForPedDanger is called from CVehicle::ProcessControl itself - three call sites -
+//   so a car brakes for pedestrians whatever mission it is on. That one is free.
+//
+//   CCarCtrl::FindMaximumSpeedForThisCarInTraffic, which is what slows a car for the car in front,
+//   has exactly two callers: SteerAICarWithPhysicsFollowPath and SlowCarOnRailsDownForTrafficAndLights.
+//   Both of those are the PATH-FOLLOWING steer. A car on a go-to-coordinates mission never reaches
+//   it, so setting DRIVINGSTYLE_STOP_FOR_CARS - which is still done, because it costs nothing and
+//   is right if the mission ever routes there - does not on its own make two of our cars give way
+//   to each other. They would still collide rather than pass through one another, since physics is
+//   physics, but arriving at a crossroads together they would simply crash.
+//
+// So the give-way is done here, and cheaply. A car approaching a node with three or more links is
+// approaching a junction; if another of ours is nearer to that same node than it is, it waits. The
+// rule is a total order - nearer wins, and the pool handle breaks a tie - so of any two cars
+// exactly one yields and they cannot deadlock by both giving way.
+constexpr int kJunctionLinks = 3;
+constexpr float kJunctionWatch = 26.0f;
+
+bool ShouldYield(const RegionState& rs, const Driver& me, const CVector& myPos) {
+    const Node& node = rs.nodes[me.to];
+    if (node.linkCount < kJunctionLinks) return false;
+    CVector at = NodeWorld(rs, me.to);
+    float mx = at.x - myPos.x, my = at.y - myPos.y;
+    float mine = mx * mx + my * my;
+    if (mine > kJunctionWatch * kJunctionWatch) return false;
+    for (const Driver& other : rs.drivers) {
+        if (other.ref == me.ref) continue;
+        if (other.to != me.to) continue;          // heading somewhere else entirely
+        CVehicle* v = CPools::GetVehicle(other.ref);
+        if (!v) continue;
+        CVector p = v->GetPosition();
+        float ox = at.x - p.x, oy = at.y - p.y;
+        float theirs = ox * ox + oy * oy;
+        if (theirs > kJunctionWatch * kJunctionWatch) continue;
+        if (theirs < mine) return true;
+        if (theirs == mine && other.ref < me.ref) return true;   // a tie, broken the same way twice
+    }
+    return false;
 }
 
 // ------------------------------------------------------------------ the frame
@@ -470,6 +518,9 @@ void ManageDrivers(RegionState& rs, const CVector& player) {
             if (d.lane >= rs.nodes[d.to].lanes) d.lane = rs.nodes[d.to].lanes - 1;
             SetDestination(car, rs, d);
         }
+        // Give way at a junction. Done every frame rather than once on arrival, because whether a
+        // car has to wait depends on where the other one has got to.
+        car->m_autoPilot.m_nCruiseSpeed = ShouldYield(rs, d, p) ? kYieldSpeed : kCruiseSpeed;
         rs.drivers[write++] = d;
     }
     rs.drivers.resize(write);
