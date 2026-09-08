@@ -216,10 +216,33 @@ with a log line saying so.
   *string* rather than an index, so adding a mission never renumbers an existing one. A CLEO-based
   implementation gets this for free, since CLEO keeps its own store.
 - **Garages** get the pickup treatment: allocate above the vanilla array, persist ours, leave the
-  vanilla block untouched. Note `CGarages::Save` also stores the cars inside a garage, which carry
-  model ids - so garages depend on the ledger in A being in place first.
+  vanilla block untouched. The block is not shaped like the pickup one, so the reasons are different
+  - see below.
 - **Version the sidecar** with the repo `VERSION` and a hash of the layout, so a future format change
   can migrate instead of breaking.
+
+#### How the garage block is actually shaped
+
+Read out of `CGarages::Save` (0x5D3160), because it is not the shape the pickup work would lead you
+to expect. It has two halves:
+
+- **A fixed half: 80 stored-car slots of 0x40 bytes**, written unconditionally. The loop walks
+  0x96ABD8 to 0x96ACD8 in 0x40 steps, each with an inner run of 20 at stride 0x100. These records
+  carry **model ids**, which is the index-drift hazard of section 2 landing squarely on the cars
+  people park in their own garages.
+- **A variable half: `NumGarages` (0x96C024) records of 0x50 bytes**, serialised from the garage
+  array at 0x96C048, stride 0xD8, through a helper at 0x5D3020.
+
+So the count travels **inside the save**, which cuts both ways. It means adding garages does not
+shift later blocks when that same save is read back, because the loader takes the count from the
+file - unlike a widened fixed array, this one is self-describing. But it also means a save written
+with imported garages, loaded by a configuration that does not have them, **restores that count into
+San Andreas' own array** and writes past its end if the count exceeds what the array holds. Establish
+that capacity before writing any garage code; the save block does not reveal it.
+
+That is a different failure from the pickup one and a worse one: not a misread, a memory overwrite in
+somebody else's game. It is the strongest argument in this document for keeping imported content out
+of vanilla arrays entirely.
 
 ---
 
