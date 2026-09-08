@@ -81,14 +81,62 @@ constexpr float kArrivedDistance = 8.0f;
 // most likely - and is given back to the game rather than dragged to a node it can no longer reach.
 constexpr float kStrayDistance = 45.0f;
 
-// eCarMission and eCarDrivingStyle, from plugin-sdk. GOTOCOORDS_STRAIGHT steers for the
-// destination on physics alone; STOP_FOR_CARS is what makes one car give way to another, which is
-// all the give-way behaviour a junction gets without traffic lights.
+// MISSION_GOTOCOORDS_STRAIGHT is the ONLY mission that drives a car towards an arbitrary
+// coordinate without touching the path graph. Its handler at 0x4373FB calls
+// CCarCtrl::SteerAICarWithPhysicsHeadingForTarget, which is clean of CPathFind three call levels
+// deep. Missions 1 CRUISE, 8 GOTOCOORDS and 12 GOTOCOORDS_ACCURATE all route through
+// SteerAICarWithPhysicsFollowPath and must never be set on one of these cars.
 constexpr char kMissionGotoCoordsStraight = 9;
-constexpr char kDrivingStyleStopForCars = 0;
-// eVehicleCreatedBy: 1 is a random traffic car, which is what makes the game cull it on its own
-// terms. 2 is a mission car and would never be removed.
-constexpr unsigned char kVehicleCreatedByRandom = 1;
+
+// Driving style 6, and it has to be exactly 6.
+//
+// CCarCtrl::FindAngleToWeaveThroughTraffic - the lateral avoidance that steers a car around
+// another car, a ped or an object - is called from HeadingForTarget only for styles 2, 5 and 6.
+// CCarCtrl::FindMaximumSpeedForThisCarInTraffic, the longitudinal one, early-outs for styles 2, 3
+// and 5. Six is the only value that satisfies both, so it is the only one that gets a car both
+// halves of the game's own avoidance. Style 0, which this used to set, gets neither.
+constexpr char kDrivingStyleWeave = 6;
+
+// eVehicleCreatedBy. PERMANENT, not RANDOM, and this matters to San Andreas rather than to us.
+//
+// CCarCtrl::GenerateOneRandomCar gates on NumRandomCars + NumLawEnforcerCars + NumMissionCars +
+// the two emergency counters against MaxNumberOfCars, which is 12 - and CCarCtrl::GenerateRandomCars
+// bails outright once NumRandomCars reaches 45. Thirty of our cars marked RANDOM would therefore
+// stop San Andreas generating any civilian traffic of its own, anywhere, for as long as they exist.
+// That is a regression of the game's own traffic, which is the one thing this work must not cause.
+//
+// NumPermanentCars is in neither sum and is read by nothing. The price is that
+// CVehicle::CanBeDeleted returns false for it, so San Andreas will not cull these for us - which is
+// correct, because we cull them ourselves and know which ones are ours.
+constexpr unsigned char kVehicleCreatedByPermanent = 4;
+
+// CVehicle::SetVehicleCreatedBy. Never poke m_nCreatedBy directly: this decrements the old
+// counter and increments the new one, and the constructor has already counted the car once.
+constexpr uintptr_t kSetVehicleCreatedBy = 0x6D5D70;
+// CCarCtrl::FindMaximumSpeedForThisCarInTraffic. cdecl, one argument, verified free of CPathFind,
+// and unreachable from our mission - so it is called directly to get back the one piece of
+// avoidance the mission does not provide: not driving into the back of the car in front.
+constexpr uintptr_t kFindMaxSpeedInTraffic = 0x434400;
+
+// eEntityStatus STATUS_PHYSICS. CAutomobile::ProcessAI dispatches on this, and only 3 (and 12)
+// reach AI::UpdateCarAI followed by CCarCtrl::SteerAICarWithPhysics. STATUS_SIMPLE runs
+// UpdateCarOnRails instead, which is entirely path-driven and useless here.
+constexpr unsigned char kStatusPhysics = 3;
+
+// Two bytes in CAutoPilot that decide whether the game quietly puts the car back on the path graph.
+//
+// +0x3DD is m_nStraightLineDistance, and AI::UpdateCarAI checks the distance to the destination
+// against it plus five: further than that and, one frame in eight, it runs a real
+// CPathFind::DoPathSearch and may flip the mission to the path-following 8. The default is 20,
+// which our node spacing regularly exceeds, so this would have happened constantly. 255 puts it
+// past any leg we hand out.
+//
+// +0x3DC bit 0 arms a re-join branch at the top of SteerAICarWithPhysics that calls
+// AreNodesLoadedForArea and then JoinCarWithRoadAccordingToMission. It is set by
+// StopCarIfNodesAreInvalid, which only a path mission reaches - but it is one byte to be certain.
+constexpr uintptr_t kAutoPilotStraightLineDistance = 0x3DD;
+constexpr uintptr_t kAutoPilotRejoinFlags = 0x3DC;
+constexpr unsigned char kStraightLineForever = 255;
 
 // Ordinary town speed, and the crawl a car drops to while it is waiting its turn at a junction.
 constexpr char kCruiseSpeed = 18;
@@ -353,12 +401,29 @@ const int kPlaceholderCars[] = {
     527,  // Cadrona
 };
 
+// Is this vehicle model actually in memory?
+//
+// Read straight out of CStreaming::ms_aInfoForModel rather than through a helper, because the
+// helper does not exist: in 1.0 US the test is inlined at over a hundred sites as
+// `cmp byte ptr [m*5*4 + 0x8E4CD0], 1`. Getting this wrong is not a graceful failure - the vehicle
+// constructor reaches CVehicleModelInfo::CreateInstance, which dereferences m_pVehicleStruct
+// without checking it, and faults at 0x4C9691 reading 0x30C.
+constexpr uintptr_t kStreamingLoadState = 0x8E4CD0;   // ms_aInfoForModel[0].m_nLoadState
+constexpr unsigned kStreamingInfoStride = 0x14;
+constexpr unsigned char kLoadStateLoaded = 1;
+
+bool ModelIsLoaded(int model) {
+    if (model < 0 || model > 30000) return false;
+    return *(const unsigned char*)(kStreamingLoadState + (uintptr_t)model * kStreamingInfoStride)
+           == kLoadStateLoaded;
+}
+
 int ChooseLoadedCar() {
     const int count = (int)(sizeof(kPlaceholderCars) / sizeof(int));
     int start = rand() % count;
     for (int i = 0; i < count; i++) {
         int model = kPlaceholderCars[(start + i) % count];
-        if (CStreaming::HasModelLoaded(model)) return model;
+        if (ModelIsLoaded(model)) return model;
     }
     return -1;   // nothing of ours is in memory; wait rather than fetch and stall the streamer
 }
@@ -391,6 +456,17 @@ void SetDestination(CVehicle* car, const RegionState& rs, const Driver& d) {
     pilot.m_currentAddress.Clear();
     pilot.m_startingRouteNode.Clear();
     pilot.field_8.Clear();
+    // The three packed link ids, whose empty value is 0xFFFF. They are a bitfield pair in
+    // plugin-sdk with no setter, so they are written as the words they are - which is what the
+    // game's own JoinCarWithRoadSystem does to them too.
+    *(uint16_t*)((char*)car + 0x3A4) = 0xFFFF;
+    *(uint16_t*)((char*)car + 0x3A6) = 0xFFFF;
+    *(uint16_t*)((char*)car + 0x3A8) = 0xFFFF;
+    // Keep the game from quietly putting the car back on the path graph behind our backs. Both of
+    // these are re-applied every tick, not just here, because both are things the game's own AI
+    // will set again given the chance.
+    *((unsigned char*)car + kAutoPilotStraightLineDistance) = kStraightLineForever;
+    *((unsigned char*)car + kAutoPilotRejoinFlags) &= (unsigned char)~1u;
 }
 
 // CCarCtrl::CreateCarForScript(modelId, posn, missionCleanup) and CPopulation::AddPedInCar, which
@@ -423,12 +499,12 @@ CVehicle* CreateCar(RegionState& rs, int from, int to, int lane, int model) {
     // placement by hand instead would mean reproducing four calls this already gets right.
     CVehicle* car = CCarCtrl::CreateCarForScript(model, at, false);
     if (!car) return nullptr;
-    // A random traffic car, not a mission one: this is what makes San Andreas remove it on its own
-    // terms rather than keeping it for ever.
-    car->m_nCreatedBy = kVehicleCreatedByRandom;
-    // Stop for other cars. Without traffic lights this is the whole of the give-way behaviour at a
-    // junction, and it is the game's own - the same field its own traffic uses.
-    car->m_autoPilot.m_nCarDrivingStyle = (eCarDrivingStyle)kDrivingStyleStopForCars;
+    // Through the game's own setter, which moves the car between the counters CCarCtrl budgets
+    // against. The constructor has already counted it once as a mission car.
+    reinterpret_cast<void(__thiscall*)(void*, unsigned char)>(kSetVehicleCreatedBy)(
+        car, kVehicleCreatedByPermanent);
+    car->m_nStatus = (eEntityStatus)kStatusPhysics;
+    car->m_autoPilot.m_nCarDrivingStyle = (eCarDrivingStyle)kDrivingStyleWeave;
     car->m_autoPilot.m_nCruiseSpeed = kCruiseSpeed;
     // Face along the road rather than along whatever axis the constructor left it on.
     CVector b = NodeWorld(rs, to);
@@ -531,9 +607,25 @@ void ManageDrivers(RegionState& rs, const CVector& player) {
             if (d.lane >= rs.nodes[d.to].lanes) d.lane = rs.nodes[d.to].lanes - 1;
             SetDestination(car, rs, d);
         }
-        // Give way at a junction. Done every frame rather than once on arrival, because whether a
-        // car has to wait depends on where the other one has got to.
-        car->m_autoPilot.m_nCruiseSpeed = ShouldYield(rs, d, p) ? kYieldSpeed : kCruiseSpeed;
+        // Hold the mission every frame, because the game's own AI will take it off us otherwise.
+        // AI::UpdateCarAI sets m_nCarMission to 0 the moment a car gets within three metres of its
+        // destination - which brakes it to a stop - and, for a destination further away than
+        // m_nStraightLineDistance + 5, runs a path search one frame in eight that can flip it to
+        // the path-following mission 8. Re-stamping all three costs nothing and settles both.
+        CAutoPilot& pilot = car->m_autoPilot;
+        pilot.m_nCarMission = (eCarMission)kMissionGotoCoordsStraight;
+        *((unsigned char*)car + kAutoPilotStraightLineDistance) = kStraightLineForever;
+        *((unsigned char*)car + kAutoPilotRejoinFlags) &= (unsigned char)~1u;
+
+        // The one piece of avoidance the mission does not give us. Lateral weaving comes free from
+        // driving style 6, but nothing on this mission slows a car for the one in front:
+        // FindMaximumSpeedForThisCarInTraffic is reached only from the path-following steer. It is
+        // cdecl, takes only the vehicle and is free of CPathFind, so it is called here instead and
+        // its answer used as a ceiling on the cruise speed.
+        char speed = ShouldYield(rs, d, p) ? kYieldSpeed : kCruiseSpeed;
+        float clear = reinterpret_cast<float(__cdecl*)(void*)>(kFindMaxSpeedInTraffic)(car);
+        if (clear >= 0.0f && clear < (float)speed) speed = (char)clear;
+        pilot.m_nCruiseSpeed = speed;
         rs.drivers[write++] = d;
     }
     rs.drivers.resize(write);
