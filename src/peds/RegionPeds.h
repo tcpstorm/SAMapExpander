@@ -22,4 +22,9 @@ namespace RegionPeds {
 
     // How many peds this module currently has walking, for the log and the F8 read-out.
     int Count();
+
+    // Whether the ped pool has room. CPopulation::AddPed cannot report a full pool - when the
+    // allocation fails it carries on with a null pointer and faults - so everything that calls it
+    // has to ask first. The police module calls it too.
+    bool SafeToAddPed();
 }

@@ -98,17 +98,15 @@ CWanted* PlayerWanted() {
     return player->m_pPlayerData->m_pWanted;
 }
 
-// How many cops on foot a wanted level should have chasing. CWanted keeps its own ceiling and the
-// game raises it with the stars, so it is asked rather than second-guessed; the fallback is the
-// shape of San Andreas' own table for the case where it reads as nothing.
+// How many cops on foot a wanted level should have chasing. This is not invented: CWanted keeps
+// its own ceiling and CWanted::UpdateWantedLevel raises it with the stars - 1, 3, 4, 6, 8, 10 - so
+// the game is asked rather than second-guessed. In San Andreas some of those would arrive by car;
+// here they all arrive on foot, because a car cannot be put on a road a region has no path nodes
+// for. One is the floor, so a single star still brings somebody.
 int CopsWanted(const CWanted* wanted) {
-    static const int kByStars[] = { 0, 1, 2, 3, 5, 6, 8 };
-    int stars = (int)wanted->m_nWantedLevel;
-    if (stars < 0) stars = 0;
-    if (stars > 6) stars = 6;
-    int ceiling = (int)wanted->m_nMaxCopsInPursuit;
-    int want = kByStars[stars];
-    if (ceiling > 0 && want > ceiling) want = ceiling;
+    int want = (int)wanted->m_nMaxCopsInPursuit;
+    if (want < 1) want = 1;
+    if (want > 10) want = 10;
     return want;
 }
 
@@ -127,11 +125,15 @@ bool SendAfterPlayer(CPed* cop, CPed* player) {
     if (!gCanTask || !cop || !cop->m_pIntelligence) return false;
     void* memory = reinterpret_cast<TaskNewFn>(kTaskNew)(kKillPedOnFootSize);
     if (!memory) return false;
+    memset(memory, 0, kKillPedOnFootSize);   // the task pool hands back memory another task used
     reinterpret_cast<KillPedOnFootCtorFn>(kKillPedOnFootCtor)(memory, player, kNoTimeLimit,
                                                               0, 0, 0, 2);
     *((uint8_t*)memory + 0xC) |= kCopTaskFlags;
-    cop->m_pIntelligence->m_TaskMgr.SetTask(reinterpret_cast<CTask*>(memory), kTaskPrimary, false);
-    return true;
+    CTaskManager& tasks = cop->m_pIntelligence->m_TaskMgr;
+    // SetTask owns the task from here: it deletes what was in the slot, and can delete this one
+    // too. The pointer is not touched again; the slot says whether it stuck.
+    tasks.SetTask(reinterpret_cast<CTask*>(memory), kTaskPrimary, false);
+    return tasks.m_aPrimaryTasks[kTaskPrimary] != nullptr;
 }
 
 int LiveCops(const CVector& player) {
@@ -181,6 +183,8 @@ void Tick(const CVector& playerPosition) {
     CVector at;
     if (!RegionPeds::FindSpawnPoint(playerPosition, kMinCopDistance, kMaxCopDistance, true, at))
         return;
+    // AddPed faults rather than returning nothing when the ped pool is full; ask first.
+    if (!RegionPeds::SafeToAddPed()) return;
 
     CPed* cop = CPopulation::AddPed(PED_TYPE_COP, (unsigned)model, at, false);
     if (!cop) return;

@@ -14,6 +14,8 @@
 #include "DebugKeys.h"
 #include "Settings.h"
 #include "Zones.h"
+#include "RegionPeds.h"
+#include "RegionPolice.h"
 #include "WeaponTypes.h"
 #include "RegionWeapons.h"
 #include "Interiors.h"
@@ -125,6 +127,11 @@ static void OnFrame() {
     Interiors::Describe(interior);
     Log::Write("    interior: %s", interior.c_str());
     Zones::LogPlayerZone(pos.x, pos.y, pos.z);
+    // The population, which is the one thing that cannot be checked by looking at the log on
+    // start-up: it says nothing until somebody is actually standing there.
+    Log::Write("    peds: %d walking on the region's own graph, %d police out; the player is %s a "
+               "region's pedestrian graph", RegionPeds::Count(), RegionPolice::Count(),
+               RegionPeds::PlayerOverGraph() ? "over" : "not over");
 }
 
 static void __cdecl Hooked_TimerUpdate() {

@@ -420,13 +420,20 @@ bool GiveWalkTask(CPed* ped, const CVector& target) {
     if (!gCanWalk || !ped || !ped->m_pIntelligence) return false;
     void* memory = reinterpret_cast<TaskNewFn>(kTaskNew)(kGoToPointSize);
     if (!memory) return false;
+    // The constructor compares the target it is given against the object's own target and radii
+    // before deciding to copy them, and the memory it is handed comes out of a pool that has held
+    // other tasks. Wiping it first makes that comparison meaningless rather than a coin toss.
+    memset(memory, 0, kGoToPointSize);
     CVector goal = target;
     reinterpret_cast<GoToPointCtorFn>(kGoToPointCtor)(memory, kMoveStateWalk, &goal,
                                                       kArriveRadius, kSlowDownDistance,
                                                       false, false);
-    ped->m_pIntelligence->m_TaskMgr.SetTask(reinterpret_cast<CTask*>(memory),
-                                            kTaskPrimaryDefault, false);
-    return true;
+    CTaskManager& tasks = ped->m_pIntelligence->m_TaskMgr;
+    tasks.SetTask(reinterpret_cast<CTask*>(memory), kTaskPrimaryDefault, false);
+    // SetTask owns the task from that moment - it deletes whatever was in the slot, and it deletes
+    // the new one too if the chain it builds bottoms out in a complex task with no subtask. So the
+    // pointer is never touched again; the slot is read back instead to say whether it stuck.
+    return tasks.m_aPrimaryTasks[kTaskPrimaryDefault] != nullptr;
 }
 
 int NextNode(const RegionState& rs, int node) {
@@ -455,6 +462,31 @@ bool GoodSpawnPoint(const RegionState& rs, const CVector& world, const CVector& 
     return true;
 }
 
+// CPopulation::AddPed cannot fail politely, and it is worth knowing exactly how it fails so that
+// neither way is ever reached.
+//
+// A ped type it has no case for - 21 is one, and so is anything outside 4..31 - falls through its
+// jump table into a branch that reads a pointer out of an uninitialised local and dereferences it.
+// The type comes from CPedModelInfo, which for San Andreas' own peds is always one of the good
+// ones, but a region's ped table can name any model at all and a stray one must not take the game
+// down. Anything unrecognised becomes an ordinary civilian.
+int SafePedType(int pedType) {
+    switch (pedType) {
+        case 4: case 5: case 6:                                    // civilian male, female, cop
+        case 7: case 8: case 9: case 10: case 11: case 12:         // the gangs
+        case 13: case 14: case 15: case 16:
+        case 17: case 18: case 19: case 20: case 22:               // dealer, medic, fireman,
+            return pedType;                                        // criminal, prostitute
+        default:
+            return 4;                                              // PED_TYPE_CIVMALE
+    }
+}
+
+// The other way AddPed fails: when CPed::operator new returns nothing it carries on with a null
+// and dereferences it, so it cannot report a full pool - it faults. The pool is checked here
+// instead, keeping back the same eight slots the game's own RemovePedsIfThePoolGetsFull works to.
+constexpr int kPedPoolReserve = 8;
+
 // The ground under a node. The donor wrote its node heights for its own collision, and this map's
 // collision is the donor's carried across, so they usually agree - but a node on a bridge deck the
 // converter placed a little differently would leave somebody hanging in the air or buried, and the
@@ -469,7 +501,8 @@ CVector SettleOnGround(const CVector& at) {
 CPed* CreateWalker(RegionState& rs, int node, int modelId, bool walk) {
     CBaseModelInfo* info = CModelInfo::GetModelInfo(modelId);
     if (!info) return nullptr;
-    int pedType = (int)reinterpret_cast<CPedModelInfo*>(info)->m_nPedType;
+    if (!RegionPeds::SafeToAddPed()) return nullptr;
+    int pedType = SafePedType((int)reinterpret_cast<CPedModelInfo*>(info)->m_nPedType);
     CVector at = SettleOnGround(NodeWorld(rs, node));
     CPed* ped = CPopulation::AddPed((ePedType)pedType, (unsigned)modelId, at, false);
     if (!ped) return nullptr;
@@ -612,6 +645,11 @@ int Count() {
     int n = 0;
     for (const RegionState& rs : Regions()) n += (int)rs.walkers.size();
     return n;
+}
+
+bool SafeToAddPed() {
+    auto* pool = CPools::ms_pPedPool;
+    return pool && (int)pool->GetNoOfFreeSpaces() > kPedPoolReserve;
 }
 
 void Install() {
