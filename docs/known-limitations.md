@@ -105,6 +105,39 @@ was never the blocker.
 So `RegionPaths` is off, and turning it on is refused: with no merge it would enable the scale and
 nothing else, changing how the game reads its own paths for nothing in return.
 
+### There is one mod that does lift both limits — and what it would cost
+
+fastman92's limit adjuster ships an extended path format, and **it repoints San Andreas' own code
+rather than only widening a file**: verified from its source (`MapLimits.cpp`,
+`PatchPaths_GTA_SA_PC_1_0_HOODLUM`), the SA path patch alone is 609 pointer patches, 501 dword, 531
+byte, 519 code-mover fixups and 224 rewrites of `movsx word` into `mov dword`, including all 158
+`and eax, 3FFh` sites and all 175 `shr reg, 0Ah` sites. A navi link becomes a 32-bit
+`{uint16 area, uint16 index}`, `CPathNode` becomes 40/42/44 bytes with int32 coordinates, and a
+single area then holds 65535 links. **Vice City's 8404 links would fit in one.** This is how GTA
+Underground carries five cities.
+
+Two things make it more expensive than it first looks:
+
+- **The format is per-file but the grid is global.** A vanilla `nodes<N>.dat` is converted in memory
+  as it loads, so San Andreas' own 64 files need not be touched — *as long as the grid is left
+  alone*. But the grid is `pathsMapSize / 750` per side and defaults to 6000, i.e. the same 8×8 over
+  ±3000. Reaching x 6000 needs `Paths map size = 24000`, which makes it 32×32 — and that renumbers
+  every area, so **San Andreas' own 64 files would have to be regenerated into the new 1024-slot
+  grid**. FLA has a remapper for exactly this and it is compiled out. It also requires
+  `[ID LIMITS] Apply ID limit patch = 1`.
+- **It is a separate install with required config editing.** `Apply paths limit patch` ships
+  commented out; the repository has no LICENCE file and says the source is "for viewing purposes",
+  so it cannot be redistributed with this plugin. It is SA 1.0 US HOODLUM only.
+
+**This plugin therefore stands aside from it rather than depending on it.** `src/core/Fla.cpp`
+checks the four instructions that state the path encoding — the navi link's area shift and index
+mask and the two struct strides — and anything other than San Andreas' own values means the path
+system belongs to somebody else. That check is *not* redundant with `PathScale`'s own site
+verification: FLA rewrites the 16-bit loads feeding those multiplies rather than the multiplies, and
+keeps the 0.125 at `0x858C48` because its extended coordinates are int32 at the same ÷8 scale, so
+`PathScale`'s 288 sites still verify clean under it and it would have widened a scale that must be
+left alone.
+
 **Where the maps join.** Vice City's ground clamps into areas 31, 39, 47, 55 and 63 (column 7,
 rows 3–7); Liberty City's into 57–62 (row 7, columns 1–6). They do not overlap each other. Driving
 east out of San Andreas into Vice City stays in the *same* path area the whole way, so nothing
