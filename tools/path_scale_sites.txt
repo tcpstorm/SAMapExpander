@@ -1,0 +1,347 @@
+Every instruction in gta_sa.exe (1.0 US HOODLUM) that decodes a compressed PATH position through
+the shared 0.125 at 0x858C48, written by tools/scan_path_scale_sites.py. Read that script's
+docstring first; it says what the classes mean and why a pattern match alone is not enough.
+
+This is a measurement, not a patch list in use. Nothing in the plugin repoints any of these yet.
+It exists because "widening the path encoding is too risky to attempt blind" was the right call
+without it and is a different question with it: every one of the 281 confident sites is the same
+six bytes, D8 0D 48 8C 85 00, an fmul with its disp32 at instruction offset +2, so each change is
+mechanically "expect those bytes at A, write the new address into the last four" and every one is
+checkable against the file before and after with no game running.
+
+What a widening would have to change, all together or not at all:
+    187  CPathNode coordinate decodes   (listed first below)
+     94  CCarPathLink coordinate decodes (listed second - the OTHER compressed path struct, 14
+         bytes with its coordinates at +0 and +2; miss these and traffic drives to the wrong
+         places while pedestrian routing looks correct)
+      3  encode sites, all in CPathFind::CompleteNewInterior, through 8.0 at 0x859000
+      1  load-time rescale of San Andreas' own shipped nodes. CPathFind::LoadPathFindData copies
+         the 28-byte records out of nodes<N>.dat verbatim with no transform, so one hook after
+         the read - the plain call at 0x452F75, not the HOODLUM-stolen entry at 0x4529F0 - can
+         rescale every one of them without editing a data file
+      4  region constants at 0x859A8C/90/94/98 (1/750, -3000, 3000, 750), or nodes are filed into
+         the wrong one of the 8x8 areas
+
+And what it would still not settle: 3 sites are honestly unclear (their feeding store is in
+another basic block), and the A2 evidence is inference from struct-offset sets and function
+behaviour rather than a proven pointer chain. A missed decode reads a widened node through the old
+0.125 and silently produces a position four times too small. Only running the game answers that.
+
+CPathNode coordinate decode sites (fmul dword ptr [0x858C48]) - 187
+addr      off  function                                             evidence
+00420A29  +C    CPathNode::GetPosition+0x19                          hand-adjudicated: CPathNode::GetPosition, 109 callers all pass m_pPathNodes elements
+00420A3B  +A    CPathNode::GetPosition+0x2B                          hand-adjudicated: CPathNode::GetPosition
+00420A45  +8    CPathNode::GetPosition+0x35                          hand-adjudicated: CPathNode::GetPosition
+0042465A  +8    CCarCtrl::GenerateCarCreationCoors2+0x44A            node+0x8; base unresolved, sibling set ['0x8', '0xa'] consistent, function touches path node array
+00424671  +A    CCarCtrl::GenerateCarCreationCoors2+0x461            node+0xa; base unresolved, sibling set ['0x8', '0xa'] consistent, function touches path node array
+004246BA  +8    CCarCtrl::GenerateCarCreationCoors2+0x4AA            node+0x8; base unresolved, sibling set ['0x8', '0xa'] consistent, function touches path node array
+004246C8  +A    CCarCtrl::GenerateCarCreationCoors2+0x4B8            node+0xa; base unresolved, sibling set ['0x8', '0xa'] consistent, function touches path node array
+0042478B  +C    CCarCtrl::GenerateCarCreationCoors2+0x57B            node+0xc; base unresolved, sibling set ['0xc'] consistent, function touches path node array
+004247BE  +C    CCarCtrl::GenerateCarCreationCoors2+0x5AE            node+0xc; base unresolved, sibling set ['0xc'] consistent, function touches path node array
+004249C8  +8    CCarCtrl::GenerateCarCreationCoors2+0x7B8            node+0x8; base unresolved, sibling set ['0x8', '0xa', '0xc'] consistent, function touches path node array
+004249DA  +A    CCarCtrl::GenerateCarCreationCoors2+0x7CA            node+0xa; base unresolved, sibling set ['0x8', '0xa', '0xc'] consistent, function touches path node array
+004249EC  +8    CCarCtrl::GenerateCarCreationCoors2+0x7DC            node+0x8; base unresolved, sibling set ['0x8', '0xa', '0xc'] consistent, function touches path node array
+004249FA  +A    CCarCtrl::GenerateCarCreationCoors2+0x7EA            node+0xa; base unresolved, sibling set ['0x8', '0xa', '0xc'] consistent, function touches path node array
+00424A25  +C    CCarCtrl::GenerateCarCreationCoors2+0x815            node+0xc; base unresolved, sibling set ['0x8', '0xa', '0xc'] consistent, function touches path node array
+00424A2F  +C    CCarCtrl::GenerateCarCreationCoors2+0x81F            node+0xc; base unresolved, sibling set ['0x8', '0xa', '0xc'] consistent, function touches path node array
+00424AAE  +8    CCarCtrl::GenerateCarCreationCoors2+0x89E            node+0x8; base unresolved, sibling set ['0x8', '0xa'] consistent, function touches path node array
+00424ACB  +A    CCarCtrl::GenerateCarCreationCoors2+0x8BB            node+0xa; base unresolved, sibling set ['0x8', '0xa'] consistent, function touches path node array
+00424AE1  +8    CCarCtrl::GenerateCarCreationCoors2+0x8D1            node+0x8; base unresolved, sibling set ['0x8', '0xa'] consistent, function touches path node array
+00424AEB  +A    CCarCtrl::GenerateCarCreationCoors2+0x8DB            node+0xa; base unresolved, sibling set ['0x8', '0xa'] consistent, function touches path node array
+00426FAE  +8    CCarCtrl::PickNextNodeToChaseCar+0xBE                node+0x8; base from path node array (arr=None objoff=None add=None stride=28)
+00426FD7  +A    CCarCtrl::PickNextNodeToChaseCar+0xE7                node+0xa; base from path node array (arr=None objoff=None add=None stride=28)
+0042702C  +C    CCarCtrl::PickNextNodeToChaseCar+0x13C               node+0xc; base from path node array (arr=None objoff=None add=None stride=28)
+00427263  +A    CCarCtrl::PickNextNodeToChaseCar+0x373               node+0xa; base from path node array (arr=None objoff=None add=None stride=28)
+00427286  +8    CCarCtrl::PickNextNodeToChaseCar+0x396               node+0x8; base from path node array (arr=None objoff=None add=None stride=28)
+00427294  +8    CCarCtrl::PickNextNodeToChaseCar+0x3A4               node+0x8; base unresolved, sibling set ['0x8', '0xa'] consistent, function touches path node array
+0042B64E  +C    CCarCtrl::FindLinksToGoWithTheseNodes+0x1DE          node+0xc; base unresolved, sibling set ['0x8', '0xa', '0xc'] consistent, function touches path node array
+0042B663  +A    CCarCtrl::FindLinksToGoWithTheseNodes+0x1F3          node+0xa; base unresolved, sibling set ['0x8', '0xa', '0xc'] consistent, function touches path node array
+0042B670  +8    CCarCtrl::FindLinksToGoWithTheseNodes+0x200          node+0x8; base unresolved, sibling set ['0x8', '0xa', '0xc'] consistent, function touches path node array
+0042B69C  +C    CCarCtrl::FindLinksToGoWithTheseNodes+0x22C          node+0xc; base unresolved, sibling set ['0x8', '0xa', '0xc'] consistent, function touches path node array
+0042B6AF  +A    CCarCtrl::FindLinksToGoWithTheseNodes+0x23F          node+0xa; base unresolved, sibling set ['0x8', '0xa', '0xc'] consistent, function touches path node array
+0042B6B9  +8    CCarCtrl::FindLinksToGoWithTheseNodes+0x249          node+0x8; base unresolved, sibling set ['0x8', '0xa', '0xc'] consistent, function touches path node array
+0042BA59  +C    CCarCtrl::GenerateOneEmergencyServicesCar+0x289      node+0xc; base from path node array (arr=0x96f854 objoff=None add=None stride=28)
+0042BA6C  +C    CCarCtrl::GenerateOneEmergencyServicesCar+0x29C      node+0xc; base from path node array (arr=0x96f854 objoff=None add=None stride=28)
+0042BED8  +8    CCarCtrl::FindNodesThisCarIsNearestTo+0x1B8          node+0x8; base unresolved, sibling set ['0x8', '0xa', '0xc'] consistent, function touches path node array
+0042BEEA  +A    CCarCtrl::FindNodesThisCarIsNearestTo+0x1CA          node+0xa; base unresolved, sibling set ['0x8', '0xa', '0xc'] consistent, function touches path node array
+0042BEF4  +C    CCarCtrl::FindNodesThisCarIsNearestTo+0x1D4          node+0xc; base unresolved, sibling set ['0x8', '0xa', '0xc'] consistent, function touches path node array
+0042BFA2  +8    CCarCtrl::FindNodesThisCarIsNearestTo+0x282          node+0x8; base unresolved, sibling set ['0x10', '0x8', '0xa', '0xc'] consistent, function touches path node array
+0042BFBC  +A    CCarCtrl::FindNodesThisCarIsNearestTo+0x29C          node+0xa; base unresolved, sibling set ['0x10', '0x8', '0xa', '0xc'] consistent, function touches path node array
+0042BFCA  +C    CCarCtrl::FindNodesThisCarIsNearestTo+0x2AA          node+0xc; base unresolved, sibling set ['0x10', '0x8', '0xa', '0xc'] consistent, function touches path node array
+0042BFEC  +C    CCarCtrl::FindNodesThisCarIsNearestTo+0x2CC          node+0xc; base unresolved, sibling set ['0x8', '0xa', '0xc'] consistent, function touches path node array
+0042BFFA  +A    CCarCtrl::FindNodesThisCarIsNearestTo+0x2DA          node+0xa; base unresolved, sibling set ['0x8', '0xa', '0xc'] consistent, function touches path node array
+0042C004  +8    CCarCtrl::FindNodesThisCarIsNearestTo+0x2E4          node+0x8; base unresolved, sibling set ['0x8', '0xa', '0xc'] consistent, function touches path node array
+0042C095  +8    CCarCtrl::FindNodesThisCarIsNearestTo+0x375          node+0x8; base unresolved, sibling set ['0x8', '0xa', '0xc'] consistent, function touches path node array
+0042C0A7  +A    CCarCtrl::FindNodesThisCarIsNearestTo+0x387          node+0xa; base unresolved, sibling set ['0x8', '0xa', '0xc'] consistent, function touches path node array
+0042C0C0  +C    CCarCtrl::FindNodesThisCarIsNearestTo+0x3A0          node+0xc; base unresolved, sibling set ['0x8', '0xa', '0xc'] consistent, function touches path node array
+0042C0D5  +8    CCarCtrl::FindNodesThisCarIsNearestTo+0x3B5          node+0x8; base unresolved, sibling set ['0x8', '0xa', '0xc'] consistent, function touches path node array
+0042C0E3  +A    CCarCtrl::FindNodesThisCarIsNearestTo+0x3C3          node+0xa; base unresolved, sibling set ['0x8', '0xa', '0xc'] consistent, function touches path node array
+0042C0F4  +C    CCarCtrl::FindNodesThisCarIsNearestTo+0x3D4          node+0xc; base unresolved, sibling set ['0x8', '0xa', '0xc'] consistent, function touches path node array
+0042E811  +8    CCarCtrl::PickNextNodeRandomly+0x991                 node+0x8; base from path node array (arr=0x96f854 objoff=None add=None stride=28)
+0042E83A  +8    CCarCtrl::PickNextNodeRandomly+0x9BA                 node+0x8; base from path node array (arr=0x96f854 objoff=None add=None stride=28)
+0042E863  +8    CCarCtrl::PickNextNodeRandomly+0x9E3                 node+0x8; base from path node array (arr=0x96f854 objoff=None add=None stride=28)
+0042E88C  +8    CCarCtrl::PickNextNodeRandomly+0xA0C                 node+0x8; base from path node array (arr=0x96f854 objoff=None add=None stride=28)
+0042E8B0  +A    CCarCtrl::PickNextNodeRandomly+0xA30                 node+0xa; base from path node array (arr=0x96f854 objoff=None add=None stride=28)
+0042E8D2  +A    CCarCtrl::PickNextNodeRandomly+0xA52                 node+0xa; base from path node array (arr=0x96f854 objoff=None add=None stride=28)
+0042E8F6  +A    CCarCtrl::PickNextNodeRandomly+0xA76                 node+0xa; base from path node array (arr=0x96f854 objoff=None add=None stride=28)
+0042E921  +A    CCarCtrl::PickNextNodeRandomly+0xAA1                 node+0xa; base from path node array (arr=0x96f854 objoff=None add=None stride=28)
+0042F6CA  +8    CCarCtrl::JoinCarWithRoadSystem+0x12A                node+0x8; base from path node array (arr=None objoff=None add=None stride=28)
+0042F6E5  +8    CCarCtrl::JoinCarWithRoadSystem+0x145                node+0x8; base from path node array (arr=None objoff=None add=None stride=28)
+0042F6FD  +A    CCarCtrl::JoinCarWithRoadSystem+0x15D                node+0xa; base from path node array (arr=None objoff=None add=None stride=28)
+0042F70B  +A    CCarCtrl::JoinCarWithRoadSystem+0x16B                node+0xa; base from path node array (arr=None objoff=None add=None stride=28)
+0042F7C5  +8    CCarCtrl::JoinCarWithRoadSystem+0x225                node+0x8; base from path node array (arr=None objoff=None add=None stride=28)
+0042F7EB  +8    CCarCtrl::JoinCarWithRoadSystem+0x24B                node+0x8; base from path node array (arr=0x96f854 objoff=None add=None stride=None)
+0042F7F9  +A    CCarCtrl::JoinCarWithRoadSystem+0x259                node+0xa; base from path node array (arr=None objoff=None add=None stride=28)
+0042F803  +A    CCarCtrl::JoinCarWithRoadSystem+0x263                node+0xa; base from path node array (arr=0x96f854 objoff=None add=None stride=None)
+004458DF  +8    CGangWars::GetGangColor+0xB0                         node+0x8; base from path node array (arr=0x96f854 objoff=None add=None stride=None)
+004458F7  +A    CGangWars::GetGangColor+0xC8                         node+0xa; base from path node array (arr=0x96f854 objoff=None add=None stride=28)
+00445905  +C    CGangWars::GetGangColor+0xD6                         node+0xc; base from path node array (arr=0x96f854 objoff=None add=None stride=None)
+0044E869  +8    CPathFind::ReInit+0x389                              node+0x8; base from path node array (arr=None objoff=0x804 add=None stride=None)
+0044E877  +A    CPathFind::ReInit+0x397                              node+0xa; base from path node array (arr=None objoff=0x804 add=None stride=None)
+0044ED29  +8    CPathFind::GeneratePedCreationCoors_Interior+0x89    node+0x8; base from path node array (arr=None objoff=0x804 add=None stride=None)
+0044ED37  +A    CPathFind::GeneratePedCreationCoors_Interior+0x97    node+0xa; base from path node array (arr=None objoff=0x804 add=None stride=None)
+0044ED80  +C    CPathFind::GeneratePedCreationCoors_Interior+0xE0    node+0xc; base from path node array (arr=None objoff=0x804 add=None stride=None)
+0044EE47  +8    CPathFind::GeneratePedCreationCoors_Interior+0x1A7   node+0x8; base unresolved, sibling set ['0x8', '0xa', '0xc'] consistent, function touches path node array
+0044EE59  +A    CPathFind::GeneratePedCreationCoors_Interior+0x1B9   node+0xa; base unresolved, sibling set ['0x8', '0xa', '0xc'] consistent, function touches path node array
+0044EE63  +C    CPathFind::GeneratePedCreationCoors_Interior+0x1C3   node+0xc; base unresolved, sibling set ['0x8', '0xa', '0xc'] consistent, function touches path node array
+0044EE9B  +8    CPathFind::GeneratePedCreationCoors_Interior+0x1FB   node+0x8; base from path node array (arr=None objoff=0x804 add=None stride=None)
+0044EEA9  +A    CPathFind::GeneratePedCreationCoors_Interior+0x209   node+0xa; base from path node array (arr=None objoff=0x804 add=None stride=None)
+0044EEB3  +C    CPathFind::GeneratePedCreationCoors_Interior+0x213   node+0xc; base from path node array (arr=None objoff=0x804 add=None stride=None)
+0044F0CC  +8    CPathFind::CalcRoadDensity+0x10C                     node+0x8; base unresolved, sibling set ['0x8', '0xa'] consistent, function touches path node array
+0044F0E9  +A    CPathFind::CalcRoadDensity+0x129                     node+0xa; base unresolved, sibling set ['0x8', '0xa'] consistent, function touches path node array
+0044F1FA  +8    CPathFind::CalcDistToAnyConnectingLinks+0x6A         node+0x8; base unresolved, sibling set ['0x10', '0x12', '0x8', '0xa', '0xc'] consistent, function touches path node array
+0044F214  +A    CPathFind::CalcDistToAnyConnectingLinks+0x84         node+0xa; base unresolved, sibling set ['0x10', '0x12', '0x8', '0xa', '0xc'] consistent, function touches path node array
+0044F222  +C    CPathFind::CalcDistToAnyConnectingLinks+0x92         node+0xc; base unresolved, sibling set ['0x10', '0x12', '0x8', '0xa', '0xc'] consistent, function touches path node array
+0044F244  +C    CPathFind::CalcDistToAnyConnectingLinks+0xB4         node+0xc; base unresolved, sibling set ['0x8', '0xa', '0xc'] consistent, function touches path node array
+0044F25B  +A    CPathFind::CalcDistToAnyConnectingLinks+0xCB         node+0xa; base unresolved, sibling set ['0x8', '0xa', '0xc'] consistent, function touches path node array
+0044F26A  +8    CPathFind::CalcDistToAnyConnectingLinks+0xDA         node+0x8; base unresolved, sibling set ['0x8', '0xa', '0xc'] consistent, function touches path node array
+0044F387  +8    CPathFind::FindNodeClosestInRegion+0xC7              node+0x8; base from path node array (arr=None objoff=None add=None stride=28)
+0044F399  +A    CPathFind::FindNodeClosestInRegion+0xD9              node+0xa; base from path node array (arr=None objoff=None add=None stride=28)
+0044F3A3  +C    CPathFind::FindNodeClosestInRegion+0xE3              node+0xc; base from path node array (arr=None objoff=None add=None stride=28)
+0044FC2E  +8    CPathFind::FindNodeClosestToCoors+0x1FE              node+0x8; base from path node array (arr=None objoff=None add=None stride=28)
+0044FC44  +A    CPathFind::FindNodeClosestToCoors+0x214              node+0xa; base from path node array (arr=None objoff=None add=None stride=28)
+0044FC4E  +C    CPathFind::FindNodeClosestToCoors+0x21E              node+0xc; base from path node array (arr=None objoff=None add=None stride=28)
+004500AD  +8    CPathFind::FindNodePairClosestToCoors+0x1CD          node+0x8; base unresolved, sibling set ['0x8', '0xa', '0xc'] consistent, function touches path node array
+004500CB  +A    CPathFind::FindNodePairClosestToCoors+0x1EB          node+0xa; base unresolved, sibling set ['0x8', '0xa', '0xc'] consistent, function touches path node array
+004500D9  +C    CPathFind::FindNodePairClosestToCoors+0x1F9          node+0xc; base unresolved, sibling set ['0x8', '0xa', '0xc'] consistent, function touches path node array
+004501F5  +8    CPathFind::FindNodePairClosestToCoors+0x315          node+0x8; base from path node array (arr=None objoff=0x804 add=None stride=28)
+0045021A  +A    CPathFind::FindNodePairClosestToCoors+0x33A          node+0xa; base from path node array (arr=None objoff=0x804 add=None stride=None)
+00450230  +C    CPathFind::FindNodePairClosestToCoors+0x350          node+0xc; base from path node array (arr=None objoff=0x804 add=None stride=None)
+00450248  +8    CPathFind::FindNodePairClosestToCoors+0x368          node+0x8; base from path node array (arr=None objoff=0x804 add=None stride=28)
+00450255  +A    CPathFind::FindNodePairClosestToCoors+0x375          node+0xa; base from path node array (arr=None objoff=0x804 add=None stride=28)
+00450271  +C    CPathFind::FindNodePairClosestToCoors+0x391          node+0xc; base from path node array (arr=None objoff=0x804 add=None stride=None)
+0045041F  +8    CPathFind::FindNodeOrientationForCarPlacement+0xFF   node+0x8; base unresolved, sibling set ['0x10', '0x8', '0xa', '0xc'] consistent, function touches path node array
+00450431  +A    CPathFind::FindNodeOrientationForCarPlacement+0x111  node+0xa; base unresolved, sibling set ['0x10', '0x8', '0xa', '0xc'] consistent, function touches path node array
+00450443  +C    CPathFind::FindNodeOrientationForCarPlacement+0x123  node+0xc; base unresolved, sibling set ['0x10', '0x8', '0xa', '0xc'] consistent, function touches path node array
+00450455  +8    CPathFind::FindNodeOrientationForCarPlacement+0x135  node+0x8; base unresolved, sibling set ['0x8', '0xa', '0xc'] consistent, function touches path node array
+0045045F  +A    CPathFind::FindNodeOrientationForCarPlacement+0x13F  node+0xa; base unresolved, sibling set ['0x8', '0xa', '0xc'] consistent, function touches path node array
+00450475  +C    CPathFind::FindNodeOrientationForCarPlacement+0x155  node+0xc; base unresolved, sibling set ['0x8', '0xa', '0xc'] consistent, function touches path node array
+00451017  +8    CPathFind::FindNearestExteriorNodeToInteriorNode+0xE7 node+0x8; base from path node array (arr=0x96f854 objoff=None add=None stride=28)
+00451025  +A    CPathFind::FindNearestExteriorNodeToInteriorNode+0xF5 node+0xa; base from path node array (arr=0x96f854 objoff=None add=None stride=28)
+0045102F  +C    CPathFind::FindNearestExteriorNodeToInteriorNode+0xFF node+0xc; base from path node array (arr=0x96f854 objoff=None add=None stride=28)
+00451051  +8    CPathFind::FindNearestExteriorNodeToInteriorNode+0x121 node+0x8; base from path node array (arr=0x96f854 objoff=None add=None stride=28)
+0045105F  +A    CPathFind::FindNearestExteriorNodeToInteriorNode+0x12F node+0xa; base from path node array (arr=0x96f854 objoff=None add=None stride=28)
+0045106D  +C    CPathFind::FindNearestExteriorNodeToInteriorNode+0x13D node+0xc; base from path node array (arr=0x96f854 objoff=None add=None stride=28)
+004510D9  +8    CPathFind::FindNearestExteriorNodeToInteriorNode+0x1A9 node+0x8; base from path node array (arr=0x96f854 objoff=None add=None stride=28)
+004510E7  +A    CPathFind::FindNearestExteriorNodeToInteriorNode+0x1B7 node+0xa; base from path node array (arr=0x96f854 objoff=None add=None stride=28)
+004510F1  +C    CPathFind::FindNearestExteriorNodeToInteriorNode+0x1C1 node+0xc; base from path node array (arr=0x96f854 objoff=None add=None stride=28)
+00451113  +8    CPathFind::FindNearestExteriorNodeToInteriorNode+0x1E3 node+0x8; base from path node array (arr=0x96f854 objoff=None add=None stride=28)
+00451121  +A    CPathFind::FindNearestExteriorNodeToInteriorNode+0x1F1 node+0xa; base from path node array (arr=0x96f854 objoff=None add=None stride=28)
+0045112F  +C    CPathFind::FindNearestExteriorNodeToInteriorNode+0x1FF node+0xc; base from path node array (arr=0x96f854 objoff=None add=None stride=28)
+00451196  +8    CPathFind::FindNearestExteriorNodeToInteriorNode+0x266 node+0x8; base from path node array (arr=0x96f854 objoff=None add=None stride=28)
+004511A4  +A    CPathFind::FindNearestExteriorNodeToInteriorNode+0x274 node+0xa; base from path node array (arr=0x96f854 objoff=None add=None stride=28)
+004511AE  +C    CPathFind::FindNearestExteriorNodeToInteriorNode+0x27E node+0xc; base from path node array (arr=0x96f854 objoff=None add=None stride=28)
+004511D0  +8    CPathFind::FindNearestExteriorNodeToInteriorNode+0x2A0 node+0x8; base from path node array (arr=0x96f854 objoff=None add=None stride=28)
+004511DE  +A    CPathFind::FindNearestExteriorNodeToInteriorNode+0x2AE node+0xa; base from path node array (arr=0x96f854 objoff=None add=None stride=28)
+004511EC  +C    CPathFind::FindNearestExteriorNodeToInteriorNode+0x2BC node+0xc; base from path node array (arr=0x96f854 objoff=None add=None stride=28)
+0045144C  +8    CPathFind::FindParkingNodeInArea+0x5C                node+0x8; base unresolved, sibling set ['0x8', '0xa', '0xc'] consistent, function touches path node array
+0045147C  +A    CPathFind::FindParkingNodeInArea+0x8C                node+0xa; base unresolved, sibling set ['0x8', '0xa', '0xc'] consistent, function touches path node array
+004514AC  +C    CPathFind::FindParkingNodeInArea+0xBC                node+0xc; base unresolved, sibling set ['0x8', '0xa', '0xc'] consistent, function touches path node array
+00451D9B  +8    CPathFind::FindNextNodeWandering+0x22B               node+0x8; base unresolved, sibling set ['0x8', '0xa'] consistent, function touches path node array
+00451DAD  +8    CPathFind::FindNextNodeWandering+0x23D               node+0x8; base unresolved, sibling set ['0x10', '0x8', '0xa'] consistent, function touches path node array
+00451DBD  +A    CPathFind::FindNextNodeWandering+0x24D               node+0xa; base unresolved, sibling set ['0x8', '0xa'] consistent, function touches path node array
+00451DC7  +A    CPathFind::FindNextNodeWandering+0x257               node+0xa; base unresolved, sibling set ['0x8', '0xa'] consistent, function touches path node array
+00452896  +8    CPathFind::SwitchRoadsOffInAreaForOneRegion+0x76     node+0x8; base from path node array (arr=None objoff=0x804 add=None stride=28)
+004528C6  +A    CPathFind::SwitchRoadsOffInAreaForOneRegion+0xA6     node+0xa; base from path node array (arr=None objoff=None add=None stride=28)
+00462AFB  +8    CRoadBlocks::GenerateRoadBlocks+0x11B                node+0x8; base from path node array (arr=None objoff=None add=None stride=28)
+00462B59  +A    CRoadBlocks::GenerateRoadBlocks+0x179                node+0xa; base unresolved, sibling set ['0xa'] consistent, function touches path node array
+00565DF5  +C    CWorld::RemoveFallenPeds+0x145                       node+0xc; base from path node array (arr=0x96f854 objoff=None add=None stride=28)
+00565E05  +A    CWorld::RemoveFallenPeds+0x155                       node+0xa; base from path node array (arr=0x96f854 objoff=None add=None stride=28)
+00565E0F  +8    CWorld::RemoveFallenPeds+0x15F                       node+0x8; base from path node array (arr=0x96f854 objoff=None add=None stride=28)
+00566021  +C    CWorld::RemoveFallenCars+0x1A1                       node+0xc; base from path node array (arr=0x96f854 objoff=None add=None stride=28)
+00566031  +A    CWorld::RemoveFallenCars+0x1B1                       node+0xa; base from path node array (arr=0x96f854 objoff=None add=None stride=28)
+0056603B  +8    CWorld::RemoveFallenCars+0x1BB                       node+0x8; base from path node array (arr=0x96f854 objoff=None add=None stride=28)
+005958AE  +8    Interior::SetupPaths+0x31E                           node+0x8; base from path node array (arr=0x96f854 objoff=None add=None stride=28)
+005958D6  +A    Interior::SetupPaths+0x346                           node+0xa; base from path node array (arr=None objoff=None add=None stride=28)
+005958F1  +C    Interior::SetupPaths+0x361                           node+0xc; base from path node array (arr=None objoff=None add=None stride=28)
+0059595B  +8    Interior::SetupPaths+0x3CB                           node+0x8; base from path node array (arr=None objoff=None add=None stride=28)
+0059596D  +A    Interior::SetupPaths+0x3DD                           node+0xa; base from path node array (arr=None objoff=None add=None stride=28)
+00595977  +C    Interior::SetupPaths+0x3E7                           node+0xc; base from path node array (arr=None objoff=None add=None stride=28)
+00595B3E  +8    Interior::SetupPaths+0x5AE                           node+0x8; base from path node array (arr=0x96f854 objoff=None add=None stride=28)
+00595B60  +A    Interior::SetupPaths+0x5D0                           node+0xa; base from path node array (arr=None objoff=None add=None stride=28)
+00595B75  +C    Interior::SetupPaths+0x5E5                           node+0xc; base from path node array (arr=None objoff=None add=None stride=28)
+00595BD9  +8    Interior::SetupPaths+0x649                           node+0x8; base from path node array (arr=None objoff=None add=None stride=28)
+00595BEB  +A    Interior::SetupPaths+0x65B                           node+0xa; base from path node array (arr=None objoff=None add=None stride=28)
+00595BF5  +C    Interior::SetupPaths+0x665                           node+0xc; base from path node array (arr=None objoff=None add=None stride=28)
+00595DBC  +8    Interior::SetupPaths+0x82C                           node+0x8; base from path node array (arr=0x96f854 objoff=None add=None stride=28)
+00595DDE  +A    Interior::SetupPaths+0x84E                           node+0xa; base from path node array (arr=None objoff=None add=None stride=28)
+00595DF3  +C    Interior::SetupPaths+0x863                           node+0xc; base from path node array (arr=None objoff=None add=None stride=28)
+00595E51  +8    Interior::SetupPaths+0x8C1                           node+0x8; base from path node array (arr=None objoff=None add=None stride=28)
+00595E63  +A    Interior::SetupPaths+0x8D3                           node+0xa; base from path node array (arr=None objoff=None add=None stride=28)
+00595E6D  +C    Interior::SetupPaths+0x8DD                           node+0xc; base from path node array (arr=None objoff=None add=None stride=28)
+00596029  +8    Interior::SetupPaths+0xA99                           node+0x8; base from path node array (arr=0x96f854 objoff=None add=None stride=28)
+00596051  +A    Interior::SetupPaths+0xAC1                           node+0xa; base from path node array (arr=None objoff=None add=None stride=28)
+0059606C  +C    Interior::SetupPaths+0xADC                           node+0xc; base from path node array (arr=None objoff=None add=None stride=28)
+005960D6  +8    Interior::SetupPaths+0xB46                           node+0x8; base from path node array (arr=None objoff=None add=None stride=28)
+005960E8  +A    Interior::SetupPaths+0xB58                           node+0xa; base from path node array (arr=None objoff=None add=None stride=28)
+005960F2  +C    Interior::SetupPaths+0xB62                           node+0xc; base from path node array (arr=None objoff=None add=None stride=28)
+0061358F  +C    CreateWaitingCoppers+0x19F                           node+0xc; base from path node array (arr=0x96f854 objoff=None add=None stride=None)
+006135AC  +A    CreateWaitingCoppers+0x1BC                           node+0xa; base from path node array (arr=0x96f854 objoff=None add=None stride=28)
+006135B6  +8    CreateWaitingCoppers+0x1C6                           node+0x8; base from path node array (arr=0x96f854 objoff=None add=None stride=None)
+0066732F  +8    CTaskComplexProstituteSolicit::ControlSubTask+0x95F  hand-adjudicated: 2nd copy of GetPosition at 0x667310; all 4 callers in ComputePathNodes pass [X*4+0x96F854]+i*0x1C
+00667347  +A    CTaskComplexProstituteSolicit::ControlSubTask+0x977  hand-adjudicated: same function 0x667310
+0066735C  +C    CTaskComplexProstituteSolicit::ControlSubTask+0x98C  hand-adjudicated: same function 0x667310
+00669A3A  +8    Tasks/TaskTypes::ComputeRoute+0x5A                   node+0x8; base unresolved, sibling set ['0x8', '0xa', '0xc'] consistent, function touches path node array
+00669A58  +A    Tasks/TaskTypes::ComputeRoute+0x78                   node+0xa; base unresolved, sibling set ['0x8', '0xa', '0xc'] consistent, function touches path node array
+00669A66  +C    Tasks/TaskTypes::ComputeRoute+0x86                   node+0xc; base unresolved, sibling set ['0x8', '0xa', '0xc'] consistent, function touches path node array
+00669AC4  +8    Tasks/TaskTypes::ComputeRoute+0xE4                   node+0x8; base unresolved, sibling set ['0x8', '0xa', '0xc'] consistent, function touches path node array
+00669AE2  +A    Tasks/TaskTypes::ComputeRoute+0x102                  node+0xa; base unresolved, sibling set ['0x8', '0xa', '0xc'] consistent, function touches path node array
+00669AF0  +C    Tasks/TaskTypes::ComputeRoute+0x110                  node+0xc; base unresolved, sibling set ['0x8', '0xa', '0xc'] consistent, function touches path node array
+00669B4D  +8    Tasks/TaskTypes::ComputeRoute+0x16D                  node+0x8; base unresolved, sibling set ['0x8', '0xa', '0xc'] consistent, function touches path node array
+00669B6B  +A    Tasks/TaskTypes::ComputeRoute+0x18B                  node+0xa; base unresolved, sibling set ['0x8', '0xa', '0xc'] consistent, function touches path node array
+00669B79  +C    Tasks/TaskTypes::ComputeRoute+0x199                  node+0xc; base unresolved, sibling set ['0x8', '0xa', '0xc'] consistent, function touches path node array
+00669BD7  +8    Tasks/TaskTypes::ComputeRoute+0x1F7                  node+0x8; base unresolved, sibling set ['0x8', '0xa', '0xc'] consistent, function touches path node array
+00669BF5  +A    Tasks/TaskTypes::ComputeRoute+0x215                  node+0xa; base unresolved, sibling set ['0x8', '0xa', '0xc'] consistent, function touches path node array
+00669C03  +C    Tasks/TaskTypes::ComputeRoute+0x223                  node+0xc; base unresolved, sibling set ['0x8', '0xa', '0xc'] consistent, function touches path node array
+00669C78  +8    Tasks/TaskTypes::ComputeRoute+0x298                  node+0x8; base unresolved, sibling set ['0x8', '0xa', '0xc'] consistent, function touches path node array
+00669C96  +A    Tasks/TaskTypes::ComputeRoute+0x2B6                  node+0xa; base unresolved, sibling set ['0x8', '0xa', '0xc'] consistent, function touches path node array
+00669CA4  +C    Tasks/TaskTypes::ComputeRoute+0x2C4                  node+0xc; base unresolved, sibling set ['0x8', '0xa', '0xc'] consistent, function touches path node array
+
+CCarPathLink coordinate decode sites - 94
+00422672  +2    CCarCtrl::FindPercDependingOnDistToLink+0x52         link+0x2; base from car-path-link array
+0042267C  +0    CCarCtrl::FindPercDependingOnDistToLink+0x5C         link+0x0; base from car-path-link array
+004274EF  +0    CCarCtrl::PickNextNodeToChaseCar+0x5FF               link+0x0; base from car-path-link array
+00427523  +0    CCarCtrl::PickNextNodeToChaseCar+0x633               link+0x0; base from car-path-link array
+00427574  +0    CCarCtrl::PickNextNodeToChaseCar+0x684               link+0x0; base from car-path-link array
+00427586  +0    CCarCtrl::PickNextNodeToChaseCar+0x696               link+0x0; base from car-path-link array
+004275B1  +2    CCarCtrl::PickNextNodeToChaseCar+0x6C1               link+0x2; base from car-path-link array
+004275BB  +2    CCarCtrl::PickNextNodeToChaseCar+0x6CB               link+0x2; base from car-path-link array
+004275F3  +2    CCarCtrl::PickNextNodeToChaseCar+0x703               link+0x2; base from car-path-link array
+00427610  +2    CCarCtrl::PickNextNodeToChaseCar+0x720               link+0x2; base from car-path-link array
+00427B3E  +2    CCarCtrl::PickNextNodeToFollowPath+0x3FE             link+0x2; base from car-path-link array
+00427B69  +2    CCarCtrl::PickNextNodeToFollowPath+0x429             link+0x2; base from car-path-link array
+00427BC8  +2    CCarCtrl::PickNextNodeToFollowPath+0x488             link+0x2; base from car-path-link array
+00427BDB  +2    CCarCtrl::PickNextNodeToFollowPath+0x49B             link+0x2; base from car-path-link array
+00427C01  +0    CCarCtrl::PickNextNodeToFollowPath+0x4C1             link+0x0; base from car-path-link array
+00427C0B  +0    CCarCtrl::PickNextNodeToFollowPath+0x4CB             link+0x0; base from car-path-link array
+00427C51  +0    CCarCtrl::PickNextNodeToFollowPath+0x511             link+0x0; base from car-path-link array
+00427C5B  +0    CCarCtrl::PickNextNodeToFollowPath+0x51B             link+0x0; base from car-path-link array
+00427DBA  +2    CCarCtrl::PickNextNodeToFollowPath+0x67A             link+0x2; base from car-path-link array
+00427DDD  +0    CCarCtrl::PickNextNodeToFollowPath+0x69D             link+0x0; base from car-path-link array
+00427E14  +2    CCarCtrl::PickNextNodeToFollowPath+0x6D4             link+0x2; base from car-path-link array
+00427E53  +0    CCarCtrl::PickNextNodeToFollowPath+0x713             link+0x0; base from car-path-link array
+00428118  +0    CCarCtrl::DealWithBend_Racing+0xD8                   link+0x0; base unresolved, sibling set ['0x0', '0x2'], function touches path arrays
+00428132  +2    CCarCtrl::DealWithBend_Racing+0xF2                   link+0x2; base unresolved, sibling set ['0x0', '0x2'], function touches path arrays
+004281D9  +2    CCarCtrl::DealWithBend_Racing+0x199                  link+0x2; base unresolved, sibling set ['0x0', '0x2'], function touches path arrays
+004281E7  +2    CCarCtrl::DealWithBend_Racing+0x1A7                  link+0x2; base unresolved, sibling set ['0x0', '0x2'], function touches path arrays
+004281F7  +0    CCarCtrl::DealWithBend_Racing+0x1B7                  link+0x0; base unresolved, sibling set ['0x0', '0x2'], function touches path arrays
+00428201  +0    CCarCtrl::DealWithBend_Racing+0x1C1                  link+0x0; base unresolved, sibling set ['0x0', '0x2'], function touches path arrays
+0042827E  +2    CCarCtrl::DealWithBend_Racing+0x23E                  link+0x2; base unresolved, sibling set ['0x0', '0x2'], function touches path arrays
+0042828F  +2    CCarCtrl::DealWithBend_Racing+0x24F                  link+0x2; base unresolved, sibling set ['0x0', '0x2'], function touches path arrays
+0042829F  +0    CCarCtrl::DealWithBend_Racing+0x25F                  link+0x0; base unresolved, sibling set ['0x0', '0x2'], function touches path arrays
+004282A9  +0    CCarCtrl::DealWithBend_Racing+0x269                  link+0x0; base unresolved, sibling set ['0x0', '0x2'], function touches path arrays
+004282F4  +0    CCarCtrl::DealWithBend_Racing+0x2B4                  link+0x0; base unresolved, sibling set ['0x0', '0x2'], function touches path arrays
+0042830D  +2    CCarCtrl::DealWithBend_Racing+0x2CD                  link+0x2; base unresolved, sibling set ['0x0', '0x2'], function touches path arrays
+0042EAC1  +2    CCarCtrl::PickNextNodeRandomly+0xC41                 link+0x2; base from car-path-link array
+0042EADB  +0    CCarCtrl::PickNextNodeRandomly+0xC5B                 link+0x0; base from car-path-link array
+0042EB0F  +2    CCarCtrl::PickNextNodeRandomly+0xC8F                 link+0x2; base from car-path-link array
+0042EB51  +0    CCarCtrl::PickNextNodeRandomly+0xCD1                 link+0x0; base from car-path-link array
+00431222  +2    CCarCtrl::GenerateOneRandomCar+0x11D2                link+0x2; base from car-path-link array
+00431265  +0    CCarCtrl::GenerateOneRandomCar+0x1215                link+0x0; base from car-path-link array
+004312B2  +2    CCarCtrl::GenerateOneRandomCar+0x1262                link+0x2; base from car-path-link array
+004312E9  +0    CCarCtrl::GenerateOneRandomCar+0x1299                link+0x0; base from car-path-link array
+004314B8  +2    CCarCtrl::GenerateOneRandomCar+0x1468                link+0x2; base from car-path-link array
+004314F0  +0    CCarCtrl::GenerateOneRandomCar+0x14A0                link+0x0; base from car-path-link array
+00431535  +2    CCarCtrl::GenerateOneRandomCar+0x14E5                link+0x2; base from car-path-link array
+0043156F  +0    CCarCtrl::GenerateOneRandomCar+0x151F                link+0x0; base from car-path-link array
+00434B46  +0    CCarCtrl::SteerAICarWithPhysicsFollowPath+0x246      link+0x0; base from car-path-link array
+00434B9B  +2    CCarCtrl::SteerAICarWithPhysicsFollowPath+0x29B      link+0x2; base from car-path-link array
+00434BBD  +0    CCarCtrl::SteerAICarWithPhysicsFollowPath+0x2BD      link+0x0; base from car-path-link array
+00434BEE  +2    CCarCtrl::SteerAICarWithPhysicsFollowPath+0x2EE      link+0x2; base from car-path-link array
+00434F07  +0    CCarCtrl::SteerAICarWithPhysicsFollowPath+0x607      link+0x0; base from car-path-link array
+00434F4F  +2    CCarCtrl::SteerAICarWithPhysicsFollowPath+0x64F      link+0x2; base from car-path-link array
+0043508A  +0    CCarCtrl::SteerAICarWithPhysicsFollowPath+0x78A      link+0x0; base from car-path-link array
+004350CC  +2    CCarCtrl::SteerAICarWithPhysicsFollowPath+0x7CC      link+0x2; base from car-path-link array
+00435156  +0    CCarCtrl::SteerAICarWithPhysicsFollowPath+0x856      link+0x0; base from car-path-link array
+00435198  +2    CCarCtrl::SteerAICarWithPhysicsFollowPath+0x898      link+0x2; base from car-path-link array
+00435402  +2    CCarCtrl::SteerAICarWithPhysicsFollowPath+0xB02      link+0x2; base from car-path-link array
+0043543F  +0    CCarCtrl::SteerAICarWithPhysicsFollowPath+0xB3F      link+0x0; base from car-path-link array
+00435924  +0    CCarCtrl::SteerAICarWithPhysicsFollowPath_Racing+0xF4 link+0x0; base from car-path-link array
+00435974  +2    CCarCtrl::SteerAICarWithPhysicsFollowPath_Racing+0x144 link+0x2; base from car-path-link array
+00435993  +0    CCarCtrl::SteerAICarWithPhysicsFollowPath_Racing+0x163 link+0x0; base from car-path-link array
+004359A8  +2    CCarCtrl::SteerAICarWithPhysicsFollowPath_Racing+0x178 link+0x2; base from car-path-link array
+00435EAA  +2    CCarCtrl::SteerAICarWithPhysicsFollowPath_Racing+0x67A link+0x2; base from car-path-link array
+00435ECE  +0    CCarCtrl::SteerAICarWithPhysicsFollowPath_Racing+0x69E link+0x0; base from car-path-link array
+00435F37  +2    CCarCtrl::SteerAICarWithPhysicsFollowPath_Racing+0x707 link+0x2; base from car-path-link array
+00435F61  +0    CCarCtrl::SteerAICarWithPhysicsFollowPath_Racing+0x731 link+0x0; base from car-path-link array
+00435FC3  +2    CCarCtrl::SteerAICarWithPhysicsFollowPath_Racing+0x793 link+0x2; base from car-path-link array
+00436005  +2    CCarCtrl::SteerAICarWithPhysicsFollowPath_Racing+0x7D5 link+0x2; base from car-path-link array
+00436030  +0    CCarCtrl::SteerAICarWithPhysicsFollowPath_Racing+0x800 link+0x0; base from car-path-link array
+0043604B  +0    CCarCtrl::SteerAICarWithPhysicsFollowPath_Racing+0x81B link+0x0; base from car-path-link array
+004360AC  +2    CCarCtrl::SteerAICarWithPhysicsFollowPath_Racing+0x87C link+0x2; base from car-path-link array
+004360D6  +0    CCarCtrl::SteerAICarWithPhysicsFollowPath_Racing+0x8A6 link+0x0; base from car-path-link array
+00436163  +2    CCarCtrl::SteerAICarWithPhysicsFollowPath_Racing+0x933 link+0x2; base from car-path-link array
+0043617C  +2    CCarCtrl::SteerAICarWithPhysicsFollowPath_Racing+0x94C link+0x2; base from car-path-link array
+004361C0  +0    CCarCtrl::SteerAICarWithPhysicsFollowPath_Racing+0x990 link+0x0; base from car-path-link array
+004361CC  +0    CCarCtrl::SteerAICarWithPhysicsFollowPath_Racing+0x99C link+0x0; base from car-path-link array
+00436868  +2    CCarCtrl::UpdateCarOnRails+0x328                     link+0x2; base from car-path-link array
+004368A2  +0    CCarCtrl::UpdateCarOnRails+0x362                     link+0x0; base from car-path-link array
+004368E8  +2    CCarCtrl::UpdateCarOnRails+0x3A8                     link+0x2; base from car-path-link array
+00436925  +0    CCarCtrl::UpdateCarOnRails+0x3E5                     link+0x0; base from car-path-link array
+0044D9B4  +0    CPathFind::SetLinksBridgeLights+0x54                 link+0x0; base unresolved, sibling set ['0x0'], function touches path arrays
+0044D9DC  +2    CPathFind::SetLinksBridgeLights+0x7C                 link+0x2; base unresolved, sibling set ['0x2'], function touches path arrays
+00450E1E  +0    CPathFind::IsWaterNodeNearby+0x3E                    link+0x0; base unresolved, sibling set ['0x0', '0x2'], function touches path arrays
+00450E28  +2    CPathFind::IsWaterNodeNearby+0x48                    link+0x2; base unresolved, sibling set ['0x0', '0x2'], function touches path arrays
+00460FBD  +0    CRoadBlocks::GetRoadBlockNodeInfo+0xDD               link+0x0; base unresolved, sibling set ['0x0', '0x2'], function touches path arrays
+00460FCF  +0    CRoadBlocks::GetRoadBlockNodeInfo+0xEF               link+0x0; base unresolved, sibling set ['0x0', '0x2'], function touches path arrays
+00460FEA  +2    CRoadBlocks::GetRoadBlockNodeInfo+0x10A              link+0x2; base unresolved, sibling set ['0x0', '0x2'], function touches path arrays
+00460FF4  +2    CRoadBlocks::GetRoadBlockNodeInfo+0x114              link+0x2; base unresolved, sibling set ['0x0', '0x2'], function touches path arrays
+0049D71C  +2    CTrafficLights::ShouldCarStopForLight+0x10C          link+0x2; base unresolved, sibling set ['0x0', '0x2'], function touches path arrays
+0049D750  +0    CTrafficLights::ShouldCarStopForLight+0x140          link+0x0; base unresolved, sibling set ['0x0', '0x2'], function touches path arrays
+0049D892  +2    CTrafficLights::ShouldCarStopForLight+0x282          link+0x2; base unresolved, sibling set ['0x0', '0x2'], function touches path arrays
+0049D8C6  +0    CTrafficLights::ShouldCarStopForLight+0x2B6          link+0x0; base unresolved, sibling set ['0x0', '0x2'], function touches path arrays
+0049DA13  +2    CTrafficLights::ShouldCarStopForLight+0x403          link+0x2; base unresolved, sibling set ['0x0', '0x2'], function touches path arrays
+0049DA47  +0    CTrafficLights::ShouldCarStopForLight+0x437          link+0x0; base unresolved, sibling set ['0x0', '0x2'], function touches path arrays
+
+B_WRONGSTRUCT - 7
+005088A3  Audio::Update+0x4E3                                  +0x8 but sibling loads on the same base touch ['0x0', '0x2', '0x4', '0x6', '0x8', '0xa'] - not the CPathNode triple
+005088DD  Audio::Update+0x51D                                  +0xa but sibling loads on the same base touch ['0x2', '0x4', '0x8', '0xa'] - not the CPathNode triple
+006F2FA6  CCarGenerator::CheckIfWithinRangeOfAnyPlayers+0x66   +0x8 but sibling loads on the same base touch ['0x4', '0x6', '0x8'] - not the CPathNode triple
+006F3096  CCarGenerator::CheckIfWithinRangeOfAnyPlayers+0x156  +0x8 but sibling loads on the same base touch ['0x4', '0x6', '0x8'] - not the CPathNode triple
+006F3367  CCarGenerator::CheckForBlockage+0x87                 +0x8 but sibling loads on the same base touch ['0x4', '0x6', '0x8'] - not the CPathNode triple
+006F36AE  CCarGenerator::DoInternalProcessing+0x1DE            +0x8 but sibling loads on the same base touch ['0x4', '0x6', '0x8'] - not the CPathNode triple
+006F3A80  CCarGenerator::DoInternalProcessing+0x5B0            +0x8 but sibling loads on the same base touch ['0x4', '0x6', '0x8'] - not the CPathNode triple
+
+B_FIXEDGLOBAL - 2
+00508544  Audio::Update+0x184                                  +0x8 off fixed global 0xb6dcdc
+0050857E  Audio::Update+0x1BE                                  +0xa off fixed global 0xb6dcdc
+
+B_NOTPATHFN - 9
+006F3113  CCarGenerator::CheckIfWithinRangeOfAnyPlayers+0x1D3  +0x8 but function never touches the path arrays
+006F33D7  CCarGenerator::CheckForBlockage+0xF7                 +0x8 but function never touches the path arrays
+006F3455  CCarGenerator::CheckForBlockage+0x175                +0x8 but function never touches the path arrays
+0071E915  COccluder::ProcessOneOccluder+0x345                  +0x8 but function never touches the path arrays
+0071E966  COccluder::ProcessOneOccluder+0x396                  +0xa but function never touches the path arrays
+0071F44F  COccluder::ProcessOneOccluder+0xE7F                  +0x8 but function never touches the path arrays
+0071F4F3  COccluder::ProcessOneOccluder+0xF23                  +0xa but function never touches the path arrays
+0071F53C  COccluder::ProcessOneOccluder+0xF6C                  +0xa but function never touches the path arrays
+0071F590  COccluder::ProcessOneOccluder+0xFC0                  +0x8 but function never touches the path arrays
+
+B_ADJUDICATED_NOT - 2
+0050805D  Audio::PreloadBeatTrack+0x11D                        hand-adjudicated: leaf getter 0x508050, one of six on offsets +0xC..+0x16 of one object; no path evidence, no direct callers
+006F2C9D  Vehicle::Constructor+0x35D                           hand-adjudicated: leaf getter 0x6F2C90 in the CCarGenerator accessor run (+6,+8) with an 8.0 setter at 0x6F2CB0
+
+C_UNCLEAR - 3
+00427278  CCarCtrl::PickNextNodeToChaseCar+0x388               fild dword ptr [esp + 0x30] : no feeding store in function
+006F2F8D  CCarGenerator::CheckIfWithinRangeOfAnyPlayers+0x4D   fild dword ptr [esp + 0x1c] : no feeding store in function
+006F5FB2  CTrainNode::GetLightingFromCollision+0x32            fild dword ptr [esp + 8] : no feeding store in function

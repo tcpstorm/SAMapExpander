@@ -19,6 +19,14 @@ What it does today:
   grid before wrapping it into the repeat-sector array, so outside the map a ped's ped and vehicle
   scanners came back empty: punches animated but never connected, and ped AI ignored everyone around
   it. Four two-byte patches drop the clamps.
+- **People on the pavement, and police who come after you.** San Andreas generates its population on
+  the path graph, and a path node position is an `int16 × 0.125` that reaches only ±4096, so an
+  imported city was silent. The importer writes out the source game's own pedestrian graph and the
+  crowd each of its districts draws — its `pedgrp.dat`, its zone boxes and the `SET_ZONE_PED_GROUP`
+  calls in its `main.scm` — and the plugin holds the graph itself and walks people along it with a
+  task that never touches `CPathFind`. A wanted level is answered on foot. San Andreas' own peds,
+  over San Andreas' own map, are untouched. Traffic still needs the path encoding widened; see
+  *docs/known-limitations.md*.
 - **A region's own map assets.** Point a region at its original `.img`, `.ide`, `.ipl` and `.col` and the
   plugin registers the archive, remaps the model ids into a free range and places every `inst` line at
   the region's origin — through the game's own loaders. See *Loading a city's own assets*; `ModelIdLimit`
@@ -113,6 +121,10 @@ SA x 4171..6963, y −778..2626).
 | `RegionWeaponMode` | `Add` | `Add` gives the region's guns weapon types of their own and leaves San Andreas' forty-seven exactly as they were (ten new types is the hard limit); `Replace` writes them over the nearest San Andreas weapon, which changes that weapon for the whole game |
 | `RegionPickups` | 1 | master switch for every region's `Pickups` file. Skipped under SA-MP. |
 | `PickupReserve` | 200 | how many free pickup slots to leave SA's own script once a region has taken what it wants. Counted into the enlarged array's size rather than deducted from SA's 620 |
+| `RegionPeds` | 1 | walk pedestrians on a region's own `PedNodes` graph, choosing who from its `PedGroups` table. Skipped under SA-MP. |
+| `RegionPedDensity` | 1.0 | multiplier on how many; stacks with the game's own population slider |
+| `RegionPedRadius` | 55.0 | how far from the player they live. 55 sits inside the band the game itself uses — it creates its own at 42.5–50.5 and removes them past 65 off screen, 54.5 on it |
+| `RegionPolice` | 1 | answer a wanted level in a region with cops on foot. Skipped under SA-MP. |
 | `Debug` | 0 | verbose log, F8 diagnostics, water render statistics |
 
 ### Region data (feature branches)

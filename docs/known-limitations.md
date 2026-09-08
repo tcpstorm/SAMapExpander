@@ -8,9 +8,9 @@ was rejected, the reason is given.
 
 ---
 
-## Traffic and pedestrians do not spawn in an imported city
+## Traffic does not spawn in an imported city
 
-The cities are silent: nothing drives, nobody walks.
+Nothing drives. Pedestrians and police on foot now do — see below — but no vehicle ever appears.
 
 **Why.** San Andreas stores path node positions as `int16 × 0.125`, so a node can only describe a
 point within **±4095.875**. Vice City sits near SA x 6000 and Liberty City near y 6000; neither fits,
@@ -22,14 +22,67 @@ Two things that are **not** the problem, both checked: population density is liv
 the player is, and there is no map-extent gate anywhere in the spawning code. So paths really are the
 whole of it.
 
-**What it would take.** Widening the encoding means about 271 hand-verified instruction sites, none
-of which can be validated without running the game. That was judged too risky to attempt blind.
+**What it would take — measured, not estimated.** `tools/scan_path_scale_sites.py` classifies every
+one of the 491 instructions that read the shared `0.125` at `0x858C48` and writes
+`tools/path_scale_sites.txt`. The result:
 
-**The way in, if this is ever wanted.** Ped attractors (`GeneratePedsAtAttractors`) bypass the path
-graph completely and need no patching, so pedestrians on the pavement are reachable today. Vehicles
-are not: a Landstalker driving Ocean Drive needs the encoding work. A converter for both games' path
-data exists and is verified offline — totals reconcile exactly, zero orphans — so the data half is
-done if anyone takes the site work on.
+| | |
+|---|---|
+| 187 | `CPathNode` coordinate decodes |
+| 94 | `CCarPathLink` coordinate decodes — **a second compressed path struct**, 14 bytes with its coordinates at +0/+2, which the earlier count missed entirely. Repoint only the nodes and traffic drives to the wrong places while pedestrian routing looks right |
+| 3 | encode sites, all in `CPathFind::CompleteNewInterior`, through `8.0` at `0x859000` |
+| 1 | load-time rescale of San Andreas' own shipped nodes. `LoadPathFindData` copies the 28-byte records out of `nodes<N>.dat` verbatim with no transform, so one hook after the read — the plain call at `0x452F75`, not the HOODLUM-stolen entry at `0x4529F0` — rescales all of them with no data file edited |
+| 4 | region constants at `0x859A8C/90/94/98` (1/750, −3000, 3000, 750), or nodes are filed into the wrong area |
+| 207 | sites that read the same constant and must be **left alone** — `CPickup`, `CTrainNode`, `CCarGenerator`, `COccluder`, the audio boxes, several render pipelines |
+| 3 | honestly unclear: their feeding store is in another basic block and a linear walk cannot prove it |
+
+Every one of the 281 confident sites is the same six bytes, `D8 0D 48 8C 85 00`, with its `disp32`
+at instruction offset +2. So each change is mechanically *"expect those bytes at A, write the new
+address into the last four"*, and every one is checkable against the file before and after with
+nothing running. **That makes this materially more tractable than "271 sites that cannot be
+validated" suggested** — the bytes are verifiable offline to the same standard as
+`src/limits/ModelLimits.cpp`. What is not verifiable offline is the *set*: a decode that was missed
+reads a widened node through the old scale and silently produces a position four times too small,
+and the A2 evidence is inference from struct-offset sets rather than a proven pointer chain. Only
+running the game settles that, and nobody has.
+
+**Not fixed, and this is why.** The work is a coherent day or two — repoint 284 sites behind an
+off-by-default switch, rescale San Andreas' own nodes on load, and hand the region its own
+`nodes<N>.dat` from the converter that already exists — but it cannot be finished without a game to
+try it in, and shipping a switch that has never been switched on is not the same as shipping
+traffic. The measurement is committed so the next attempt starts from a list rather than a guess.
+
+**A 65th path area is not the way round it.** Four separate things are hard-wired to 64: the 0..7
+clamps and `xreg + yreg*8` in `FindRegionForCoors`, a hard-coded `+0x100` interior block in nine
+instructions of `CompleteNewInterior` alone, twelve per-area array base displacements, and the
+streaming ids 25511..25574 which are exactly 64 wide with the animation block immediately after.
+
+---
+
+## What a region gets instead: pedestrians and police on foot
+
+Since San Andreas cannot be made to populate these streets, the plugin does it — `src/peds/`.
+
+The source game's own pedestrian graph is written out by the importer to `pednodes.dat` (Vice City
+keeps it in the `path` sections of its IPLs at world coordinates; GTA III attaches a group to a road
+model and means it once per placement of that road) and held in ordinary memory, where nothing is
+compressed and nothing has a range. Peds are made by `CPopulation::AddPed` with `makeWander` false
+and walked with `CTaskComplexGoToPointAndStandStill`, which never consults `CPathFind` — confirmed
+by disassembling every method of it and its subtask. Who appears comes from the donor too: its
+`pedgrp.dat`, its zone boxes, and the `SET_ZONE_PED_GROUP` calls in its `main.scm`, so each district
+draws its own crowd. San Andreas' models stand in, paired one to one in the region's `pedgrp.dat`.
+
+Police ride on the same graph, because all four of San Andreas' routes to a policeman are path-based
+(`AddToPopulation`, `GenerateOneRandomCar`, `CreateWaitingCoppers`' car half, `GenerateRoadBlocks`).
+The wanted system itself needs nothing: the stars, the decay, `CWanted`'s pursuit bookkeeping and
+`CTaskComplexKillPedOnFoot` are all free of any map or path dependency.
+
+**What is still missing out here, all of it for the same reason:** patrol cars, the police
+helicopter, roadblocks, and the SWAT, FBI and army responses at four stars and above. Every one is a
+vehicle placed on a car path node. Also the police radio's *location* dialogue — 
+`CAEPoliceScannerAudioEntity::AddAudioEvent` matches the zone against a hard-coded 194-entry table of
+San Andreas' own zones and says nothing when it does not find one; that is a zone dependency rather
+than a path one, and fixable, but it is not fixed.
 
 ---
 
