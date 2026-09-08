@@ -609,7 +609,14 @@ void __cdecl UpdateHook(bool generatePeds) {
     UpdateOriginal().ccall<void>(generatePeds);
 
     CPed* player = FindPlayerPed();
-    if (!player) return;
+    if (!player) {
+        // A menu, a loading screen, or a game that has just ended. Let go of every ped this was
+        // looking after: a new game empties the ped pool and resets its re-use counters, so a
+        // handle kept across one could name somebody else's ped entirely.
+        for (RegionState& rs : Regions()) rs.walkers.clear();
+        RegionPolice::Forget();
+        return;
+    }
     CVector at = player->GetPosition();
     for (RegionState& rs : Regions()) {
         if (!PlayerOver(rs, at, Settings::world.regionPedRadius * kCullMargin)) {

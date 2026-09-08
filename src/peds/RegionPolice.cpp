@@ -161,6 +161,8 @@ bool Active() { return gCanTask; }
 
 int Count() { return (int)gCops.size(); }
 
+void Forget() { gCops.clear(); }
+
 void Tick(const CVector& playerPosition) {
     if (!gCanTask || !Settings::world.regionPolice) return;
     CWanted* wanted = PlayerWanted();
