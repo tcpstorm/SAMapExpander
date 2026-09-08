@@ -2,6 +2,7 @@
 """Turn a GTA III / Vice City install into a MapExpander region folder.
 
     import_city.py <source game dir> <SA game dir> [--region=vicecity] [--lite] [--no-rename]
+                                                   [--parked-cars-only]
 
 Writes <SA game dir>/MapExpander/<region>/ with
 
@@ -24,6 +25,9 @@ Writes <SA game dir>/MapExpander/<region>/ with
                    so the plugin keeps the graph itself
     pedgrp.dat     who walks where: the source game's ped groups and the zone boxes they belong
                    to, each of its ped models paired with the San Andreas model standing in for it
+    parkedcars.dat where the source game parked a car, mined from the CREATE_CAR_GENERATOR calls
+                   in its main.scm, each vehicle paired with the San Andreas model standing in for
+                   it. These are the plugin's own spawns, not San Andreas car generators
     region.ini     the [region] keys to paste into MapExpander.ini, lists in .dat order, with the
                    origin the conversion this project follows places that city at
 
@@ -34,6 +38,10 @@ dictionary, so it has to be packed and renamed like everything else.
 
 --lite writes only the last three groups (tiles, text/water/zones, region.ini): what a region
 needs when something else - a server, a map mod - already places the buildings.
+
+--parked-cars-only writes parkedcars.dat into a region folder that already exists and adds the
+one key to its region.ini, touching nothing else. A full import rewrites the archive, the
+collision and every IDE and IPL; adding one data file should not cost that.
 
 Every model and texture dictionary is renamed under a two-character tag for the source game
 ("v_" for Vice City, "l_" for III) - in the archive, the IDE model/txd columns, the IPL inst
@@ -3385,6 +3393,450 @@ def write_ped_groups(out, groups, zones, ped_map, prefix):
     return "pedgrp.dat"
 
 
+# ---------------------------------------------------------------- the cars parked at the kerb
+#
+# Empty streets are most of why an imported city still reads as a model rather than a place, and
+# neither donor game puts its parked cars in a map file. Both create them from data/main.scm, with
+# literal coordinates, through one opcode:
+#
+#   0x014B CREATE_CAR_GENERATOR  x y z angle model colour1 colour2 force alarm lock minDelay
+#                                maxDelay  -> handle
+#   0x014C SET_CAR_GENERATOR     handle count       (0 = off, >100 = for ever)
+#
+# The parameter order was read off the script stream rather than taken from an opcode listing,
+# because the listings reorder the parameters for display. It is the same in both games; what is
+# NOT the same is the float encoding, which the pickup work on this project already found: Vice
+# City writes a 32-bit IEEE float behind a 0x06 type byte, GTA III writes an int16 divided by 16.
+#
+# Nothing walks the whole instruction set to find these - that would mean implementing two games'
+# scripts - so the two opcode bytes are scanned for and every candidate has to earn its place.
+# Four filters, in order of how cheap they are:
+#
+#   1. shape       twelve immediate parameters, the first four floats and the last eight integers,
+#                  then a variable to store the handle in. This alone throws out 39 of Vice City's
+#                  211 raw matches and 13 of GTA III's 162.
+#   2. chain       a real generator has a neighbour: the bytes after it are either the
+#                  SET_CAR_GENERATOR that switches it on, addressed to the same variable, or
+#                  another well-shaped generator. Vice City's are all of the first kind and GTA
+#                  III's almost all of the second. A coincidence has no neighbour.
+#   3. sense       the model is -1 or an id the source game's own default.ide declares as a
+#                  vehicle; the heading is a bearing; alarm and lock are percentages; the delays
+#                  are ordered.
+#   4. ground      the position falls inside one of the source game's own zone boxes - the same
+#                  file the ped-group miner validates its zone labels against.
+#
+# A generator the script switches OFF the moment it makes it is left out: those are the ones a
+# mission turns on later, and a car that belongs to a mission we are not running is not street
+# furniture. That rule drops two of GTA III's and twenty-four of Vice City's.
+#
+# WHAT IS CARRIED ACROSS, and what is not:
+#
+#   position    the source game's own, in its own coordinates; the plugin adds the region origin.
+#               A z of -100 means "on the ground here" in both donor games - and, as it happens,
+#               in San Andreas too: CCarCtrl::CreateCarForScript compares z against the float at
+#               0x859014, which is exactly -100.0, and resolves it through CWorld::FindGroundZ
+#               itself. So the convention travels untranslated.
+#   heading     degrees. Both donor games and San Andreas measure a heading the same way - local
+#               +Y forward, turning anticlockwise about Z - which is confirmed by San Andreas'
+#               own car generator multiplying its stored byte angle by the float at 0x859BBC,
+#               2*pi/256, with no sign change. Degrees times pi/180 is the whole conversion.
+#   model       paired with a San Andreas model, written into the file as DONOR/SAMODEL exactly
+#               as pedgrp.dat pairs a person. A model of -1 is the source game asking for "any
+#               ordinary car", which San Andreas' own generators ask for in the same way (a
+#               negative model id, see CCarGenerator::DoInternalProcessing at 0x6F352E), so it is
+#               written as `random` and answered from the `fleet` line at the top of the file.
+#   lock        the percentage chance the source game gave that car of being locked. Applied.
+#   alarm       the same for an alarm. Written down and NOT applied: San Andreas keeps an alarm
+#               state rather than a flag and the sentinel for "fitted but quiet" was not
+#               established here, and a car that howls when it is brushed is worse than one with
+#               no alarm at all.
+#   colour      the source game's own carcols.dat indices. Written down and NOT applied, because
+#               a donor palette index is not a San Andreas palette index - they are different
+#               tables of different length. 317 of the 320 generators say -1 anyway, which both
+#               games read as "any colour this model comes in", so this costs three cars.
+#   force       whether the generator ignores the game's parked-car budget. Dropped: it exists to
+#               steer San Andreas' own CCarGenerator budget, and these are not in it.
+#   delays      the minimum and maximum wait before a generator makes another car. Dropped: they
+#               are what makes a stolen parked car reappear within seconds, which is the one
+#               behaviour of the donor's system this deliberately does not reproduce.
+
+SCM_CREATE_CAR_GENERATOR = 0x014B
+SCM_SET_CAR_GENERATOR = 0x014C
+
+# The "class" column of a cars line, in every one of the three games. It is what a donor's own
+# random-car chooser draws on, so it is also what decides whether a model belongs in the fleet a
+# `random` generator picks from.
+VEHICLE_CLASSES = {
+    "normal", "poorfamily", "richfamily", "executive", "worker", "big", "taxi", "moped",
+    "motorbike", "leisureboat", "workerboat", "bicycle", "ignore", "special", "bike",
+}
+# Ordinary traffic: what a car generator asking for "any car" should be able to get. `ignore` is
+# every mission and emergency vehicle, and the boats and bikes are not what a kerb wants.
+FLEET_CLASSES = ("normal", "poorfamily", "richfamily", "executive", "worker", "taxi")
+
+
+def read_vehicle_ide(path):
+    """{id: (name, type, class)} from the cars section of a III / VC / SA IDE.
+
+    Three of San Andreas' 212 lines - emperor, wayfarer and dodo - separate the model name from
+    the texture dictionary with a tab instead of a comma, which shifts every field after them by
+    one and silently loses those three models. The name field is therefore split again on
+    whitespace and the row rebuilt, rather than trusting the commas.
+    """
+    out, section = {}, None
+    with open(path, "r", encoding="latin-1") as f:
+        for raw in f:
+            s = raw.strip()
+            low = s.lower()
+            if section is None:
+                if low == "cars":
+                    section = 1
+                continue
+            if low == "end":
+                section = None
+                continue
+            if not s or s.startswith("#"):
+                continue
+            t = [x.strip() for x in s.split(",")]
+            if len(t) > 1 and len(t[1].split()) > 1:
+                merged = t[1].split()
+                t = [t[0]] + merged[:2] + t[2:]
+            if len(t) < 7:
+                continue
+            try:
+                ident = int(t[0])
+            except ValueError:
+                continue
+            # GTA III has no anims column, so the class is one field earlier than in VC and SA.
+            klass = ""
+            for i in (6, 7):
+                if i < len(t) and t[i].lower() in VEHICLE_CLASSES:
+                    klass = t[i].lower()
+                    break
+            out[ident] = (t[1].lower(), t[3].lower(), klass)
+    return out
+
+
+# San Andreas kept a great many of Vice City's and GTA III's vehicle names - landstal, peren,
+# sentinel, infernus, cheetah, taxi, ambulan, rumpo, stallion and forty more - the same way it kept
+# their ped naming, and for the same reason: it is the same series. So the pairing below only has
+# to cover the models whose names San Andreas did not keep. Each is the San Andreas vehicle of the
+# nearest class and era, and the comment says what is being given up.
+VEHICLE_MAP = {
+    # GTA III
+    "idaho":    ("glendale",  "a 70s American mid-size; SA has no Idaho"),
+    "blista":   ("blistac",   "SA renamed it the Blista Compact"),
+    "kuruma":   ("previon",   "a Japanese saloon; SA has no Kuruma"),
+    "police":   ("copcarla",  "a marked police car; SA's is Los Santos'"),
+    "bellyup":  ("boxville",  "Bellyup Fish - a panel van; the livery is lost"),
+    "mrwongs":  ("boxville",  "Mr Wong's laundry van; the livery is lost"),
+    "mafia":    ("admiral",   "the Mafia Sentinel - a black executive saloon"),
+    "yakuza":   ("sultan",    "the Yakuza Stinger - a fast Japanese saloon"),
+    "columb":   ("huntley",   "the Cartel Cruiser - a boxy 4x4 wagon"),
+    "panlant":  ("yankee",    "Panlantic's construction truck"),
+    "toyz":     ("mrwhoop",   "the Toyz van; SA's novelty van is the ice cream one"),
+    # Vice City
+    "stinger":  ("comet",     "a two-seat European sports car"),
+    "rio":      ("tropic",    "a cabin cruiser"),
+    "fbicar":   ("washing",   "the FBI Washington, without the badge"),
+    "angel":    ("freeway",   "a cruiser motorcycle"),
+    "sentxs":   ("sentinel",  "the Sentinel XS is a Sentinel"),
+    "gangbur":  ("burrito",   "the Gang Burrito is a Burrito"),
+    "pheonix":  ("phoenix",   "Vice City spells it wrong; San Andreas does not"),
+    "kaufman":  ("cabbie",    "the Kaufman Cab"),
+    "vicechee": ("cheetah",   "the Vice Cheetah, without the police livery"),
+}
+# When a donor vehicle has no name in San Andreas and no line above. Ordinary before interesting,
+# for the same reason the crowd falls back to a stranger in the street rather than to a millionaire.
+VEHICLE_FALLBACK = "premier"
+
+
+def map_vehicle(name, sa_names):
+    """(SA model name, why) for one donor vehicle name."""
+    low = name.lower()
+    if low in sa_names:
+        return sa_names[low], "same name"
+    hit = VEHICLE_MAP.get(low)
+    if hit and hit[0] in sa_names:
+        return sa_names[hit[0]], hit[1] or "hand-mapped"
+    return VEHICLE_FALLBACK, "no equivalent"
+
+
+def scm_int(blob, at, floats_are_ieee):
+    """(kind, value, bytes consumed) of one immediate script parameter, or None.
+
+    kind is 'int', 'float' or 'var'. Type bytes: 01 int32, 02 global, 03 local, 04 int8,
+    05 int16, 06 float - and a float is four IEEE bytes in Vice City and two fixed-point bytes,
+    sixteenths of a unit, in GTA III.
+    """
+    if at >= len(blob):
+        return None
+    t = blob[at]
+    width = {0x04: 1, 0x05: 2, 0x01: 4}.get(t)
+    if width:
+        if at + 1 + width > len(blob):
+            return None
+        return "int", int.from_bytes(blob[at + 1:at + 1 + width], "little", signed=True), 1 + width
+    if t in (0x02, 0x03):
+        if at + 3 > len(blob):
+            return None
+        return "var", int.from_bytes(blob[at + 1:at + 3], "little"), 3
+    if t == 0x06:
+        if not floats_are_ieee:
+            if at + 3 > len(blob):
+                return None
+            return "float", int.from_bytes(blob[at + 1:at + 3], "little", signed=True) / 16.0, 3
+        if at + 5 > len(blob):
+            return None
+        return "float", struct.unpack("<f", blob[at + 1:at + 5])[0], 5
+    return None
+
+
+def scm_parked_cars(path, prefix, vehicles, boxes):
+    """[(x, y, z, heading, model, col1, col2, alarm, lock, offset)] out of a compiled main.scm.
+
+    See the comment block above for the opcode, the four filters and what each one is worth. The
+    counts are returned alongside so a bad import is visible rather than silent.
+    """
+    with open(path, "rb") as f:
+        blob = f.read()
+    ieee = prefix != "iii_"
+    needle = SCM_CREATE_CAR_GENERATOR.to_bytes(2, "little")
+    switch = SCM_SET_CAR_GENERATOR.to_bytes(2, "little")
+    counts = collections.Counter()
+
+    # ---- filter 1: shape
+    shaped = {}          # start offset -> (values, handle kind, handle index, end offset)
+    at = 0
+    while True:
+        at = blob.find(needle, at)
+        if at < 0:
+            break
+        counts["raw"] += 1
+        p = at + 2
+        vals, ok = [], True
+        for i in range(12):
+            r = scm_int(blob, p, ieee)
+            if r is None or r[0] == "var" or (i < 4) != (r[0] == "float"):
+                ok = False
+                break
+            vals.append(r[1])
+            p += r[2]
+        if ok:
+            handle = scm_int(blob, p, ieee)
+            if handle and handle[0] == "var":
+                shaped[at] = (vals, handle[1], p + handle[2])
+            else:
+                ok = False
+        if not ok:
+            counts["not the right shape"] += 1
+        at += 1
+
+    # ---- filter 2: chain. A generator's neighbour is the switch addressed to its own handle, or
+    # another generator starting exactly where it ends. Nothing else has a neighbour.
+    ends = {v[2]: start for start, v in shaped.items()}
+    kept = {}
+    for start, (vals, handle, end) in shaped.items():
+        switched = None
+        if blob[end:end + 2] == switch:
+            h = scm_int(blob, end + 2, ieee)
+            c = scm_int(blob, end + 2 + h[2], ieee) if h else None
+            if h and h[0] == "var" and h[1] == handle and c and c[0] == "int":
+                switched = c[1]
+        chained = switched is not None or end in shaped or start in ends
+        if not chained:
+            counts["no neighbour"] += 1
+            continue
+        if switched == 0:
+            counts["the script switches it off"] += 1
+            continue
+        kept[start] = vals
+
+    # ---- filters 3 and 4: sense, then ground
+    out = []
+    for start in sorted(kept):
+        x, y, z, angle, model, c1, c2, force, alarm, lock, lo, hi = kept[start]
+        if model != -1 and model not in vehicles:
+            counts["names no vehicle of this game"] += 1
+            continue
+        if not -360.0 <= angle <= 360.0 or not 0 <= alarm <= 100 or not 0 <= lock <= 100 \
+                or force not in (0, 1) or lo > hi or lo < 0:
+            counts["a column out of range"] += 1
+            continue
+        if boxes and not any(bx[1] <= x <= bx[4] and bx[2] <= y <= bx[5] for bx in boxes):
+            counts["outside every zone of this map"] += 1
+            continue
+        out.append((x, y, z, angle % 360.0, model, c1, c2, alarm, lock, start))
+    counts["kept"] = len(out)
+    return out, counts
+
+
+def write_parked_cars(out, generators, vehicles, sa_vehicles, counts, prefix, road_points):
+    """parkedcars.dat: where the source game parked a car, over San Andreas' own models."""
+    sa_names = {n.lower(): n for _i, (n, _t, _c) in sa_vehicles.items()}
+    # The fleet a `random` generator draws from: the source game's own ordinary traffic, each
+    # paired the same way a named car is. Boats, bikes, aircraft and everything the source game
+    # marks `ignore` - its mission and emergency vehicles - are left out.
+    fleet = []
+    for _i, (name, kind, klass) in sorted(vehicles.items()):
+        if kind == "car" and klass in FLEET_CLASSES:
+            fleet.append((name, map_vehicle(name, sa_names)[0]))
+    why = collections.Counter()
+    rows = []
+    for x, y, z, angle, model, c1, c2, alarm, lock, offset in generators:
+        if model < 0:
+            pair, note = "random/*", "any ordinary car"
+        else:
+            donor = vehicles[model][0]
+            sa, reason = map_vehicle(donor, sa_names)
+            why[reason] += 1
+            pair, note = "%s/%s" % (donor, sa), donor
+        rows.append("car   %9.2f %9.2f %8.2f %6.1f  %-20s %4d %4d %4d %4d   # %s @0x%x"
+                    % (x, y, z, angle, pair, c1, c2, alarm, lock, note, offset))
+
+    near = ""
+    if road_points:
+        # Not a filter - a car parked in a yard is legitimately away from a carriageway - but the
+        # number says at a glance whether the mined coordinates are in the same world as the roads.
+        # This is the independent check on the whole exercise: the placements come out of a
+        # compiled script and the carriageways out of the map files, and nothing connects the two
+        # except both being the same city.
+        cells = {}
+        for px, py in road_points:
+            cells.setdefault((int(px // 64), int(py // 64)), []).append((px, py))
+        far = 0
+        worst = 0.0
+        for x, y, _z, _a, _m, _c1, _c2, _al, _lk, _o in generators:
+            best = 1e18
+            cx, cy = int(x // 64), int(y // 64)
+            for dx in range(-2, 3):
+                for dy in range(-2, 3):
+                    for px, py in cells.get((cx + dx, cy + dy), ()):
+                        best = min(best, (px - x) ** 2 + (py - y) ** 2)
+            best = best ** 0.5
+            if best > 40.0:
+                far += 1
+            worst = max(worst, best if best < 1e8 else 0.0)
+        near = ("; %d of them stand more than 40 units from the nearest carriageway node, "
+                "furthest %.0f" % (far, worst))
+
+    lines = [
+        "# Where %s parked a car, written by tools/import_city.py from the source game's"
+        % ("GTA III" if prefix == "iii_" else "Vice City"),
+        "# data/main.scm. Neither donor game puts its parked cars in a map file: both create them",
+        "# from the mission script with literal coordinates, through the CREATE_CAR_GENERATOR",
+        "# opcode 0x014B. See tools/import_city.py for the opcode layout and the four filters",
+        "# every candidate had to pass.",
+        "#",
+        "# These are NOT San Andreas car generators. CTheCarGenerators is a fixed 500-entry save",
+        "# block written by array index with positions compressed to int16 * 0.125, which reaches",
+        "# +/-4096 - a region beyond that cannot even be expressed in it, and a save made with one",
+        "# set of regions would read a different city's cars with another. The plugin owns these,",
+        "# spawns them itself, and San Andreas' own block stays exactly what vanilla writes.",
+        "#",
+        "# Two kinds of line:",
+        "#",
+        "#   fleet <DONOR/SAMODEL> <DONOR/SAMODEL> ...",
+        "#   car   x y z heading <DONOR/SAMODEL> colour1 colour2 alarm lock",
+        "#",
+        "# fleet is what the source game meant by \"any ordinary car\": its own traffic models,",
+        "# each paired with the San Andreas model standing in for it. A car line whose model reads",
+        "# random/* is a generator that asked for one of those rather than for something in",
+        "# particular - 61 of Vice City's 148 did.",
+        "#",
+        "# The right-hand side of every pair is the San Andreas model actually used; the left is",
+        "# what the source game asked for. That is written down for one reason: these are",
+        "# placeholders, and when the donor's own vehicles are imported this file is where they go",
+        "# - change SAMODEL to the imported model's name and nothing else has to change, exactly",
+        "# as pedgrp.dat pairs a person and weapons.dat pairs a gun.",
+        "#",
+        "#   x y z     the region's own coordinates; the plugin adds the region origin. A z of",
+        "#             -100 means \"on the ground here\", which is the convention in both donor",
+        "#             games AND in San Andreas - CCarCtrl::CreateCarForScript compares against",
+        "#             the float at 0x859014, which is -100.0 exactly - so it travels untranslated.",
+        "#   heading   degrees, 0 facing north, turning anticlockwise. The same in all three games.",
+        "#   colour    the SOURCE game's carcols.dat indices, or -1 for \"any colour this model",
+        "#             comes in\". Recorded, not applied: a donor palette index means a different",
+        "#             colour in San Andreas' own, longer table.",
+        "#   alarm     percent chance the source game gave this one an alarm. Recorded, not",
+        "#             applied - see the note in tools/import_city.py.",
+        "#   lock      percent chance it left it locked. Applied.",
+        "#",
+        "# %d generator(s) of %d the script contains%s."
+        % (counts["kept"], counts["raw"], near),
+        "# Left out: %s." % (", ".join("%d %s" % (n, k) for k, n in counts.most_common()
+                                       if k not in ("raw", "kept")) or "none"),
+        "",
+        "fleet " + " ".join("%s/%s" % (d, s) for d, s in fleet),
+        "",
+    ]
+    lines += rows
+    with open(os.path.join(out, "parkedcars.dat"), "w", encoding="latin-1") as f:
+        f.write("\n".join(lines) + "\n")
+    return "parkedcars.dat", fleet, why
+
+
+def region_road_points(out):
+    """[(x, y)] from a region folder's own carnodes.dat, or None if it has none.
+
+    Only used to report how far the mined placements sit from the roads. --parked-cars-only does
+    not build the path graph, so it reads back the one the last full import wrote.
+    """
+    path = os.path.join(out, "carnodes.dat")
+    if not os.path.exists(path):
+        return None
+    points = []
+    with open(path, "r", encoding="latin-1") as f:
+        for raw in f:
+            line = raw.split("#", 1)[0]
+            t = [x for x in re.split(r"[,\s]+", line.strip()) if x]
+            if len(t) < 8:
+                continue
+            try:
+                points.append((float(t[0]), float(t[1])))
+            except ValueError:
+                continue
+    return points or None
+
+
+def import_parked_cars(out, src, sa, prefix, boxes, road_points):
+    """Mine the source main.scm for its parked cars and write the region's parkedcars.dat.
+
+    Returns the file name, or None when there is nothing to write. Everything it needs it opens
+    itself, so it can be run on its own against a region folder that already exists - see
+    --parked-cars-only - as well as from the middle of a full import.
+    """
+    scm_path = find_file(src, "data/main.scm")
+    ide_path = find_file(src, "data/default.ide")
+    sa_ide_path = find_file(sa, "data/vehicles.ide")
+    for what, path in (("data/main.scm", scm_path), ("data/default.ide", ide_path)):
+        if not path:
+            print("  %s not found - the region gets no parked cars" % what)
+            return None
+    if not sa_ide_path:
+        print("  San Andreas' data/vehicles.ide not found - the region gets no parked cars")
+        return None
+    vehicles = read_vehicle_ide(ide_path)
+    sa_vehicles = read_vehicle_ide(sa_ide_path)
+    generators, counts = scm_parked_cars(scm_path, prefix, vehicles, boxes)
+    if not generators:
+        print("parkedcars.dat: no car generators found in data/main.scm (%d raw match(es)) - the "
+              "region gets no parked cars" % counts["raw"])
+        return None
+    name, fleet, why = write_parked_cars(out, generators, vehicles, sa_vehicles, counts, prefix,
+                                         road_points)
+    randoms = sum(1 for g in generators if g[4] < 0)
+    print("parkedcars.dat: %d parked car(s) of %d raw opcode match(es); %d ask for any ordinary "
+          "car and draw on a fleet of %d model(s)"
+          % (len(generators), counts["raw"], randoms, len(fleet)))
+    print("  left out: %s"
+          % (", ".join("%d %s" % (n, k) for k, n in counts.most_common()
+                       if k not in ("raw", "kept")) or "none"))
+    print("  models over San Andreas' own: %s"
+          % ", ".join("%d %s" % (n, w) for w, n in why.most_common()))
+    return name
+
+
 # ---------------------------------------------------------------- main
 
 def main():
@@ -3878,7 +4330,7 @@ def main():
     # The pedestrian graph and the crowd that walks it. Both come out of files this script has
     # already opened for other reasons, so the cost is only the reading; both are skipped for a
     # --lite import, which places no map and therefore has no pavement to put anybody on.
-    ped_nodes_out, ped_groups_out, car_nodes_out = None, None, None
+    ped_nodes_out, ped_groups_out, car_nodes_out, parked_cars_out = None, None, None, None
     if not lite:
         if prefix == "iii_":
             graph, contributed, negate_w = iii_rotation_sign(ide_texts, ipl_texts, renames,
@@ -3963,6 +4415,12 @@ def main():
             if boxes and not zones:
                 print("  no SET_ZONE_PED_GROUP calls found in data/main.scm - every node takes the "
                       "default group; the crowd will be right for the city and not for the street")
+
+            # The cars the source game parked at its kerbs, mined from the same main.scm and
+            # validated against the same zone boxes. Its own block, above, explains the opcode.
+            parked_cars_out = import_parked_cars(
+                out, src, sa, prefix, boxes,
+                [(p[0], p[1]) for p in cars.pos] if cars.pos else None)
 
     copied, zones_have, gxt_missed = [], [], []
     for rel, dst in text_files:
@@ -4113,6 +4571,8 @@ def main():
         lines.append("PedGroups    = %s%s" % (base, ped_groups_out))
     if car_nodes_out:
         lines.append("CarNodes     = %s%s" % (base, car_nodes_out))
+    if parked_cars_out:
+        lines.append("ParkedCars   = %s%s" % (base, parked_cars_out))
     if not lite:
         lines += ["Img          = %s%s.img" % (base, region),
                   "Ide          = " + ", ".join(base + "ide\\" + n for n in ide_out),
@@ -4182,5 +4642,62 @@ def main():
     print("\nwrote %s - paste it into MapExpander.ini" % os.path.join(out, "region.ini"))
 
 
+def parked_cars_only():
+    """--parked-cars-only: write just parkedcars.dat into a region folder that already exists.
+
+    A full import rewrites the archive, the collision and every IDE and IPL, which takes minutes
+    and has twice been interrupted with the game holding a file open. Adding one data file to a
+    region that is already there should not cost that, so this does only that: it reads the source
+    game's script and zone file, writes parkedcars.dat, and adds the one key to the region.ini the
+    importer left behind. Nothing else in the folder is touched.
+    """
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    opts = [a for a in sys.argv[1:] if a.startswith("--")]
+    if len(args) < 2:
+        sys.exit(__doc__)
+    src, sa = args[0], args[1]
+    region = "vicecity"
+    for o in opts:
+        if o.startswith("--region="):
+            region = o.split("=", 1)[1]
+    dat_name = read_dat(src)[0]
+    prefix = "iii_" if dat_name.lower() == "gta3.dat" else "vc_"
+    out = os.path.join(sa, "MapExpander", region)
+    if not os.path.isdir(out):
+        sys.exit("%s does not exist - run a full import first" % out)
+    print("source: %s (%s)\noutput: %s" % (src, dat_name, out))
+
+    zone_path = find_file(src, "data/gta3.zon" if prefix == "iii_" else "data/info.zon")
+    boxes = []
+    if zone_path:
+        with open(zone_path, "r", encoding="latin-1") as f:
+            boxes = read_zon_boxes(f.read(), None if prefix == "iii_" else (2,))
+    else:
+        print("  no zone file found - the placements are not checked against the map's own boxes")
+    name = import_parked_cars(out, src, sa, prefix, boxes, region_road_points(out))
+    if not name:
+        return
+
+    # Put the key in the region.ini the importer already wrote, replacing any line that is there.
+    ini = os.path.join(out, "region.ini")
+    key = "ParkedCars   = MapExpander\\%s\\%s" % (region, name)
+    if not os.path.exists(ini):
+        print("\nno %s - add this line to the region's section in MapExpander.ini:\n  %s"
+              % (ini, key))
+        return
+    with open(ini, "r") as f:
+        lines = [l.rstrip("\n") for l in f]
+    lines = [l for l in lines if not l.strip().lower().startswith("parkedcars")]
+    at = max((i for i, l in enumerate(lines) if l.strip().lower().startswith("carnodes")),
+             default=len(lines) - 1)
+    lines.insert(at + 1, key)
+    with open(ini, "w") as f:
+        f.write("\n".join(lines) + "\n")
+    print("\nwrote %s and added\n  %s\nto %s" % (os.path.join(out, name), key, ini))
+
+
 if __name__ == "__main__":
-    main()
+    if "--parked-cars-only" in sys.argv:
+        parked_cars_only()
+    else:
+        main()
