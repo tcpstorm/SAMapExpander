@@ -2769,7 +2769,15 @@ class PedGraph:
                         return cast(float(fields[at]))
                     except (IndexError, ValueError):
                         return default
-                self.lanes[index] = (column(PATH_COL_MEDIAN, 160.0, float) / PATH_SCALE,
+                # The median goes down exactly as the source game wrote it, undivided, because the
+                # two games do not agree about what it is. GTA III writes the constant 160 for
+                # every car node, which is 10 units once the coordinate scale is taken off it.
+                # Vice City writes a continuous small value - 3.5, 4, 1.92 - which is already a
+                # width and would become a couple of centimetres if the same scale were applied.
+                # Rather than guess which reading is right for which, the raw number is recorded
+                # and nothing uses it; lane placement is done from the lane counts and San Andreas'
+                # own lane width, which cannot be wrong for either game.
+                self.lanes[index] = (column(PATH_COL_MEDIAN, 0.0, float),
                                      column(PATH_COL_LEFT, 1), column(PATH_COL_RIGHT, 1),
                                      column(PATH_COL_CROSSING, 0))
         for slot, fields in enumerate(nodes[:PATH_GROUP_SLOTS]):
@@ -2952,9 +2960,14 @@ def write_path_nodes(out, name, graph, zones, what, extra):
     ]
     if extra:
         lines += [
-            "# median is the width of the central reservation in world units, and left and right",
-            "# are how many lanes run each way - the columns the source game's own traffic drove",
-            "# by. crossing is its pedestrian-crossing flag.",
+            "# left and right are how many lanes run each way - the columns the source game's own",
+            "# traffic drove by - and crossing is its pedestrian-crossing flag.",
+            "#",
+            "# median is the source game's own number, exactly as it wrote it, and the two games",
+            "# do not agree about what it means: GTA III writes 160 for every car node and Vice",
+            "# City writes a continuous small value like 3.5 or 4. Nothing reads it. Lanes are",
+            "# placed from the counts above and San Andreas' own 5.4-unit lane width instead,",
+            "# which cannot be wrong for either of them.",
         ]
     lines += [
         "#",
