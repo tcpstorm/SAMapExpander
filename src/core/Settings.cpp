@@ -388,6 +388,7 @@ namespace Settings {
         world.regionGap = 500.0f;
         world.mapWindow = false;           // one grid over the whole world, not one per map
         world.mapWindowMargin = 400.0f;
+        world.streamDistance = -1.0f;      // auto: leave San Andreas' 80 alone unless we stretched the grid
         world.linkRegionLods = true;
         world.dropUnlinkedLods = true;
         world.regionWeapons = true;
@@ -432,6 +433,7 @@ namespace Settings {
             world.regionGap = w->GetFloat("RegionGap", 500.0f);
             world.mapWindow = w->GetBool("MapWindow", false);
             world.mapWindowMargin = w->GetFloat("MapWindowMargin", 400.0f);
+            world.streamDistance = w->GetFloat("StreamDistance", -1.0f);
             world.linkRegionLods = w->GetBool("LinkRegionLods", true);
             world.dropUnlinkedLods = w->GetBool("DropUnlinkedLods", true);
             world.regionWeapons = w->GetBool("RegionWeapons", true);

@@ -71,6 +71,7 @@
 #include <iterator>
 #include "WorldSectors.h"
 #include "SectorGridSites.h"
+#include "StreamRange.h"
 #include "Settings.h"
 #include "Log.h"
 
@@ -388,6 +389,10 @@ void Refit(float lo, float hi) {
     for (const Site& s : kSites)
         if (s.kind == kLowImmediate || s.kind == kHighImmediate)
             patch::SetUInt(s.operand, NewValue(s));
+    // The cell has just changed size, and the near-field streaming pass converts its radius into a
+    // count of cells. Left alone that count would be wrong for the new grid - which is the whole
+    // reason StreamRange exists.
+    StreamRange::GridChanged();
 }
 
 }  // namespace WorldSectors

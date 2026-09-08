@@ -11,6 +11,7 @@
 #include "WaterRender.h"
 #include "CityLoader.h"
 #include "WorldSectors.h"
+#include "StreamRange.h"
 #include "MapWindow.h"
 #include "DebugKeys.h"
 #include "Teleport.h"
@@ -54,6 +55,10 @@ public:
                 MapWindow::Install();
             Interiors::Install();
         }
+        // After WorldSectors, which decides the cell size the near-field streaming pass was
+        // silently measuring its radius in; outside the region block, because an explicit
+        // [World] StreamDistance is an instruction whether or not a region is loaded.
+        StreamRange::Install();
         if (Settings::world.fixPickupPositions || Settings::world.fixCarGeneratorPositions) PickupFix::Install();
         if (Settings::world.fixMeleeBeyondMap) MeleeFix::Install();
         IplLoader::Install();
