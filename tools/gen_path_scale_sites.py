@@ -60,8 +60,27 @@ class Pe:
         return self.data[o:o + n] if o is not None else b""
 
 
+# Sites the scanner could not settle and a person did, with the reason. The scanner leaves a site
+# unclear when the 16-bit load that feeds it is separated from the fild by a stack adjustment it
+# cannot follow; that is a small set and each one is worth reading by hand, because the cost of
+# leaving a real decode out is a coordinate that silently comes back at a fraction of its size.
+#
+# 0x427278 is the one that matters. CCarCtrl::PickNextNodeToChaseCar reads two nodes' x and y in
+# one interleaved run - 0x427263, 0x427278, 0x427286, 0x427294 - and a `sub esp, 8` at 0x42726D
+# lands between the store at 0x42725F and the load at 0x427270, so the scanner lost the trail for
+# exactly one of the four. The value being scaled is `movsx edx, word ptr [eax + 0xa]` from
+# 0x427257, off a base whose sibling load at 0x427269 is [eax + 8]: the CPathNode triple. Its three
+# siblings are already in the set, so leaving this one out would have made a chasing car read one
+# node's y at a quarter of its real distance.
+ADJUDICATED = {
+    0x427278: ("kPathNode", "CCarCtrl::PickNextNodeToChaseCar+0x388",
+               "second node's y, read at 0x427257 as word [eax+0xa]; the sibling at 0x427269 is "
+               "[eax+8], and its three siblings in the same run are already in the set"),
+}
+
+
 def read_inventory(path):
-    """[(address, kind, label)] for the two decode sections of the inventory."""
+    """[(address, kind, label)] for the two decode sections of the inventory, plus the hand calls."""
     import re
     out, section = [], None
     for line in open(path, encoding="latin-1"):
@@ -77,6 +96,13 @@ def read_inventory(path):
         m = re.match(r"^([0-9A-F]{8})\s+\+\S+\s+(\S+)", line)
         if m and section:
             out.append((int(m.group(1), 16), section, m.group(2)))
+    have = set(a for a, _k, _l in out)
+    for addr, (kind, label, _why) in sorted(ADJUDICATED.items()):
+        if addr in have:
+            sys.exit("0x%X is hand-adjudicated but the scanner already classified it; one of the "
+                     "two is now wrong" % addr)
+        out.append((addr, kind, label))
+    out.sort()
     return out
 
 

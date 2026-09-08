@@ -19,8 +19,18 @@ What a widening would have to change, all together or not at all:
          the 28-byte records out of nodes<N>.dat verbatim with no transform, so one hook after
          the read - the plain call at 0x452F75, not the HOODLUM-stolen entry at 0x4529F0 - can
          rescale every one of them without editing a data file
-      4  region constants at 0x859A8C/90/94/98 (1/750, -3000, 3000, 750), or nodes are filed into
-         the wrong one of the 8x8 areas
+      0  region constants. An earlier note said the four at 0x859A8C/90/94/98 (1/750, -3000, 3000,
+         750) had to move with the scale. They do not, and moving them would be a mistake.
+         CPathFind::FindRegionForCoors maps a world FLOAT to one of 64 areas; nothing about it
+         depends on how a node's position is compressed. What it does decide is which of the 64
+         nodes<N>.dat a square of ground belongs to - and San Andreas' own 64 files are filed by
+         exactly these boundaries, so redefining them would mean redistributing every shipped node
+         across a new grid, with cross-area link fixups, at load time. Left alone, a region's
+         ground simply clamps into the edge areas (Vice City into column 7, Liberty City into row
+         7), which is survivable for the reason the original finding gave: nothing validates a
+         node against its area's box. The only readers of the inverse helpers
+         FindXCoorsForRegion/FindYCoorsForRegion are one call each in
+         CCarCtrl::FindNodesThisCarIsNearestTo, and FindStartPointOfRegion has no callers at all.
 
 And what it would still not settle: 3 sites are honestly unclear (their feeding store is in
 another basic block), and the A2 evidence is inference from struct-offset sets and function

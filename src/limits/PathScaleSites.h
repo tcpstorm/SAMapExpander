@@ -18,7 +18,7 @@ constexpr uint32_t kVanillaEncode = 0x859000;   // 8.0
 constexpr uint8_t kDispOffset = 2;           // bytes from the instruction to the disp32
 constexpr uint8_t kInstructionBytes[] = { 0xD8, 0x0D };
 
-// 187 sites decode a CPathNode coordinate (int16 at +8, +0x0A, +0x0C).
+// 188 sites decode a CPathNode coordinate (int16 at +8, +0x0A, +0x0C).
 constexpr uint32_t kNodeDecodeSites[] = {
     // CPathNode::GetPosition
     0x420A29,
@@ -46,6 +46,7 @@ constexpr uint32_t kNodeDecodeSites[] = {
     0x426FD7,
     0x42702C,
     0x427263,
+    0x427278,
     0x427286,
     0x427294,
     // CCarCtrl::FindLinksToGoWithTheseNodes
