@@ -118,9 +118,19 @@ constexpr unsigned kLinkCoord[] = { 0, 2 };
 // entry at 0x4529F0 is a HOODLUM jump into the relocated body, which is why the two CALL SITES are
 // retargeted rather than the function, and why calling 0x4529F0 from the hook still works.
 constexpr uintptr_t kLoadPathFindData = 0x4529F0;
-constexpr uintptr_t kLoadCallSites[] = {
-    0x40CA2B,   // CStreaming::ConvertBufferToObject - the streamed load, the one that runs in play
-    0x452F75,   // CPathFind::LoadPathFindData(int area) - the synchronous wrapper
+// The call sites of that function, and whether each one has to be hooked for the rescale to be
+// correct. Only the first does: CStreaming::ConvertBufferToObject is how an area is actually read
+// during play. The second is inside the synchronous wrapper CPathFind::LoadPathFindData(int area),
+// which has NO CALLERS AT ALL in this build - it is hooked because if some other mod ever calls it
+// the rescale should still happen, but it must not be able to fail the whole patch set on its own.
+struct LoadCallSite {
+    uintptr_t address;
+    bool required;
+    const char* what;
+};
+constexpr LoadCallSite kLoadCallSites[] = {
+    { 0x40CA2B, true,  "CStreaming::ConvertBufferToObject" },
+    { 0x452F75, false, "the synchronous CPathFind::LoadPathFindData(int), which nothing calls" },
 };
 
 // A node count this far out of range means the arrays are not what this thinks they are, so the
@@ -357,14 +367,20 @@ void Install() {
 
     // San Andreas' own nodes are written for 0.125, so they are rescaled as each area arrives.
     int hooked = 0;
-    for (uintptr_t site : kLoadCallSites)
-        if (MemPatch::RetargetCall(site, kLoadPathFindData, reinterpret_cast<void*>(&LoadHook)))
+    for (const LoadCallSite& site : kLoadCallSites) {
+        if (MemPatch::RetargetCall(site.address, kLoadPathFindData,
+                                   reinterpret_cast<void*>(&LoadHook))) {
             hooked++;
-    if (hooked != (int)(sizeof(kLoadCallSites) / sizeof(uintptr_t))) {
-        Log::Write("paths: ERROR - %d of %u call sites of CPathFind::LoadPathFindData could be "
-                   "hooked. San Andreas' own paths will be read at the wrong scale; turn "
-                   "WidenPathNodes off",
-                   hooked, (unsigned)(sizeof(kLoadCallSites) / sizeof(uintptr_t)));
+            continue;
+        }
+        if (!site.required) {
+            Log::Write("paths: %s could not be hooked, which does not matter - nothing calls it",
+                       site.what);
+            continue;
+        }
+        Log::Write("paths: ERROR - %s could not be hooked, so San Andreas' own paths would be read "
+                   "at the wrong scale. Nothing further is done; turn WidenPathNodes off",
+                   site.what);
         return;
     }
 
