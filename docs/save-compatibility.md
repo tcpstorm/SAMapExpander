@@ -58,7 +58,39 @@ Every one was confirmed by the call sequence at 0x5D14D5-0x5D15A6.
 | Audio | 0x5D3EE0 | - | - |
 | 3dMarkers | 0x5D4300 | marker positions | - |
 
-Two of those deserve their own note, because they are the ones nobody expects.
+### There is no framing between blocks
+
+This is the fact everything else hangs on. `CGenericGameStorage::LoadDataFromWorkBuffer` (0x5D1300)
+is a **plain sequential byte reader**: it copies the number of bytes it is asked for out of a rolling
+0xC800 work buffer, advancing a cursor at 0xC16EEC and refilling from the file when it runs dry.
+There is no block tag, no length prefix, no offset table. Each `Load` function simply asks for what
+it expects, in a fixed order.
+
+So **a block that changes size does not fail - it silently shifts every block after it.** A save
+written with a different `main.scm` does not report a mismatched Scripts block; it reads garbage into
+the pools, the garages and everything downstream. That is why "never widen a block San Andreas saves"
+is a hard rule rather than a preference.
+
+### The integrity check is a plain byte sum, and that is good news
+
+`CGenericGameStorage::CheckDataNotCorrupt` (0x5D1170) walks the whole file adding up every byte,
+subtracts the final four, and compares the total against those four bytes read as a dword. That is
+the entire check: no signature, no per-block hash, nothing keyed to the game build.
+
+Two consequences. It confirms the sidecar must be a **separate file** - appending to the `.b` would
+break the sum. And, more usefully, **an existing save can be rewritten outside the game and
+re-checksummed**, which turns a repack from a warning into a migration. See "Migrating a save written
+before a move" below.
+
+### Where saves live
+
+`\GTA San Andreas User Files\GTASAsf<N>.b` under the user's documents folder; the name is built in
+`CGenericGameStorage::MakeValidSaveName` (0x5D0E90). The sidecar belongs beside it as
+`GTASAsf<N>.mapx`.
+
+---
+
+Two blocks deserve their own note, because they are the ones nobody expects.
 
 **Streaming (0x5D29A0) is a byte per model slot, for every slot.** It walks
 `CStreaming::ms_aInfoForModel` from 0x8E4CC6 to 0x9654B6 at stride 0x14 - **26316 entries** - and
@@ -188,6 +220,31 @@ with a log line saying so.
   model ids - so garages depend on the ledger in A being in place first.
 - **Version the sidecar** with the repo `VERSION` and a hash of the layout, so a future format change
   can migrate instead of breaking.
+
+---
+
+## Migrating a save written before a move
+
+Because the checksum is a byte sum and nothing else, a save is rewritable outside the game. That
+makes an offline migration possible: read a `.b`, add the old-to-new offset to every coordinate that
+fell inside a region that moved, write it back, recompute the final dword. The same pass can renumber
+model ids that shifted.
+
+What it costs is a parser. Since there is no framing, reaching the coordinates in a late block means
+knowing the exact size of every block before it, and two of them are not fixed:
+
+- **Scripts** is sized by the loaded `main.scm` global area, read from 0xA49963 and written in
+  0xC800-byte chunks;
+- **Pools** is sized by how many vehicles, peds and objects the save holds, so it has to be walked
+  rather than skipped.
+
+Everything else is a fixed size or is self-describing from a count written immediately before it
+(`CRestart` at 0xA4326C, `CTheCarGenerators` at 500 x 0x20, `CPickups` at 620 x 0x20).
+
+So this is real work, but it is bounded, it is entirely offline, and it can be validated without the
+game by round-tripping a save through the parser and checking the bytes come back identical. **Write
+that round-trip test before writing the rebase.** It is also the only way to rescue saves that people
+have already made, which the ledger by itself cannot do.
 
 ---
 
