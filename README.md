@@ -36,6 +36,13 @@ What it does today:
   Andreas' own 5.4-unit lane width. **San Andreas' path data is not touched at all**, so its own
   traffic cannot regress. What this does not give is traffic lights or path-based pursuit AI; see
   *docs/known-limitations.md*.
+- **Cars parked at the imported city's own kerbs.** Neither donor game puts a parked car in a map
+  file: both create them from `main.scm` with the `CREATE_CAR_GENERATOR` opcode and literal
+  coordinates, so the importer mines them — 148 spaces in Vice City, 147 in Liberty City — and the
+  plugin stands a car in each. They are **not** San Andreas car generators: `CTheCarGenerators` is a
+  fixed 500-entry save block written by array index with positions compressed to ±4096, which a
+  region cannot even be expressed in. A space the player empties stays empty rather than refilling
+  the moment they look away. See *docs/parked-cars.md*.
 - **A region's own map assets.** Point a region at its original `.img`, `.ide`, `.ipl` and `.col` and the
   plugin registers the archive, remaps the model ids into a free range and places every `inst` line at
   the region's origin — through the game's own loaders. See *Loading a city's own assets*; `ModelIdLimit`
@@ -137,6 +144,10 @@ SA x 4171..6963, y −778..2626).
 | `RegionTraffic` | 1 | drive cars on a region's own `CarNodes` carriageways. Skipped under SA-MP. |
 | `RegionTrafficDensity` | 1.0 | multiplier on how many, over the car budget popcycle.dat gives for the player's zone |
 | `RegionTrafficRadius` | 90.0 | how far from the player traffic lives |
+| `RegionParkedCars` | 1 | stand cars in the kerbside spaces a region's own script used, from its `ParkedCars` file. Skipped under SA-MP. |
+| `RegionParkedCarsDensity` | 1.0 | ceiling on how many exist at once (1.0 = 14), not a thinning of the source game's own spaces |
+| `RegionParkedCarsRadius` | 110.0 | how far from the player a space is worth filling in |
+| `RegionParkedCarsRespawn` | 720.0 | seconds a space stays empty after the player takes or destroys the car in it; 0 = for the rest of the session |
 | `Debug` | 0 | verbose log, F8 diagnostics, water render statistics |
 
 ### Region data (feature branches)
