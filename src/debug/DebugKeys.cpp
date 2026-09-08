@@ -16,6 +16,7 @@
 #include "Zones.h"
 #include "RegionPeds.h"
 #include "RegionPolice.h"
+#include "RegionTraffic.h"
 #include "WeaponTypes.h"
 #include "RegionWeapons.h"
 #include "Interiors.h"
@@ -129,8 +130,9 @@ static void OnFrame() {
     Zones::LogPlayerZone(pos.x, pos.y, pos.z);
     // The population, which is the one thing that cannot be checked by looking at the log on
     // start-up: it says nothing until somebody is actually standing there.
-    Log::Write("    peds: %d walking on the region's own graph, %d police out; the player is %s a "
-               "region's pedestrian graph", RegionPeds::Count(), RegionPolice::Count(),
+    Log::Write("    peds: %d walking on the region's own graph, %d police out, %d car(s) driving "
+               "its carriageways; the player is %s a region's pedestrian graph",
+               RegionPeds::Count(), RegionPolice::Count(), RegionTraffic::Count(),
                RegionPeds::PlayerOverGraph() ? "over" : "not over");
 }
 
