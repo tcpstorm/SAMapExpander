@@ -47,6 +47,25 @@ struct MapRegion {
     float gridMaxY;           // local Y of the north edge of row 0
     int tilesX, tilesY;
 
+    // The ground the region's `inst` lines actually stand on, in the region's own coordinates,
+    // measured from its IPLs at load. This is what the world sector grid has to reach and what
+    // packing moves about; the tile grid above is a radar artefact and is routinely bigger (Vice
+    // City declares 4000 x 4000 of radar and occupies 3436 x 3681 of it), so fitting the grid to
+    // the tiles rather than the buildings buys a bigger sector for nothing. False when the region
+    // has no readable IPL - under SA-MP the server places the buildings - and the tile grid is
+    // then all there is to go on.
+    bool  hasContent = false;
+    float contentMinX = 0.0f, contentMaxX = 0.0f, contentMinY = 0.0f, contentMaxY = 0.0f;
+
+    float TileWest(int col) const  { return originX + gridMinX + col * tileSize; }
+    float TileNorth(int row) const { return originY + gridMaxY - row * tileSize; }
+
+    // The same box in SA world coordinates, falling back to the tile grid when nothing was read.
+    float ContentWest() const  { return hasContent ? originX + contentMinX : TileWest(0); }
+    float ContentEast() const  { return hasContent ? originX + contentMaxX : TileWest(tilesX); }
+    float ContentSouth() const { return hasContent ? originY + contentMinY : TileNorth(tilesY); }
+    float ContentNorth() const { return hasContent ? originY + contentMaxY : TileNorth(0); }
+
     std::vector<std::string> zoneFiles;  // III/VC .zon or SA IPL files, in the region's own coords
     std::string zoneNamesFile;           // "GXTKEY = Display Name" lines; empty if none
     std::string weaponFile;              // importer's weapons.dat: the source game's guns over SA's weapon types
@@ -56,9 +75,6 @@ struct MapRegion {
     // may name the same area: an interior split over rooms that are not one box (Vercetti's house
     // and its tower) needs one box each, and any of them makes the whole area visible.
     std::vector<InteriorVolume> interiors;
-
-    float TileWest(int col) const  { return originX + gridMinX + col * tileSize; }
-    float TileNorth(int row) const { return originY + gridMaxY - row * tileSize; }
 };
 
 struct WorldSettings {
@@ -81,8 +97,12 @@ struct WorldSettings {
     int buildingPoolLimit, dummyPoolLimit; // CPools' entity pools; < 0 = vanilla + the regions' inst lines
     int ptrNodePoolLimit;                  // CPools' sector pointer-node pool; < 0 = vanilla + what the regions need
     bool extendWorldSectors;               // double what the static world grids cover, so a region beyond +/-3000 renders
+    bool fitSectorsToContent;              // fit the grid to where the buildings are rather than to the radar tile grids
+    float sectorContentMargin;             // world units of slack left round the measured content box
     bool packRegions;                      // move each region up against the map instead of leaving it where its ini put it
     float regionGap;                       // world units of clear ground packing leaves between a region and its neighbour
+    bool mapWindow;                        // fit the 120 cells to the map the player is on and re-file on crossing
+    float mapWindowMargin;                 // how far past a map's edge the player goes before the window follows
     bool linkRegionLods;                   // rebuild HD->LOD links from the source game's naming rule; off = LODs draw as plain objects
     bool dropUnlinkedLods;                 // leave out LODs no HD hides - orphans and whole-district island meshes - which SA would draw through the real geometry
     std::vector<int> skipRenderModels;     // remapped model ids the render guard refuses to draw (a crash workaround while a model is diagnosed)
@@ -100,7 +120,14 @@ namespace Settings {
     // Bounding box of the vanilla map plus every region's tile grid, in SA world coordinates.
     void WorldExtent(float& minX, float& maxX, float& minY, float& maxY);
     // Same, without the pause map's margin or custom bounds: what the world grid has to reach.
+    // Under FitSectorsToContent this is the ground the regions' inst lines actually stand on
+    // rather than the radar tile grids they declare, which is smaller and so cheaper per scan.
     void RegionExtent(float& minX, float& maxX, float& minY, float& maxY);
+    // The box one region's entities occupy, in SA world coordinates - what MapWindow fits the
+    // grid to when the player is standing in that region. Index -1 is San Andreas' own +/-3000.
+    void MapExtent(int index, float& minX, float& maxX, float& minY, float& maxY);
+    // How many maps there are, San Andreas included, i.e. the valid range for MapExtent.
+    int MapCount();
     // True when this process was started by an SA-MP launcher. samp.dll is injected after ASI
     // plugins have already run, so its presence cannot be relied on this early; the launcher's
     // command line (-c -h <host> -p <port> -n <nick>) can.
