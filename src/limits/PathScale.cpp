@@ -269,8 +269,16 @@ bool VerifyAll(const uint32_t (&sites)[N], uint32_t expected, const char* what) 
         if (VerifySite(site, expected)) continue;
         uint8_t here[6] = {};
         memcpy(here, (const void*)(uintptr_t)site, sizeof(here));
+        // Almost always this means something else got here first, and there is one thing that
+        // would: fastman92's limit adjuster ships an extended path format and repoints these very
+        // sites so the engine reads wider ids and wider coordinates. If it is loaded then it owns
+        // the path system and this must not touch it - which is exactly what refusing to patch
+        // does. src/limits/WorldSectors.cpp stands aside from the same mod for the world grid, and
+        // by the same test: whether the game's own pooled constants are still what the sites read.
         Log::Write("paths: the %s site at 0x%X reads %02X %02X %02X %02X %02X %02X, not an fmul of "
-                   "0x%X; nothing is patched and the path scale stays vanilla",
+                   "0x%X. Nothing is patched and the path scale stays as it is - if fastman92's "
+                   "limit adjuster is installed then it owns the path format and this standing "
+                   "aside is correct",
                    what, site, here[0], here[1], here[2], here[3], here[4], here[5], expected);
         return false;
     }
