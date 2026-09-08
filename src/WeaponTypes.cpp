@@ -622,15 +622,26 @@ int WeaponModeFor(int type) {
 SafetyHookInline& WeaponModeOriginal() { static SafetyHookInline h; return h; }
 bool gSaidWeaponMode = false;
 
-// The weapon type in the player's hands, or -1 when it is not one of ours.
-int HeldNewWeapon() {
+// Where the player's current weapon type is stored, or null when there is no player.
+int32_t* HeldWeaponField() {
     typedef void* (__cdecl* FindPlayerPedFn)(int);
     void* ped = reinterpret_cast<FindPlayerPedFn>(kFindPlayerPed)(-1);
-    if (!ped) return -1;
+    if (!ped) return nullptr;
     const int slot = *(const int8_t*)((uintptr_t)ped + kPedActiveSlot);
-    if (slot < 0 || slot >= kPedWeaponSlots) return -1;
-    const int type = *(const int32_t*)((uintptr_t)ped + kPedWeapons +
-                                       (unsigned)slot * kPedWeaponStride);
+    if (slot < 0 || slot >= kPedWeaponSlots) return nullptr;
+    return (int32_t*)((uintptr_t)ped + kPedWeapons + (unsigned)slot * kPedWeaponStride);
+}
+
+// The one stand-in that spans a whole frame's 2D pass rather than a single function, so that the
+// others can see past it to what the player is really carrying.
+int32_t* gSpanLentAt = nullptr;
+int32_t gSpanLentWas = 0;
+
+// The new weapon actually in the player's hands, seeing through a lend that is in place right now.
+int HeldNewWeapon() {
+    int32_t* held = HeldWeaponField();
+    if (!held) return -1;
+    const int type = (gSpanLentAt == held) ? gSpanLentWas : *held;
     return (type >= kFirstNewType && type <= kLastNewType) ? type : -1;
 }
 
@@ -652,6 +663,108 @@ void __fastcall SetPlayerWeaponModeHook(void* self, void*, int mode, int a, int 
     }
     WeaponModeOriginal().thiscall<void>(self, mode, a, b);
 }
+
+// ---------------------------------------------------------------- the black around the scope
+//
+// San Andreas' sniper reticle is one QUADRANT of the scope: SNIPERcrosshair is 128x128 DXT3, 29% of
+// it opaque black in the outer corner with the white rim on the inner arc and a clear centre, and
+// CHud::DrawCrossHairs draws it four times mirrored about the middle of the screen. Four quadrants
+// at 210 virtual units cover 420 of a 640-wide virtual screen, so the sides are left over - and
+// they are filled, black, somewhere else entirely.
+//
+// That somewhere is Render2dStuff (0x53E230), which after the HUD's own passes reads the player's
+// weapon type inline at 0x53E2D2, works out whether the camera is in one of six scope modes, and
+// then:
+//
+//   0x53E31B  cmp esi, 0x22   (SNIPERRIFLE)   -> draw
+//   0x53E320  cmp esi, 0x13                   -> draw
+//             anything else                   -> skip all five rectangles
+//   0x53E331  push 0xFF, 0, 0, 0              -> the colour: opaque black
+//   five CSprite2d::DrawRect calls
+//
+// So the black is gated on the weapon TYPE, a new type fails it, and the scope came out with its
+// reticle and clear sides. Nothing in CHud could have fixed that, which is why the reticle work
+// looked complete and was not.
+//
+// Render2dStuff is the whole 2D pass and it calls CHud::Draw at 0x53E4FF, so lending it the donor's
+// number wholesale would also hand the weapon wheel the donor's icon. Two things keep that honest:
+// the lend only happens while the camera is in one of the six modes the fill needs - there is
+// nothing to gain outside them - and CHud::DrawWeaponIcon is hooked to put our own number back for
+// the length of its call, so the icon stays the gun the player is holding.
+
+constexpr uintptr_t kRender2dStuff = 0x53E230;
+const uint8_t kRender2dStuffOp[5] = { 0xA1, 0x24, 0x7B, 0xC9, 0x00 };
+
+// Where Render2dStuff reads the ped's weapon type, so the tests below are known to be the ones that
+// go with it.
+constexpr uintptr_t kScopeFillTypeReadAt = 0x53E2D2;
+const uint8_t kScopeFillTypeReadOp[7] = { 0x8B, 0xB4, 0x01, 0xA0, 0x05, 0x00, 0x00 };
+// `cmp esi, imm8` twice: the two weapon types the fill is drawn for.
+const uintptr_t kScopeFillTypeAt[2] = { 0x53E31B, 0x53E320 };
+// `cmp ax, imm16` six times: the camera modes it is drawn in.
+const uintptr_t kScopeFillModeAt[6] = { 0x53E2F5, 0x53E2FB, 0x53E301, 0x53E307, 0x53E30D, 0x53E313 };
+
+int gScopeFillType[2];
+int gScopeFillMode[6];
+bool gScopeFillKnown = false;
+
+bool ReadScopeFill() {
+    if (!BytesAre(kScopeFillTypeReadAt, kScopeFillTypeReadOp, sizeof(kScopeFillTypeReadOp)))
+        return false;
+    for (int i = 0; i < 2; i++) {
+        if (patch::GetUChar(kScopeFillTypeAt[i]) != 0x83 ||
+            patch::GetUChar(kScopeFillTypeAt[i] + 1) != 0xFE) return false;
+        gScopeFillType[i] = patch::GetUChar(kScopeFillTypeAt[i] + 2);
+    }
+    for (int i = 0; i < 6; i++) {
+        if (patch::GetUChar(kScopeFillModeAt[i]) != 0x66 ||
+            patch::GetUChar(kScopeFillModeAt[i] + 1) != 0x3D) return false;
+        gScopeFillMode[i] = patch::GetUChar(kScopeFillModeAt[i] + 2);
+    }
+    gScopeFillKnown = true;
+    return true;
+}
+
+bool ScopeFillWantsType(int type) {
+    for (int i = 0; i < 2; i++) if (gScopeFillType[i] == type) return true;
+    return false;
+}
+
+bool ScopeFillWantsMode(int mode) {
+    for (int i = 0; i < 6; i++) if (gScopeFillMode[i] == mode) return true;
+    return false;
+}
+
+SafetyHookInline& Render2dOriginal() { static SafetyHookInline h; return h; }
+bool gSaidScopeFill = false;
+
+void __cdecl Render2dStuffHook() {
+    Lent type;
+    const int mine = HeldNewWeapon();
+    if (mine >= 0 && gScopeFillKnown) {
+        const int donor = gDonor[mine - kFirstNewType];
+        // Only when the donor is one of the two types the fill is drawn for, and only in the camera
+        // modes it is drawn in. Outside those the lend would buy nothing and be visible to the rest
+        // of the 2D pass for no reason at all.
+        if (donor >= 0 && ScopeFillWantsType(donor) && ScopeFillWantsMode(ActiveCameraMode())) {
+            int32_t* held = HeldWeaponField();
+            if (held) {
+                type.Lend(held, donor);
+                gSpanLentAt = held;
+                gSpanLentWas = mine;
+                if (!gSaidScopeFill) {
+                    gSaidScopeFill = true;
+                    Log::Write("weapon types: scope-fill stand-in - weapon type %d is drawn as %d "
+                               "for one 2D pass, so Render2dStuff fills the sides of the scope "
+                               "black as it does for type %d", mine, donor, donor);
+                }
+            }
+        }
+    }
+    Render2dOriginal().ccall<void>();
+    gSpanLentAt = nullptr;
+}
+
 
 bool gStandIns = false;
 
@@ -809,6 +922,29 @@ int Add(const char* name, int donorType) {
             Log::Write("weapon types: CTaskSimplePlayerOnFoot::ProcessPlayerWeapon's camera-mode "
                        "chain at 0x685B4C is not what San Andreas ships, so it is left alone; a new "
                        "sniper rifle will zoom with the M4's camera mode and the wrong reticle");
+        // The black filled in around the scope, which Render2dStuff draws only for two weapon
+        // types. The icon hook goes with it and is pointless without it.
+        if (ReadScopeFill()) {
+            HookStandIn(kRender2dStuff, kRender2dStuffOp, sizeof(kRender2dStuffOp),
+                        reinterpret_cast<void*>(&Render2dStuffHook), Render2dOriginal(),
+                        "Render2dStuff", "a new scoped gun will zoom with clear sides, not black");
+            // CHud::DrawWeaponIcon is deliberately NOT hooked.
+            //
+            // It would be the tidy thing to do: the lend below runs across the whole 2D pass and
+            // CHud::Draw hangs off it, so while the scope is up the wheel shows the donor's icon
+            // rather than the gun the player is holding. Putting our own number back for that one
+            // call fixes it in principle. In practice an inline hook on that function stops every
+            // weapon icon in the game from drawing - the imports, San Andreas' own, the fists -
+            // and it did exactly that when it shipped.
+            //
+            // A wrong icon for the seconds a scope is raised is a small price. No icons at all,
+            // ever, is not, so the lend is left visible there and the hook stays out until someone
+            // works out what that function does not tolerate.
+        } else {
+            Log::Write("weapon types: Render2dStuff's scope fill at 0x53E2D2 is not what San "
+                       "Andreas ships, so it is left alone; a new scoped gun will zoom with clear "
+                       "sides rather than black");
+        }
     }
 
     // Only worth an inline hook if one of the guns actually is a rifle; a pistol answers the same
