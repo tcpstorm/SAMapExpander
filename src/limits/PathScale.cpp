@@ -204,6 +204,22 @@ void RescaleArea(int area) {
 
 void __fastcall LoadHook(void* self, void* /*edx*/, void* file, int area) {
     reinterpret_cast<LoadPathFindDataFn>(kLoadPathFindData)(self, file, area);
+    // The one way an area could be rescaled twice is a call that read nothing and left the
+    // previous arrays in place - so that is the case to refuse, and it is the only one. Every
+    // other call has just freads the records out of the file, so what is in the arrays afterwards
+    // is always vanilla-scaled and always wants exactly one pass.
+    //
+    // Remembering which areas have been done would be the obvious guard and would be wrong:
+    // unloading an area frees its arrays and reloading it asks for the same size again, so the
+    // allocator very plausibly hands back the same address with the same node count, and a guard
+    // keyed on that would skip a rescale that was genuinely needed. An area left at the vanilla
+    // scale while everything around it is widened would put that whole square of road at twice its
+    // real size, which is a far worse failure than the one the guard was for.
+    if (!file) {
+        Log::Write("paths: area %d was asked for with nothing to read from; its nodes are left as "
+                   "they are", area);
+        return;
+    }
     RescaleArea(area);
 }
 
