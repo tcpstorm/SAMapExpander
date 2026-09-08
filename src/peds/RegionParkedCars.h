@@ -18,4 +18,9 @@ namespace RegionParkedCars {
 
     // How many are standing at the kerb, for the log and the F8 read-out.
     int Count();
+
+    // The ceiling on how many may stand there at once, and how many bays are armed and within the
+    // radius right now - which is what tells an empty street apart from a street with no bays.
+    int Budget();
+    int ArmedNear(const CVector& playerPosition);
 }

@@ -299,6 +299,58 @@ competes with the traffic, the peds or the map for a streaming slot.
 
 ---
 
+## One more the engine does that is not obvious
+
+This was found the expensive way, in a shipped build. `docs/traffic-and-population.md` numbers six
+of these; this is the seventh, and it belongs with them.
+
+### 8. A car of ours that is forgotten rather than handed back reaches Los Santos
+
+`docs/traffic-and-population.md` §1 explains why our vehicles are `PERMANENT`, and the section
+above explains why they are not `PARKED`. Neither says what happens to one that stops being ours
+without going through `VehicleSpawn::HandBackToTheGame` — and the traffic had four such exits: the
+player getting in, the car being shunted off its road, the whole list being dropped when the player
+leaves the region, and the list being dropped between games.
+
+`CCarCtrl::CreateCarForScript` **sets `bIsLocked`** at 0x43205F — the flag whose own name is
+"locked by the script (cannot be removed)" — and `PERMANENT` is a counter nothing budgets against.
+So a forgotten car is a car San Andreas can never take away. Three things follow, and the third is
+the one that shows up hundreds of units away in a game the player thinks is vanilla:
+
+1. It holds a **vehicle pool slot** for the rest of the session. Drive in and out of Vice City a few
+   times and the pool is full of cars standing in an empty city, at which point
+   `CCarCtrl::RemoveCarsIfThePoolGetsFull` starts removing cars at 8 free slots — and the only ones
+   it *can* remove are San Andreas' own.
+2. It keeps running its mission and its physics, in a city nobody is in.
+3. It holds a reference on its **model**. `CStreaming::RemoveLoadedVehicle` reads
+   `CBaseModelInfo::m_nRefCount` at +8 (the test is at 0x40C052) and refuses to unload a model that
+   still has an instance in the world. Enough pinned models and `CStreaming::LoadZoneVehicle` can
+   no longer rotate the loaded set as the player crosses zones, so `CCarCtrl::ChooseModel` →
+   `CLoadedCarGroup::PickLeastUsedModel` keeps drawing from cars that were loaded for somewhere
+   else. **That is what "the wrong cars are spawning for this zone in Los Santos" looks like from
+   the inside**, and nothing about it points at an imported city.
+
+Every exit now goes through one of two calls and there is no third: hand it back, or take it away.
+Taking it away is preferred when the player cannot see it, because handing a dozen cars back at once
+puts a dozen entries on `NumRandomCars`, which `GenerateRandomCars` stops at 45.
+
+### And the handle is not the whole record
+
+A `CPools` handle is `(slot << 8) | the slot's re-use byte`, and `CPools::GetVehicle` (0x54FFF0)
+compares that byte before handing a vehicle back — which is why a handle to a destroyed car reads
+as nothing. But `CPool`'s re-use counter is **seven bits**, so the 128th re-use of a slot answers to
+the handle stored for the first. San Andreas has the same property and lives with it because it
+re-checks nothing; we would be writing status, mission, cruise speed and `createdBy` into whatever
+car had landed in that slot — one of the game's own.
+
+So `VehicleSpawn::Resolve` takes the handle *and* the model the car was created with, and requires
+`m_nCreatedBy` (+0x4A4) still to read `PERMANENT`. San Andreas puts nothing on that counter by
+itself — its traffic is `RANDOM`, its generators `PARKED`, its script cars `MISSION` — so the two
+together are as good as a name. Nothing in either module writes to a vehicle it did not resolve
+that way.
+
+---
+
 ## For `docs/testing-checklist.md`
 
 The section below is written to drop into that file as **5**, in its style. It is here because that
@@ -371,3 +423,39 @@ regression as the traffic one and it is the reason this work exists in the shape
 City's 148 spaces asked the source game for "any ordinary car" rather than for something in
 particular; a police car outside the Vice City station that is a Los Santos police car; and a space
 whose car has not streamed in holding an ordinary saloon instead.
+
+---
+
+### 6. San Andreas' own cars are healthy — the check that matters most
+
+Do this **before and after** a trip to an imported city, in the same session, without restarting.
+It is the whole of what "we did not break San Andreas" means, and it is cheap.
+
+- **Stand in Idlewood, in Los Santos, before going anywhere near a region.** Watch the traffic for
+  a minute. Write down what goes past: it should be Tahomas, Greenwoods, Blades, Remingtons,
+  Voodoos, Majestics — poor-area cars — and they should arrive **undamaged**. Note the parked cars
+  in the side streets too.
+- **Now drive to Vice City, drive around it for five minutes, and come back to the same corner of
+  Idlewood.** Watch for another minute.
+- **It must look the same.** The same kinds of car, the same number of them, and no visible body
+  damage on cars that have just appeared.
+- **A sports car in Idlewood is the signature.** A ZR-350, a Turismo, a Banshee, an Infernus
+  arriving in a poor neighbourhood — repeatedly, not once — means San Andreas' loaded vehicle set
+  has stopped rotating with the zone. That is cars of ours pinned in the world holding references
+  on their models; see the section above. **F8 in Los Santos will show a nonzero
+  `car(s) driving its carriageways` or `parked at its kerbs` while you are nowhere near a region**,
+  which is the proof, because both counts should be zero the moment you leave one.
+- **Cars arriving already dented is the same fault with a different face** — a full vehicle pool
+  makes San Andreas remove and re-create cars in tight spaces. Check the pool the same way.
+- **The control.** `RegionTraffic = 0`, `RegionParkedCars = 0` and `RegionPeds = 0` in
+  `MapExpander.ini`, then repeat the Idlewood run. If Los Santos is still wrong with all three off,
+  it is not the population code — and if it is still wrong with `MapExpander.SA.asi` moved out of
+  the folder altogether, it is not this plugin at all. Do both before reporting it: `modloader`,
+  CLEO scripts and a vehicle mod can all change which cars a zone spawns and what state they arrive
+  in, and none of them announce it.
+- **Nothing survives a restart.** Every change this plugin makes to San Andreas — the moved arrays,
+  the rewritten instructions, the extra zones, the position scale — is made to a running process and
+  is gone when the game exits. The one exception is a **savegame written while the plugin was
+  loaded**, which carries the region's zones; loading it without MapExpander would overrun the
+  game's 380-zone array, and the log warns about that at start-up. So if Los Santos looked wrong,
+  restarting the game clears it; it does not clear a save made in that session.

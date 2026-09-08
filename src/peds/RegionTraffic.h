@@ -14,4 +14,11 @@ namespace RegionTraffic {
     void Forget();
 
     int Count();
+
+    // For F8. The budget comes from San Andreas' own popcycle row for the zone the player is in,
+    // so it says nothing until somebody is standing somewhere; and the count of placeholder models
+    // actually in memory is the one number that separates "no room for a car" from "no model to
+    // make one out of", which is how the traffic failed silently once already.
+    int Budget();
+    int LoadedModelCount(int* outOf);
 }

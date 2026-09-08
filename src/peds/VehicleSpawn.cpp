@@ -56,13 +56,17 @@ constexpr unsigned char kCreatedByPermanent = 4;
 // again to put the car on the new counter. The constructor has already counted the car once.
 constexpr uintptr_t kSetVehicleCreatedBy = 0x6D5D70;
 
+// m_nCreatedBy, read at 0x6D5D78 and written at 0x6D5D8E by the setter above. Read here and never
+// written - the setter is the only thing that may write it, because it is also what moves the car
+// between San Andreas' counters.
+constexpr unsigned kVehicleCreatedBy = 0x4A4;
+
 // ------------------------------------------------------------------ is the model in memory
 //
 // There is no CStreaming::HasModelLoaded to call in 1.0 US: it is inlined at over a hundred sites
-// as `cmp byte ptr [m*0x14 + 0x8E4CD0], 1`, so the flag is read the same way here. Getting this
-// wrong is a fault rather than an empty street - the vehicle constructor reaches
-// CVehicleModelInfo::CreateInstance, which dereferences m_pVehicleStruct without checking it and
-// faults at 0x4C9691 reading 0x30C.
+// as `cmp byte ptr [m*0x14 + 0x8E4CD0], 1`. Getting this wrong is a fault rather than an empty
+// street - the vehicle constructor reaches CVehicleModelInfo::CreateInstance, which dereferences
+// m_pVehicleStruct without checking it and faults at 0x4C9691 reading 0x30C.
 constexpr uintptr_t kStreamingLoadState = 0x8E4CD0;   // ms_aInfoForModel[0].m_nLoadState
 constexpr unsigned kStreamingInfoStride = 0x14;
 constexpr unsigned char kLoadStateLoaded = 1;
@@ -119,6 +123,28 @@ bool PoolHasRoom(int reserve) {
 void MakePermanent(CVehicle* vehicle) {
     reinterpret_cast<void(__thiscall*)(void*, unsigned char)>(kSetVehicleCreatedBy)(
         vehicle, kCreatedByPermanent);
+}
+
+// The one hole in "we only ever write to a vehicle of ours".
+//
+// A CPools handle is (slot << 8) | the slot's re-use byte, and CPools::GetVehicle (0x54FFF0)
+// checks that byte before handing the vehicle back - which is why a handle to a car the game has
+// destroyed reads as nothing. But CPool's re-use counter is SEVEN BITS (CPool.h's `nId : 7`), so
+// the 128th re-use of a slot answers to the handle we stored for the 1st. San Andreas has the same
+// property and lives with it because it re-checks nothing; we would be writing status, mission,
+// cruise speed and createdBy into whatever car happened to land there - one of the game's own.
+//
+// So a handle is not the whole record. The model a car was created with cannot change while it
+// lives, and PERMANENT is a counter San Andreas puts nothing on by itself (mission cars are
+// MISSION, traffic is RANDOM, generators are PARKED), so the two together are as good as a name.
+// A vehicle that fails either test is one we no longer own and nothing here touches it.
+CVehicle* Resolve(int ref, int model) {
+    if (ref < 0) return nullptr;
+    CVehicle* vehicle = CPools::GetVehicle(ref);
+    if (!vehicle) return nullptr;
+    if (model >= 0 && (int)vehicle->m_nModelIndex != model) return nullptr;
+    if (*((const unsigned char*)vehicle + kVehicleCreatedBy) != kCreatedByPermanent) return nullptr;
+    return vehicle;
 }
 
 // The idiom San Andreas' own script uses for a car it no longer wants to own: opcode 01C3

@@ -149,6 +149,10 @@ struct Bay {
     int lock;               // percent chance the source game left it locked
 
     int ref;                // CPools vehicle handle while a car of ours stands here, else -1
+    int standing;           // the model the car in `ref` was actually made with - which is not
+                            // always `model`, because a bay whose car has not streamed gets one
+                            // out of the fleet. Half of the proof that the handle still names our
+                            // car and not somebody else's; see VehicleSpawn::Resolve.
     bool taken;             // the player emptied this bay; see rearmAt
     unsigned rearmAt;       // CTimer ms at which it may be filled again
 };
@@ -234,6 +238,7 @@ bool ReadBayFile(RegionState& rs) {
         b.lock = atoi(t[9].c_str());
         b.model = -1;
         b.ref = -1;
+        b.standing = -1;
         b.taken = false;
         b.rearmAt = 0;
         rs.bays.push_back(b);
@@ -339,6 +344,7 @@ bool CreateParkedCar(RegionState& rs, Bay& b, int model) {
     *(uint16_t*)((char*)car + 0x3A8) = 0xFFFF;
     if (b.lock > 0 && (rand() % 100) < b.lock) car->m_eDoorLock = (eDoorLock)kDoorLockLocked;
     b.ref = CPools::GetVehicleRef(car);
+    b.standing = model;
     return true;
 }
 
@@ -379,7 +385,7 @@ bool PlayerOver(const RegionState& rs, const CVector& at, float margin) {
            at.y >= rs.minY - margin && at.y <= rs.maxY + margin;
 }
 
-int Budget() {
+int BayBudget() {
     float wanted = (float)kParkedCarBudget * Settings::world.regionParkedCarsDensity;
     int budget = (int)(wanted + 0.5f);
     if (budget < 0) budget = 0;
@@ -409,6 +415,7 @@ int LiveCount(const RegionState& rs) {
 void Release(Bay& b, CVehicle* car) {
     VehicleSpawn::HandBackToTheGame(car);
     b.ref = -1;
+    b.standing = -1;
     RememberEmptied(b);
 }
 
@@ -416,12 +423,16 @@ void ManageBays(RegionState& rs, const CVector& player, bool over) {
     const float cull = Settings::world.regionParkedCarsRadius * kCullMargin;
     for (Bay& b : rs.bays) {
         if (b.ref < 0) continue;
-        CVehicle* car = CPools::GetVehicle(b.ref);
+        // Resolve rather than CPools::GetVehicle: a pool slot re-used 128 times answers to an old
+        // handle again, and everything below this line writes to the car it hands back. See
+        // VehicleSpawn::Resolve.
+        CVehicle* car = VehicleSpawn::Resolve(b.ref, b.standing);
         if (!car) {
             // The car is gone and we did not take it - blown up and burnt out, most likely. The
             // space is empty because something happened to it, so it stays empty for a while, but
             // only if the player was near enough to be the thing that happened.
             b.ref = -1;
+            b.standing = -1;
             CVector where = BayWorld(rs, b);
             float ax = where.x - player.x, ay = where.y - player.y;
             if (ax * ax + ay * ay < kBlamePlayerWithin * kBlamePlayerWithin) RememberEmptied(b);
@@ -454,6 +465,7 @@ void ManageBays(RegionState& rs, const CVector& player, bool over) {
         if (d2 > (cull * 2.0f) * (cull * 2.0f) || !TheCamera.IsSphereVisible(p, 4.0f)) {
             VehicleSpawn::Remove(car);
             b.ref = -1;
+            b.standing = -1;
         }
     }
 }
@@ -461,7 +473,7 @@ void ManageBays(RegionState& rs, const CVector& player, bool over) {
 void FillBays(RegionState& rs, const CVector& player) {
     if (!VehicleSpawn::Ready()) return;
     if (CTimer::m_snTimeInMilliseconds < gNextSpawn) return;
-    if (LiveCount(rs) >= Budget()) return;
+    if (LiveCount(rs) >= BayBudget()) return;
     if (!VehicleSpawn::PoolHasRoom(kVehiclePoolReserve)) return;
     gNextSpawn = CTimer::m_snTimeInMilliseconds + kSpawnIntervalMs;
 
@@ -508,10 +520,26 @@ int Count() {
     return n;
 }
 
+int Budget() { return BayBudget(); }
+
+int ArmedNear(const CVector& playerPosition) {
+    const float radius = Settings::world.regionParkedCarsRadius;
+    int n = 0;
+    for (const RegionState& rs : Regions())
+        for (const Bay& b : rs.bays) {
+            if (b.ref >= 0 || !BayIsArmed(b)) continue;
+            CVector at = BayWorld(rs, b);
+            float dx = at.x - playerPosition.x, dy = at.y - playerPosition.y;
+            if (dx * dx + dy * dy <= radius * radius) n++;
+        }
+    return n;
+}
+
 void Forget() {
     for (RegionState& rs : Regions()) {
         for (Bay& b : rs.bays) {
             b.ref = -1;
+            b.standing = -1;
             b.taken = false;
             b.rearmAt = 0;
         }
@@ -546,7 +574,7 @@ void Install() {
     }
     Log::Write("parked cars: %u region(s) will have their own cars at the kerb, up to %d at a "
                "time within %.0f units; a space the player empties stays empty for %.0fs",
-               (unsigned)Regions().size(), Budget(), Settings::world.regionParkedCarsRadius,
+               (unsigned)Regions().size(), BayBudget(), Settings::world.regionParkedCarsRadius,
                Settings::world.regionParkedCarsRespawn);
     // These are ticked from the pedestrian module's own once-a-frame hook on CPopulation::Update,
     // which is where the traffic rides too, so if that hook is never installed nothing here runs.

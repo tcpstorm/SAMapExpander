@@ -142,6 +142,7 @@ struct Node {
 // lane of it, and does not change for the life of the car.
 struct Driver {
     int ref;            // CPools vehicle handle: slot plus re-use counter
+    int model;          // what it was created as; half of the proof that it is still ours
     int from, to;
     int lane;
 };
@@ -465,7 +466,7 @@ CVehicle* CreateCar(RegionState& rs, int from, int to, int lane, int model) {
     CVector b = NodeWorld(rs, to);
     car->SetHeading(atan2f(-(b.x - at.x), b.y - at.y));
     CPopulation::AddPedInCar(car, true, -1, 0, true, false);
-    rs.drivers.push_back(Driver{ CPools::GetVehicleRef(car), from, to, lane });
+    rs.drivers.push_back(Driver{ CPools::GetVehicleRef(car), model, from, to, lane });
     SetDestination(car, rs, rs.drivers.back());
     return car;
 }
@@ -505,7 +506,7 @@ bool ShouldYield(const RegionState& rs, const Driver& me, const CVector& myPos) 
     for (const Driver& other : rs.drivers) {
         if (other.ref == me.ref) continue;
         if (other.to != me.to) continue;          // heading somewhere else entirely
-        CVehicle* v = CPools::GetVehicle(other.ref);
+        CVehicle* v = VehicleSpawn::Resolve(other.ref, other.model);
         if (!v) continue;
         CVector p = v->GetPosition();
         float ox = at.x - p.x, oy = at.y - p.y;
@@ -519,12 +520,43 @@ bool ShouldYield(const RegionState& rs, const Driver& me, const CVector& myPos) 
 
 // ------------------------------------------------------------------ the frame
 
+// Every way a car stops being ours goes through one of these two, and there is no third.
+//
+// GIVING ONE BACK is VehicleSpawn::HandBackToTheGame, and forgetting a car without calling it is
+// the bug this module shipped: CCarCtrl::CreateCarForScript SETS bIsLocked at 0x43205F - "locked
+// by the script (cannot be removed)" - and PERMANENT is a counter nothing budgets against, so a
+// car we stop tracking and do not hand back is a car San Andreas can never take away. It holds a
+// vehicle pool slot for the rest of the session, and - this is the part that reaches Los Santos -
+// it holds a reference on its model, and CStreaming::RemoveLoadedVehicle refuses at 0x40C052 to
+// unload a model whose CBaseModelInfo::m_nRefCount (+8) is not zero. Enough of those and
+// CStreaming::LoadZoneVehicle cannot rotate the loaded set as the player crosses zones, so
+// CCarCtrl::ChooseModel keeps picking from cars loaded for somewhere else entirely.
+void LetGo(const Driver& d, const CVector& player) {
+    CVehicle* car = VehicleSpawn::Resolve(d.ref, d.model);
+    if (!car) return;
+    CVector p = car->GetPosition();
+    float dx = p.x - player.x, dy = p.y - player.y;
+    const float cull = Settings::world.regionTrafficRadius * kCullMargin;
+    // Out of sight and out of range: take it away rather than hand it back, so that leaving a
+    // city does not put a dozen entries on NumRandomCars at once - the counter GenerateRandomCars
+    // stops at 45. Anything the player might still be looking at is handed back instead and lives
+    // out its life as an ordinary car.
+    if (dx * dx + dy * dy > cull * cull && !TheCamera.IsSphereVisible(p, 4.0f))
+        VehicleSpawn::Remove(car);
+    else
+        VehicleSpawn::HandBackToTheGame(car);
+}
+
+// TAKING ONE AWAY is VehicleSpawn::Remove, and only for a car far enough off that nobody is
+// looking. That one is still ours at the moment it goes, so nothing has to be handed back.
 void ManageDrivers(RegionState& rs, const CVector& player) {
     const float cull = Settings::world.regionTrafficRadius * kCullMargin;
     size_t write = 0;
     for (size_t i = 0; i < rs.drivers.size(); i++) {
         Driver& d = rs.drivers[i];
-        CVehicle* car = CPools::GetVehicle(d.ref);
+        // Resolve rather than CPools::GetVehicle: the handle alone would let a re-used pool slot
+        // put one of San Andreas' own cars under everything below. See VehicleSpawn::Resolve.
+        CVehicle* car = VehicleSpawn::Resolve(d.ref, d.model);
         if (!car) continue;                      // the game removed it; the slot may be reused
         CVector p = car->GetPosition();
         float dx = p.x - player.x, dy = p.y - player.y;
@@ -532,16 +564,22 @@ void ManageDrivers(RegionState& rs, const CVector& player) {
             VehicleSpawn::Remove(car);
             continue;
         }
-        // Once the player is driving it, it is the player's car and none of this module's business.
-        if (car->m_pDriver && car->m_pDriver == (CPed*)FindPlayerPed()) continue;
+        // Once the player is driving it, it is the player's car and none of this module's
+        // business - but it has to be GIVEN back, not just forgotten, or nothing in San Andreas
+        // will ever be able to remove it again.
+        if (car->m_pDriver && car->m_pDriver == (CPed*)FindPlayerPed()) {
+            VehicleSpawn::HandBackToTheGame(car);
+            continue;
+        }
 
         CVector goal = NodeWorld(rs, d.to);
         float gx = goal.x - p.x, gy = goal.y - p.y;
         float toGoal = gx * gx + gy * gy;
         if (toGoal > kStrayDistance * kStrayDistance) {
             // Shunted off its road, most likely by the player. Rather than drag it back across a
-            // gap it cannot drive, hand it to the game: it keeps whatever mission it has and gets
-            // culled with everything else.
+            // gap it cannot drive, hand it to the game - which means handing it back properly, so
+            // that the game's own distance cleanup can have it.
+            VehicleSpawn::HandBackToTheGame(car);
             continue;
         }
         if (toGoal < kArrivedDistance * kArrivedDistance) {
@@ -607,7 +645,7 @@ void SpawnSome(RegionState& rs, const CVector& player, int wanted) {
         // Not on top of another of ours.
         bool crowded = false;
         for (const Driver& other : rs.drivers) {
-            CVehicle* v = CPools::GetVehicle(other.ref);
+            CVehicle* v = VehicleSpawn::Resolve(other.ref, other.model);
             if (!v) continue;
             CVector q = v->GetPosition();
             float ox = q.x - at.x, oy = q.y - at.y;
@@ -624,17 +662,27 @@ namespace RegionTraffic {
 
 void Tick(const CVector& playerPosition) {
     if (!Settings::world.regionTraffic) return;
+    // Every region every frame, and only then the one the player is standing over. The loop used
+    // to stop at the first region it found the player over, which meant a region they had LEFT was
+    // never visited again if another one came before it in the file - and F7 puts the player
+    // straight from one city into another, with no frame in between where they are over neither.
+    // Every car in the city they left would have stayed there for the session.
+    RegionState* here = nullptr;
+    const float margin = Settings::world.regionTrafficRadius * kCullMargin;
     for (RegionState& rs : Regions()) {
-        if (!PlayerOver(rs, playerPosition, Settings::world.regionTrafficRadius * kCullMargin)) {
-            // Out of this region: let go of everybody. The game removes them on its own terms once
-            // they are far enough away, and they are not this module's business any more.
-            rs.drivers.clear();
-            continue;
-        }
-        ManageDrivers(rs, playerPosition);
-        SpawnSome(rs, playerPosition, CarBudget());
-        break;
+        if (!here && PlayerOver(rs, playerPosition, margin)) { here = &rs; continue; }
+        if (rs.drivers.empty()) continue;
+        // Out of this region: let go of everybody - by GIVING each one back or TAKING it away,
+        // rather than dropping the list, which is what this used to do. Driving out of an imported
+        // city is the commonest way a car of ours stops being tracked, so it was also the
+        // commonest way one was left locked and permanent in a city the player is no longer in,
+        // holding a pool slot and a model reference for the rest of the session.
+        for (const Driver& d : rs.drivers) LetGo(d, playerPosition);
+        rs.drivers.clear();
     }
+    if (!here) return;
+    ManageDrivers(*here, playerPosition);
+    SpawnSome(*here, playerPosition, CarBudget());
 }
 
 int Count() {
@@ -643,6 +691,19 @@ int Count() {
     return n;
 }
 
+int Budget() { return CarBudget(); }
+
+int LoadedModelCount(int* outOf) {
+    const int count = (int)(sizeof(kPlaceholderCars) / sizeof(int));
+    if (outOf) *outOf = count;
+    int loaded = 0;
+    for (int i = 0; i < count; i++) if (VehicleSpawn::ModelIsLoaded(kPlaceholderCars[i])) loaded++;
+    return loaded;
+}
+
+// Only ever called when there is no player at all - a menu, a load, a new game. The vehicle pool
+// and its re-use counters are about to be reset, so nothing here may touch a vehicle: the handles
+// name memory the game is in the middle of throwing away. Dropping them is the whole job.
 void Forget() {
     for (RegionState& rs : Regions()) rs.drivers.clear();
 }
@@ -674,9 +735,17 @@ void Install() {
         Regions().clear();
         return;
     }
-    Log::Write("traffic: %u region(s) will be driven on their own carriageways, up to %d car(s) "
-               "within %.0f units", (unsigned)Regions().size(), CarBudget(),
-               Settings::world.regionTrafficRadius);
+    // NOT "up to CarBudget() car(s)". The budget is San Andreas' own, out of the four floats
+    // CPopCycle::UpdatePercentages fills from the popcycle row for the zone the player is standing
+    // in, and at start-up the player is not standing anywhere yet: all four are zero and this line
+    // used to say "up to 0 car(s)", which reads like a setting that has turned the traffic off and
+    // is nothing of the kind. What is fixed at start-up is the multiplier and the radius, so those
+    // are what it says; F8 reports the live budget.
+    Log::Write("traffic: %u region(s) will be driven on their own carriageways within %.0f units, "
+               "as many cars as San Andreas' own popcycle allows for the zone x%.2f (F8 says how "
+               "many that is right now), at most %d",
+               (unsigned)Regions().size(), Settings::world.regionTrafficRadius,
+               Settings::world.regionTrafficDensity, kMaxCars);
 }
 
 }   // namespace RegionTraffic

@@ -135,6 +135,16 @@ static void OnFrame() {
                "its carriageways, %d parked at its kerbs; the player is %s a region's pedestrian "
                "graph", RegionPeds::Count(), RegionPolice::Count(), RegionTraffic::Count(),
                RegionParkedCars::Count(), RegionPeds::PlayerOverGraph() ? "over" : "not over");
+    // Why there are none, when there are none. A budget of zero is San Andreas' own popcycle
+    // saying so; no models in memory is the streaming array being read in the wrong place, which
+    // is how every one of these went quiet once already; no armed bays in range is simply an empty
+    // stretch of road. The three cannot be told apart from the counts above.
+    int placeholders = 0;
+    int loaded = RegionTraffic::LoadedModelCount(&placeholders);
+    Log::Write("    population budgets: traffic %d car(s) from the zone's popcycle row, %d of %d "
+               "placeholder model(s) in memory; parked cars %d at once, %d bay(s) armed and in "
+               "range", RegionTraffic::Budget(), loaded, placeholders,
+               RegionParkedCars::Budget(), RegionParkedCars::ArmedNear(pos));
 }
 
 static void __cdecl Hooked_TimerUpdate() {

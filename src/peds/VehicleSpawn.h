@@ -21,6 +21,13 @@ bool PoolHasRoom(int reserve);
 // against. Always through the game's own setter.
 void MakePermanent(CVehicle* vehicle);
 
+// Resolve one of OUR handles, and prove the vehicle standing in that pool slot is still the one we
+// put there before anything writes to it. A pool handle carries a 7-bit re-use counter, so a slot
+// re-used 128 times answers to an old handle again; without this, that would be a write into one
+// of San Andreas' own vehicles. Returns null unless the model is the one we created and the car is
+// still on the PERMANENT counter, which is the pair only a vehicle of ours has.
+CVehicle* Resolve(int ref, int model);
+
 // Hand a vehicle back to San Andreas as an ordinary random car, the way the script's
 // MARK_CAR_AS_NO_LONGER_NEEDED does, so the game may clean it up on its own terms.
 void HandBackToTheGame(CVehicle* vehicle);
