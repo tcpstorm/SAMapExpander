@@ -153,12 +153,17 @@ touches the world-sector grid.
 
 ### Not resolved
 
-A false-positive sweep — checking that every repointed *scale* site really does feed a float-to-int,
-so that no unrelated 0.02 sitting within ten instructions of an unrelated 60.0 was repointed by
-coincidence — was written and not run: the Docker daemon carrying the disassembler died partway
-through the session. The functions that were disassembled by hand are all genuine, and the 604 sites
-fall in only 65 functions every one of which touches the grid, but the sweep is worth finishing.
-It is `tools/verify_sector_sites.py` in spirit; the script is short and the check is one pass.
+`tools/verify_sector_sites.py` is the check that closes this off, and it has not been run. It walks
+the executable once and reports two things: sites in the table whose result never reaches the
+float-to-int helper — an unrelated 0.02 that happened to sit within ten instructions of an unrelated
+60.0, which repointing would break — and references outside the table, inside a function that
+touches the grid, that are not one of the fourteen accounted for above. It should print `OK`. The
+Docker container carrying the disassembler died partway through the session that wrote it, so what
+stands behind the audit above is the per-function enumeration (1036 references, 604 repointed, 65
+grid functions, 6 with anything left alone) plus hand disassembly of each of those six, which is
+enough to place every site but is not the same as the sweep having been run end to end.
+
+    ./tools/dis.sh verify_sector_sites.py     # or run it against gta_sa.exe however you disassemble
 
 ## `DropUnlinkedLods` — ruled out as the cause, with one latent bug found
 

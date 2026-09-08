@@ -284,6 +284,15 @@ All run in throwaway containers; nothing is installed on the host.
 - `tools/scan_model_limit_sites.py` → `tools/model_limit_sites.txt` → `tools/gen_model_limit_sites.py` → `src/ModelLimitSites.h` — the 1407 instructions `ModelIdLimit` rewrites, with the candidates it deliberately leaves alone and why. `tools/verify_model_limit_sites.py` re-reads every one of them out of `gta_sa.exe` and must pass 100% before the table ships.
 - `tools/verify_weapon_types.py` — the same idea for the added weapons: it simulates `WidenDispatch` and `RouteDispatch` out of `src/WeaponTypes.cpp` and asserts that every new weapon type resolves to exactly the address its donor resolves to, in all seven switches, and decodes the camera mode each one ends up with. The plugin makes the same comparison at load time and logs an error if it fails.
 
+- `tools/verify_sector_sites.py <gta_sa.exe>` — the other side of `scan_sector_sites.py`. The scan
+  recognises a coordinate-to-sector conversion by an `fmul` of the scale followed by an `fadd` of the
+  centre, which is a good rule with two holes: it cannot see a conversion of a *distance* (there is no
+  centre to add to a length) or one written `fld [scale]; fmul st(N)`, and it can be fooled by an
+  unrelated 0.02 sitting within ten instructions of an unrelated 60.0. This checks both directions —
+  every repointed scale must end at the float-to-int helper, and every un-repointed reference inside a
+  grid function must be one of the fourteen that are meant to stay put. See
+  [docs/streaming-distance.md](docs/streaming-distance.md).
+
 ## Engine facts worth knowing
 
 - SA's static world is 120×120 sectors of 50 units = ±3000; beyond that, sector lookups clamp into the edge sector (works, degrades). The plugin moves and stretches those 120 cells instead, which keeps everything findable but makes the cell the world span over 120. Growing the *count* is fastman92 Limit Adjuster territory — it relocates the array and replaces whole routines in hand-written assembly for the index clamps, which are `cmp reg, imm8` and cannot hold a number above 127 in place — and is not attempted here; the plugin stands aside when it finds that already done. What is done here instead is to keep the span small: see `PackRegions` above and *Known limitations*.
