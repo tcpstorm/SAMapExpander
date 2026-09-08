@@ -11,7 +11,8 @@ namespace StreamRange {
     // Cheap - one float - and safe to call when nothing was patched.
     void GridChanged();
 
-    // The radius now in force, in world units, or 0 if the function was left as San Andreas
-    // shipped it.
+    // The distance guaranteed covered on every frame, in world units, or 0 if the function was
+    // left as San Andreas shipped it. The radius the game is actually holding at any instant is
+    // either this plus the refresh step or vanilla's 80; the guarantee is the same either way.
     float Distance();
 }

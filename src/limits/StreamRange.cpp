@@ -60,6 +60,35 @@
 // set deliberately generous: R = ceil(distance / cell) + 3, which makes the outer ring reach
 // distance + 3.5 cells and guarantees it can never reject a sector that could hold an entity
 // inside the box. Erring the other way is what silently clips streaming.
+//
+// ------------------------------------------------------------------- paying for the wider box
+//
+// Widening the box is not free and the arithmetic is unforgiving: the pass visits every entity the
+// box touches, so its cost goes as the square of the distance. Against the 80 units San Andreas
+// asks for, 140 units is three times the ground and 200 is six and a quarter, every frame.
+//
+// Worth being exact about what the old, broken behaviour was doing, because it explains why simply
+// asking for the same distance costs more than it used to. The box was always 80 units; the extra
+// reach came from requesting the whole of the player's own cell without a distance test, and that
+// cell was already the middle of the box. The reach was free because nothing extra was walked for
+// it. A box that reaches the same distance in every direction has to walk the ground it reaches.
+//
+// So the distance is refreshed on a step rather than on a frame. After a pass at P with radius W,
+// everything within W of P has been requested; while the player is still within S of P, everything
+// within W - S of them is covered, whatever they do in between. Run the wide pass only when they
+// have moved S since the last one, ask for W = distance + S, and the guarantee is the full distance
+// on every frame while the pass itself runs about one frame in two hundred. Every other frame gets
+// San Andreas' own 80, which is what the game shipped and what the near field actually needs.
+//
+// The amortised cost is (W^2 * step per frame) / S, which is smallest at S near the distance and
+// flat for a good way either side; half the distance is the middle of that range and keeps the one
+// wide frame from being much larger than it needs to be. At 140 units and 20 units a second that is
+// a wide pass every three and a half seconds, and about 1.03 times the near-field cost of the
+// broken build - for a uniform 140 units where it gave 121 in one direction and 80 in another.
+//
+// The failure mode is deliberately the safe one. If the player is somewhere the position cannot be
+// read, or the camera has run away from them, the radius in force is vanilla's 80: the game's own
+// behaviour, never worse than it.
 #include <plugin.h>
 #include <cmath>
 #include <cstdint>
@@ -74,10 +103,16 @@ using namespace plugin;
 
 namespace {
 
-// What the ini asks for when it says nothing. Vanilla is 80; a 121-unit grid was handing out the
-// whole of the player's cell on top of that, so this is about what the shipped two-city world has
-// been giving by accident, made deliberate and made independent of the cell.
-const float kAutoDistance = 200.0f;
+// What the ini asks for when it says nothing. The broken build reached the player's own cell in
+// some directions and 80 units in others - 121 units on the current two-city fit, 128 at its most
+// generous ever - so this is a little more than the best it ever gave, uniformly and in every
+// direction, and it costs 3.1 times San Andreas' ground rather than the 6.25 that 200 costs.
+const float kAutoDistance = 140.0f;
+
+// Vanilla's own radii, which every frame that is not a refresh gets. These are what San Andreas
+// shipped and what the near field is actually for; the distance above is carried by the refresh.
+const float kVanillaFar = 80.0f;
+const float kVanillaNear = 40.0f;
 
 // Below vanilla's own 80 there is nothing to gain and a lot to lose, and past this the per-frame
 // sector walk grows as the square of it for scenery that the entities' own draw distances will
@@ -104,8 +139,14 @@ const uint8_t kInnerRingNow[4]  = { 0x33, 0xD2, 0x90, 0x90 };  // xor edx, edx; 
 // Read by the game once 0x40D446 points at it, so it has to outlive Install().
 float gRadiusToSectors = 0.02f;
 
-float gDistance = 0.0f;   // world units actually in force, 0 when nothing was patched
+float gDistance = 0.0f;   // world units guaranteed covered, 0 when nothing was patched
+float gStep = 0.0f;       // world units the player moves before the wide pass runs again; 0 = every frame
+float gWide = 0.0f;       // gDistance + gStep, the radius a refresh frame asks for
 bool  gPatched = false;
+bool  gWideNow = false;   // which pair of radii the two immediates currently hold
+bool  gHaveLast = false;
+float gLastX = 0.0f, gLastY = 0.0f, gLastZ = 0.0f;   // where the last refresh ran
+unsigned gRefreshes = 0;
 
 uint32_t AsBits(float f) {
     uint32_t bits;
@@ -126,11 +167,50 @@ float CellSize() {
 // used to reject sectors the loop has already reached, so too large is free and too small clips
 // the near field without a word. The +0.5 is so the game's truncating float-to-int lands on the
 // number meant rather than one below it.
+//
+// One factor serves all four radii the function can be given - the wide pair and vanilla's 80/40 -
+// because it is a scale rather than a count, and the margin is generous enough that the smaller
+// ones stay safe: a radius r gets R = trunc(r * f) >= r/cell + 3.5*r/W - 1, and the ring reaches
+// (R + 2 - sqrt2) cells, so it covers r as long as r >= 0.118 * W. At W = 210 that is 25 units and
+// the smallest radius in play is 40.
 void SetFactor() {
     const float cell = CellSize();
-    float ring = std::ceil(gDistance / cell) + 3.0f;
+    float ring = std::ceil(gWide / cell) + 3.0f;
     if (ring < 4.0f) ring = 4.0f;
-    gRadiusToSectors = (ring + 0.5f) / gDistance;
+    gRadiusToSectors = (ring + 0.5f) / gWide;
+}
+
+// The two `mov dword ptr [esp+0x10], imm32` that choose the radius. Written between frames, never
+// during one - this runs from gameProcessEvent, and the streaming pass reads them afterwards.
+void SetRadii(bool wide) {
+    if (gWideNow == wide) return;
+    // Not named `far`/`near`: windows.h still defines both as empty macros.
+    const float farRadius = wide ? gWide : kVanillaFar;
+    patch::SetUInt(kFarRadius.address, AsBits(farRadius));
+    patch::SetUInt(kNearRadius.address, AsBits(wide ? gWide * 0.5f : kVanillaNear));
+    gWideNow = wide;
+    if (wide) {
+        gRefreshes++;
+        Log::Debug("stream range: refresh %u at %.0f units, radius %.0f", gRefreshes, gStep, gWide);
+    }
+}
+
+// Refresh when the player has moved the step since the last one, and on the first frame, and after
+// anything that moves them a long way - a teleport, an interior, a new game - because that is just
+// a large step. Nothing here reads the camera: if it has run away from the player the radius in
+// force is vanilla's own 80, which is what the game would have done anyway.
+void OnFrame() {
+    if (!gPatched || gStep <= 0.0f) return;
+    CPlayerPed* player = FindPlayerPed();
+    if (!player) { SetRadii(false); return; }
+    const CVector p = player->GetPosition();
+    if (gHaveLast) {
+        const float dx = p.x - gLastX, dy = p.y - gLastY, dz = p.z - gLastZ;
+        if (dx * dx + dy * dy + dz * dz < gStep * gStep) { SetRadii(false); return; }
+    }
+    gLastX = p.x; gLastY = p.y; gLastZ = p.z;
+    gHaveLast = true;
+    SetRadii(true);
 }
 
 }  // namespace
@@ -189,11 +269,19 @@ void Install() {
     }
 
     gDistance = want;
+    // How far the player moves before the wide pass is run again. Negative asks for the default,
+    // half the distance, which is near the flat bottom of the amortised-cost curve; 0 turns the
+    // refresh off and pays the wide box on every frame, which is what to set while diagnosing
+    // whether the scan or the streamer is the thing costing frames.
+    gStep = Settings::world.streamRefreshStep;
+    if (gStep < 0.0f) gStep = want * 0.5f;
+    gWide = want + gStep;
     SetFactor();
 
     const float cell = CellSize();
-    const uint32_t farBits = AsBits(want);
-    const uint32_t nearBits = AsBits(want * 0.5f);
+    const uint32_t farBits = AsBits(gWide);
+    const uint32_t nearBits = AsBits(gWide * 0.5f);
+    gWideNow = true;   // Install writes the wide pair, so the first frames cover the full distance
     MemPatch::ReplaceBytes(kFarRadius.address, (const uint8_t*)&kFarRadius.oldValue,
                            (const uint8_t*)&farBits, sizeof(farBits));
     MemPatch::ReplaceBytes(kNearRadius.address, (const uint8_t*)&kNearRadius.oldValue,
@@ -202,15 +290,30 @@ void Install() {
     MemPatch::ReplaceBytes(kInnerRing, kInnerRingWas, kInnerRingNow, sizeof(kInnerRingWas));
     gPatched = true;
 
-    Log::Write("streaming distance pinned to %.0f world units (%.0f on the near pass); San Andreas "
-               "asks for 80, and this build was asking for 80 plus the whole of the player's "
-               "%.0f-unit cell, which moved every time the grid was re-fitted",
-               want, want * 0.5f, cell);
-    Log::Write("note: the near-field request pass now walks the sectors touching a %.0f-unit box "
-               "instead of an 80-unit one - %.1f times the ground, every frame - and every entity "
-               "in it is still tested against its own draw distance. Lower [World] StreamDistance "
-               "if the frame rate matters more than the pop-in; 80 is vanilla, 0 leaves the "
-               "function alone", want * 2.0f, (want / 80.0f) * (want / 80.0f));
+    if (gStep > 0.0f) {
+        Events::gameProcessEvent += OnFrame;
+        Log::Write("streaming distance pinned to %.0f world units, refreshed at %.0f units of "
+                   "travel with a %.0f-unit pass and San Andreas' own 80 in between; the full "
+                   "%.0f is covered on every frame either way. This build was asking for 80 plus "
+                   "the whole of the player's %.0f-unit cell, which moved every time the grid was "
+                   "re-fitted", want, gStep, gWide, want, cell);
+        Log::Write("note: the wide pass costs %.1f times the ground San Andreas walks, and running "
+                   "it on a step rather than on a frame is what makes that affordable - about one "
+                   "frame in two hundred at walking pace. [World] StreamRefreshStep = 0 turns the "
+                   "step off and pays it every frame, which is the way to tell whether it is the "
+                   "scan or the streamer costing frames",
+                   (gWide / 80.0f) * (gWide / 80.0f));
+    } else {
+        Log::Write("streaming distance pinned to %.0f world units (%.0f on the near pass), on "
+                   "every frame - StreamRefreshStep is 0. That walks %.1f times the ground San "
+                   "Andreas does, every frame; this build was asking for 80 plus the whole of the "
+                   "player's %.0f-unit cell, which moved every time the grid was re-fitted",
+                   want, want * 0.5f, (want / 80.0f) * (want / 80.0f), cell);
+    }
+    Log::Write("note: every entity the box finds is still tested against the box and against its "
+               "own draw distance, so what is requested grows by much less than the ground does. "
+               "Lower [World] StreamDistance if the frame rate matters more than the pop-in; 80 is "
+               "vanilla, 0 leaves the function alone");
     if (cell > want)
         Log::Write("note: the sector cell (%.0f units) is larger than the streaming distance, so "
                    "the entities in the player's own cell are still requested from further out "

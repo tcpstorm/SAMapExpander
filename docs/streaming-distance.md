@@ -76,7 +76,7 @@ the one that stretched the grid, `0` leaves San Andreas alone, anything else is 
 |---|---|---|
 | vanilla San Andreas | 80 | 40 |
 | this plugin before the fix | 80 + the player's whole cell | 40 + the same |
-| after, default | 200 | 100 |
+| after, default | 140 guaranteed (a 210-unit pass every 70 units of travel, 80 in between) | 70 |
 
 Four byte-verified sites, all inside that one function; nothing is written unless all four still
 hold what this build of gta_sa.exe should have, and a mismatch leaves the game vanilla with a log
@@ -103,15 +103,102 @@ never reject a sector that could hold an entity inside the box. Erring the other
 silently clips streaming, so it errs this way on purpose. `WorldSectors::Refit` recomputes it, so a
 `MapWindow` crossing keeps the distance it had.
 
-### What it costs
+### What it costs, and why the first cut of it brought frame skips back
 
-The pass now walks the sectors touching a 400-unit box instead of a 160-unit one — 6.25 times the
-ground, every frame. In sectors, at 121-unit cells that is about 4x4 instead of 2x2; at 87-unit
-cells about 6x6 instead of 3x3. Entities inside those sectors are still rejected by the box and by
-their own draw distance, so the number of models actually requested grows by much less than the
-area, but the walk itself is not free and it is paid on the same frame as the collision and render
-scans the grid work was making cheaper. `StreamDistance` is the number to bring back down; 80 is
-vanilla, 0 leaves the function untouched.
+The pass visits every entity the box touches, so the cost goes as the square of the distance. The
+first version defaulted to 200 units and paid it on every frame, and the skips came straight back.
+
+The reason it costs more than the old behaviour *for the same reach* is worth stating, because it
+is not obvious. **The old behaviour got its extra reach for free.** The box was always 80 units;
+the extra distance came from requesting the whole of the player's own cell with no distance test,
+and that cell was already sitting in the middle of the box. Nothing extra was walked for it. A box
+that reaches the same distance in *every* direction has to walk the ground it reaches.
+
+| distance | box | ground vs San Andreas' 80 |
+|---|---|---|
+| 80 (vanilla) | 160 x 160 | 1.00 |
+| 120 | 240 x 240 | 2.25 |
+| **140 (the default now)** | 280 x 280 | **3.06** |
+| 160 | 320 x 320 | 4.00 |
+| 200 (the first cut) | 400 x 400 | 6.25 |
+
+Two things bring it back down.
+
+**The default is 140, not 200.** The best the broken behaviour ever gave was 128 units, and only
+towards the far corner of the player's own cell; 140 is a little more than that in every direction.
+It halves the ground of 200.
+
+**The distance is refreshed on a step rather than on a frame.** After a pass at P with radius W,
+everything within W of P has been requested; while the player is within S of P, everything within
+`W - S` of them is covered whatever they do in between. So the wide pass runs only when they have
+moved S, asking for `W = distance + S`, and every other frame gets San Andreas' own 80. The
+guarantee is the full distance on every frame; the wide box is walked about one frame in two
+hundred at walking pace. The amortised cost is `W^2 * (units per frame) / S`, smallest near `S =
+distance` and flat for a good way either side, so the default S is half the distance.
+
+At 140 units, 20 units a second and 60 fps that is a refresh every 3.5 seconds and **about 1.03
+times the near-field cost of the broken build** — for a uniform 140 where it gave 121 in one
+direction and 80 in another. `[World] StreamRefreshStep = 0` turns the step off and pays the wide
+box every frame.
+
+The failure modes are deliberately the safe one: if the player's position cannot be read, or the
+camera has run away from them, the radius in force is vanilla's own 80.
+
+### Which cost is it — the scan or the streamer?
+
+These need opposite fixes, and the two are told apart cheaply from the ini rather than guessed at.
+**Set `StreamRefreshStep = 0` and see whether the skips return.** Only the scan changes when you do:
+the same models are requested over the same travel either way, so the streamer's working set and its
+disk traffic are identical. Skips at 0 and none at -1 means the scan. Skips at both means the
+streamer, and `StreamDistance` is then the dial, because that is the only thing that changes how
+many distinct models are resident.
+
+What can be said from the code without running it:
+
+- **The scan is bounded and small in absolute terms.** Every entity carries a scan code
+  (`[esi+0x2c]` against `CWorld::ms_nCurrentScanCode` at 0xB7CD78, bumped once per pass at
+  0x40D5BD), so an entity spanning several sectors is visited once per pass, not once per sector.
+  Entities visited is therefore density x box area. Over San Andreas' own 45884 placements in
+  6000 x 6000 that is about 200 entities in a 400-unit box against 33 in an 80-unit one; several
+  times that in dense city geometry. A few hundred extra list nodes and a squared distance each is
+  tens of microseconds, not a frame.
+- **The requests are a step change in the working set.** The near-field pass is omnidirectional
+  where the renderer only requests what is in the frustum, so widening it grows the set of models
+  held resident in every direction at once. That is what pushes against the streaming budget and
+  produces eviction-and-reload — hitching rather than a uniformly lower frame rate.
+
+So the second is the more likely of the two on the evidence available offline, which is exactly why
+lowering the default matters: the refresh step reduces how *often* the scan runs but not how many
+models end up resident, and only the distance does that.
+
+## PackRegions: it no longer fights the draw distance, but it does not pay for it either
+
+`PackRegions` moves the maps up against San Andreas instead of leaving them where their ini puts
+them, taking the world span from 15348 units to 10500 at the current placement — a cell of 128 down
+to 87.5.
+
+**What has changed, and it is worth saying loudly because this morning's notes say the opposite:**
+packing used to shorten the streaming distance, because the near-field radius was measured in cells.
+It bought frames by taking away visible world. It does not any more — the radius is in world units,
+and nothing in `StreamRange` depends on where a region is placed. `CellSize()` feeds only `R`, the
+rejection ring, and the box is set from the distance alone. The two settings compose now.
+
+**What it does not do is pay for the wider box.** The `%.0f%% of the per-frame scan` the log quotes
+is `(87.5 / 128)^2 = 47%`, and that figure is right for scans that walk a **fixed number of cells**
+around the camera — `CCollision::BuildCacheOfCameraCollision` and the renderer's sector scan — whose
+cost is a cell's worth of entities. The streaming pass walks a fixed number of **world units**, so:
+
+- entities visited: `density x (2D)^2`, **independent of the cell**. Packing changes it not at all.
+- sector headers touched: `(2D/C + 1)^2`, which *rises* as the cell shrinks — at D = 140, about 10
+  sectors at 128-unit cells against about 18 at 87.5. Per-sector overhead is small (an index clamp
+  and three list heads), so this is a minor cost rather than a saving, but it is a cost.
+
+Packing is still worth turning on and is a bigger win than it was, because it is no longer paid for
+in draw distance. It is just not the answer to frame skips caused by the streaming distance;
+`StreamDistance` and `StreamRefreshStep` are.
+
+The `WorldSectors` log note used to list "the renderer's, the streamer's, and CCollision's camera
+cache" as the three scans that cost a cell's ground. That is now two, and the note says so.
 
 ## The audit: every site where a distance and a position could have been confused
 
@@ -193,10 +280,13 @@ the referenced LODs as claimed before the drop.
 
 Set `[World] Debug = 1` and read `MapExpander.log` first — everything here announces itself there.
 
-- **At start-up the log should say** `streaming distance pinned to 200 world units (100 on the near
-  pass)` followed by the note about the box growing. If it says nothing, either `StreamDistance = 0`
-  or the grid was never stretched (auto mode leaves vanilla alone) — the world-sectors line just
-  above says which.
+- **At start-up the log should say** `streaming distance pinned to 140 world units, refreshed at 70
+  units of travel with a 210-unit pass`. If it says nothing, either `StreamDistance = 0` or the grid
+  was never stretched (auto mode leaves vanilla alone) — the world-sectors line just above says
+  which.
+- **If the frame skips are still there,** set `StreamRefreshStep = 0` first: that is the scan-versus-
+  streamer test above and it costs one restart. Then bring `StreamDistance` down — 120 is about what
+  the old behaviour gave at its best.
 - **If it says `ERROR: streaming distance left at San Andreas' own`**, one of the four sites did not
   hold what it should and nothing was written; the message names the site and what it found. That is
   another mod on the same function, and the game is left vanilla on purpose.

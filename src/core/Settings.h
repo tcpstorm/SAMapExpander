@@ -104,6 +104,7 @@ struct WorldSettings {
     bool mapWindow;                        // fit the 120 cells to the map the player is on and re-file on crossing
     float mapWindowMargin;                 // how far past a map's edge the player goes before the window follows
     float streamDistance;                  // world units the near-field streaming pass asks for; < 0 auto, 0 leaves San Andreas alone
+    float streamRefreshStep;               // world units the player moves before the wide pass runs again; < 0 half the distance, 0 every frame
     bool linkRegionLods;                   // rebuild HD->LOD links from the source game's naming rule; off = LODs draw as plain objects
     bool dropUnlinkedLods;                 // leave out LODs no HD hides - orphans and whole-district island meshes - which SA would draw through the real geometry
     std::vector<int> skipRenderModels;     // remapped model ids the render guard refuses to draw (a crash workaround while a model is diagnosed)

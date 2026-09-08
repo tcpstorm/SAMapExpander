@@ -354,10 +354,15 @@ void Install() {
                    patched[kFineCentre] + patched[kCoarseCentre],
                patched[kLowBound] + patched[kHighBound] +
                    patched[kLowImmediate] + patched[kHighImmediate]);
-    Log::Write("note: a sector covers %.1f times a vanilla one's ground, so every per-frame scan "
-               "over it - the renderer's, the streamer's, and CCollision's camera cache - walks "
-               "that much more of the world; the grids are the same size as before and savegames "
-               "are unaffected", ratio);
+    Log::Write("note: a sector covers %.1f times a vanilla one's ground, so the per-frame scans "
+               "that walk a fixed number of cells round the camera - the renderer's and "
+               "CCollision's camera cache - walk that much more of the world; the grids are the "
+               "same size as before and savegames are unaffected", ratio);
+    // The streamer's near-field pass used to be on that list and is not any more. It walks the
+    // sectors touching a box measured in world units, so the entities it visits depend on the
+    // distance asked for and not at all on how big a cell is - see StreamRange.cpp. Shrinking the
+    // cell makes it touch more sector headers for the same entities, which is a small cost rather
+    // than a saving; the saving is in the two scans above.
     // The cell is the world span over 120 and 120 is not negotiable - the index that reaches the
     // array is clamped with a three-byte `cmp reg, imm8` at every one of the 136 sites that do it,
     // so no index above 127 can be expressed. Say so once, here, rather than leaving the next

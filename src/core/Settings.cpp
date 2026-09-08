@@ -335,8 +335,9 @@ namespace Settings {
         if (!apply) {
             Log::Write("regions: left where their ini puts them, which needs %.0f units of world a "
                        "side and so %.0f-unit sectors. Packed against the map they would need "
-                       "%.0f, giving %.0f-unit sectors and %.0f%% of the per-frame sector scan "
-                       "cost%s",
+                       "%.0f, giving %.0f-unit sectors and %.0f%% of the per-frame render and "
+                       "collision scan cost - and, since StreamDistance, none of it at the "
+                       "expense of how far the world draws%s",
                        looseSpan, looseCell, packedSpan, packedCell,
                        100.0f * (packedCell * packedCell) / (looseCell * looseCell),
                        world.packRegions ? "" : " ([World] PackRegions = 1 does it, and moves the "
@@ -355,7 +356,11 @@ namespace Settings {
         }
         Log::Write("regions: packed against the map - the world is %.0f units a side instead of "
                    "%.0f, so the fixed 120x120 sector grid gets %.0f-unit cells instead of %.0f "
-                   "and every per-frame sector scan walks %.0f%% of what it did",
+                   "and the renderer's scan and CCollision's camera cache - which walk a fixed "
+                   "number of cells - walk %.0f%% of what they did. The streamer's near-field "
+                   "pass is measured in world units and is unaffected either way, which it was "
+                   "not before StreamDistance: packing used to shorten the draw distance and now "
+                   "leaves it exactly where it is",
                    packedSpan, looseSpan, packedCell, looseCell,
                    100.0f * (packedCell * packedCell) / (looseCell * looseCell));
     }
@@ -389,6 +394,7 @@ namespace Settings {
         world.mapWindow = false;           // one grid over the whole world, not one per map
         world.mapWindowMargin = 400.0f;
         world.streamDistance = -1.0f;      // auto: leave San Andreas' 80 alone unless we stretched the grid
+        world.streamRefreshStep = -1.0f;   // auto: half the distance
         world.linkRegionLods = true;
         world.dropUnlinkedLods = true;
         world.regionWeapons = true;
@@ -434,6 +440,7 @@ namespace Settings {
             world.mapWindow = w->GetBool("MapWindow", false);
             world.mapWindowMargin = w->GetFloat("MapWindowMargin", 400.0f);
             world.streamDistance = w->GetFloat("StreamDistance", -1.0f);
+            world.streamRefreshStep = w->GetFloat("StreamRefreshStep", -1.0f);
             world.linkRegionLods = w->GetBool("LinkRegionLods", true);
             world.dropUnlinkedLods = w->GetBool("DropUnlinkedLods", true);
             world.regionWeapons = w->GetBool("RegionWeapons", true);
