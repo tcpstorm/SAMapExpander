@@ -59,6 +59,7 @@ project "MapExpander"
         "src/region",
         "src/limits",
         "src/weapons",
+        "src/peds",
         "src/patches",
         "src/debug",
         sdkdir .. "/shared",

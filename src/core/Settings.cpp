@@ -313,6 +313,10 @@ namespace Settings {
         world.regionWeaponMode = 0;        // Add: new weapon types, San Andreas' own left alone
         world.regionPickups = true;
         world.pickupReserve = 200;
+        world.regionPeds = true;
+        world.regionPedDensity = 1.0f;
+        world.regionPedRadius = 55.0f;
+        world.regionPolice = true;
 
         IniFile ini;
         if (!ini.Load(PLUGIN_PATH("MapExpander.ini"))) {
@@ -357,6 +361,10 @@ namespace Settings {
                 _stricmp(w->GetString("RegionWeaponMode", "Add").c_str(), "Replace") == 0 ? 1 : 0;
             world.regionPickups = w->GetBool("RegionPickups", true);
             world.pickupReserve = w->GetInt("PickupReserve", 200);
+            world.regionPeds = w->GetBool("RegionPeds", true);
+            world.regionPedDensity = w->GetFloat("RegionPedDensity", 1.0f);
+            world.regionPedRadius = w->GetFloat("RegionPedRadius", 55.0f);
+            world.regionPolice = w->GetBool("RegionPolice", true);
             for (const std::string& s : SplitPaths(w->GetString("DebugSkipModels", ""))) world.skipRenderModels.push_back(atoi(s.c_str()));
             if (world.compressedPositionScale <= 0.0f) world.compressedPositionScale = 4.0f;
             world.gxtFiles = SplitPaths(w->GetString("Gxt", ""));
@@ -430,6 +438,8 @@ namespace Settings {
             if (s.Has("ZoneNames")) r.zoneNamesFile = ResolveGamePath(s.GetString("ZoneNames", ""));
             if (s.Has("Weapons")) r.weaponFile = ResolveGamePath(s.GetString("Weapons", ""));
             if (s.Has("Pickups")) r.pickupFile = ResolveGamePath(s.GetString("Pickups", ""));
+            if (s.Has("PedNodes")) r.pedNodeFile = ResolveGamePath(s.GetString("PedNodes", ""));
+            if (s.Has("PedGroups")) r.pedGroupFile = ResolveGamePath(s.GetString("PedGroups", ""));
             r.zoneInfoLabel = s.GetString("ZoneInfoLabel", "SAN_AND");
             r.regionName = s.GetString("RegionName", "");
 

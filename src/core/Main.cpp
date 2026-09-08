@@ -22,6 +22,8 @@
 #include "ModelLimits.h"
 #include "RegionWeapons.h"
 #include "RegionPickups.h"
+#include "RegionPeds.h"
+#include "RegionPolice.h"
 #include "PickupSlots.h"
 
 using namespace plugin;
@@ -51,6 +53,12 @@ public:
             if (CityLoader::PlacesOwnEntities() && Settings::world.extendWorldSectors)
                 WorldSectors::Install();
             Interiors::Install();
+            // After CityLoader, because a region's pedestrians stand on the collision it places
+            // and its first tick is a frame away either way.
+            // Police before pedestrians: the pedestrian tick is what drives them, so it must not
+            // start before they know whether they can task a ped at all.
+            RegionPolice::Install();
+            RegionPeds::Install();
         }
         if (Settings::world.fixPickupPositions || Settings::world.fixCarGeneratorPositions) PickupFix::Install();
         if (Settings::world.fixMeleeBeyondMap) MeleeFix::Install();

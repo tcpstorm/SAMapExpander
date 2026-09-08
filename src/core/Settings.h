@@ -51,6 +51,8 @@ struct MapRegion {
     std::string zoneNamesFile;           // "GXTKEY = Display Name" lines; empty if none
     std::string weaponFile;              // importer's weapons.dat: the source game's guns over SA's weapon types
     std::string pickupFile;              // importer's pickups.dat: the world pickups its main script placed
+    std::string pedNodeFile;             // importer's pednodes.dat: the source game's pedestrian path graph
+    std::string pedGroupFile;            // importer's pedgrp.dat: who walks in which of its districts
 
     // Interior<N> lines from this region's ini section, in the region's own coordinates. Several
     // may name the same area: an interior split over rooms that are not one box (Vercetti's house
@@ -90,6 +92,10 @@ struct WorldSettings {
     int regionWeaponMode;                  // 0 Add: new weapon types, SA's own untouched; 1 Replace: written over SA's
     bool regionPickups;                    // place the world pickups a region's pickups.dat lists
     int pickupReserve;                     // CPickup slots left for San Andreas' own script, of its 620
+    bool regionPeds;                       // walk pedestrians on a region's own pednodes.dat graph
+    float regionPedDensity;                // multiplier on how many of them, 1.0 being San Andreas' own
+    float regionPedRadius;                 // world units around the player region peds live in
+    bool regionPolice;                     // answer a wanted level in a region with cops on foot
     bool debug;                      // verbose log, F8 diagnostics, water render statistics
 };
 
