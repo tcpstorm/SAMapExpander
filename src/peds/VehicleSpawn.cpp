@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <cstring>
 #include "VehicleSpawn.h"
+#include "ModelLimits.h"
 #include "Log.h"
 
 using namespace plugin;
@@ -67,9 +68,13 @@ constexpr unsigned kVehicleCreatedBy = 0x4A4;
 // as `cmp byte ptr [m*0x14 + 0x8E4CD0], 1`. Getting this wrong is a fault rather than an empty
 // street - the vehicle constructor reaches CVehicleModelInfo::CreateInstance, which dereferences
 // m_pVehicleStruct without checking it and faults at 0x4C9691 reading 0x30C.
-constexpr uintptr_t kStreamingLoadState = 0x8E4CD0;   // ms_aInfoForModel[0].m_nLoadState
-constexpr unsigned kStreamingInfoStride = 0x14;
-constexpr unsigned char kLoadStateLoaded = 1;
+//
+// This file used to read that literal address, and it is wrong the moment [World] ModelIdLimit is
+// raised: src/limits/ModelLimits.cpp moves ms_aInfoForModel to the heap and leaves the static
+// array at 0x8E4CC0 holding zeros for ever. That reads as "no model in the game is loaded", so
+// ChooseLoadedCar and ChooseModel never find anything and no car is ever created - with every
+// subsystem reporting itself installed and no log line anywhere. ModelLimits::ModelIsLoaded reads
+// whichever array is the live one.
 
 // ------------------------------------------------------------------ the two functions we call
 //
@@ -109,11 +114,7 @@ bool Ready() {
     return gReady;
 }
 
-bool ModelIsLoaded(int model) {
-    if (model < 0 || model > 30000) return false;
-    return *(const unsigned char*)(kStreamingLoadState + (uintptr_t)model * kStreamingInfoStride)
-           == kLoadStateLoaded;
-}
+bool ModelIsLoaded(int model) { return ModelLimits::ModelIsLoaded(model); }
 
 bool PoolHasRoom(int reserve) {
     auto* pool = CPools::ms_pVehiclePool;

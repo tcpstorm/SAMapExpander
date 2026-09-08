@@ -61,6 +61,7 @@
 #include <unordered_map>
 #include <vector>
 #include "RegionPeds.h"
+#include "ModelLimits.h"
 #include "RegionPolice.h"
 #include "RegionTraffic.h"
 #include "RegionParkedCars.h"
@@ -365,7 +366,7 @@ int ChooseModel(RegionState& rs, int node) {
         int id = g.ids[(start + i) % g.ids.size()];
         if (id < 0) continue;
         if (firstWanted < 0) firstWanted = id;
-        if (CStreaming::HasModelLoaded(id)) {
+        if (ModelLimits::ModelIsLoaded(id)) {
             Log::Debug("[%s] peds: %s in %s takes model %d from group %d (%s)",
                        rs.region->name.c_str(), IsDaytime() ? "daytime" : "night",
                        zone >= 0 && zone < (int)rs.zones.size() ? rs.zones[zone].name.c_str()
@@ -679,7 +680,7 @@ bool FindSpawnPoint(const CVector& at, float minDist, float maxDist, bool avoidC
 
 CPed* Spawn(int modelId, const CVector& at, bool wander) {
     RegionState* rs = RegionUnder(at);
-    if (!rs || !CStreaming::HasModelLoaded(modelId)) return nullptr;
+    if (!rs || !ModelLimits::ModelIsLoaded(modelId)) return nullptr;
     std::vector<int> candidates;
     NodesNear(*rs, at, kGridCell * 2.0f, candidates);
     int node = -1;

@@ -17,6 +17,8 @@
 // mod that moved one of these arrays first leaves the game vanilla instead of half-patched. Under
 // SA-MP the whole thing is skipped: the server decides the id space there.
 #include <plugin.h>
+#include <CStreaming.h>
+#include <CModelInfo.h>
 #include <cstdint>
 #include <cstdlib>
 #include <iterator>
@@ -185,6 +187,24 @@ int RrrBase() { return kRrrBase + Shift(); }
 int ScmBase() { return kScmBase + Shift(); }
 int TotalCount() { return kVanillaTotal + Shift(); }
 
+// CStreamingInfo::m_nLoadState. The game reads it inlined at over a hundred sites as
+// `cmp byte ptr [m*0x14 + 0x8E4CD0], 1` - 0x8E4CD0 being ms_aInfoForModel[0] plus this offset -
+// because there is no CStreaming::HasModelLoaded to call in 1.0 US.
+//
+// Reading it at that literal address is right in a vanilla game and WRONG here: when the limit is
+// raised the array is on the heap and the static one at 0x8E4CC0 is abandoned, still holding the
+// zeros CStreaming::Init left in it. A caller that reads the old address is told that nothing in
+// the game is loaded, for ever, which is not a crash and not a log line - it is a city with no
+// traffic, no parked cars and no pedestrians in it, and every subsystem reporting itself fine.
+constexpr unsigned kLoadStateOffset = 0x10;
+constexpr unsigned char kLoadStateLoaded = 1;
+
+bool ModelIsLoaded(int model) {
+    if (model < 0 || model >= TotalCount()) return false;
+    return *(const unsigned char*)(StreamingInfo() + (uintptr_t)model * kInfoElem + kLoadStateOffset)
+           == kLoadStateLoaded;
+}
+
 uintptr_t StreamingInfo() { return gActive ? (uintptr_t)gInfo : kInfoArray; }
 uintptr_t ModelInfoPtrs() { return gActive ? (uintptr_t)gPtrs : kPtrArray; }
 uintptr_t AtomicStore() { return gActive ? (uintptr_t)gStore : kAtomicStore; }
@@ -246,6 +266,28 @@ void Install() {
     Log::Write("model id limit %d -> %d: txd %d, col %d, ipl %d, dat %d, ifp %d, rrr %d, scm %d, "
                "%d streaming entries", kVanillaModelCount, gModelCount, TxdBase(), ColBase(),
                IplBase(), DatBase(), IfpBase(), RrrBase(), ScmBase(), TotalCount());
+    // plugin-sdk caches both arrays at static-initialisation time, by reading the disp32 out of an
+    // instruction rather than by naming the global:
+    //
+    //   CStreaming::ms_aInfoForModel  = *(CStreamingInfo***)0x408B25  (CStreaming::RemoveModel)
+    //   CModelInfo::ms_modelInfoPtrs  = *(CBaseModelInfo***)0x40CD67  (RequestModelStream)
+    //
+    // Both of those operands are in the table above, so the SDK gets the right answer - but only
+    // if its initialiser runs after this one, and the two are ordinary C++ static initialisers in
+    // the same DLL, whose relative order the standard does not fix and mingw's .ctors walk runs
+    // BACKWARDS through the link order. Getting it wrong is silent: every CStreaming::HasModelLoaded
+    // and CModelInfo::GetModelInfo in the plugin reads the abandoned array instead. So the
+    // pointers are put right here, where the answer is known, and the log says which way round it
+    // fell so the question never has to be asked again.
+    bool sdkWasStale = (uintptr_t)CStreaming::ms_aInfoForModel != (uintptr_t)gInfo ||
+                       (uintptr_t)CModelInfo::ms_modelInfoPtrs != (uintptr_t)gPtrs;
+    CStreaming::ms_aInfoForModel = reinterpret_cast<CStreamingInfo*>(gInfo);
+    CModelInfo::ms_modelInfoPtrs = reinterpret_cast<CBaseModelInfo**>(gPtrs);
+    Log::Write("model id limit: plugin-sdk's cached array pointers %s",
+               sdkWasStale ? "still named the vanilla arrays and have been re-pointed at the moved "
+                             "ones (its initialiser ran first)"
+                           : "already named the moved arrays (its initialiser ran second)");
+
     Log::Write("model id limit: %d site(s) patched (array %d + %d + %d, time store %d, resource "
                "base %d + %d, count %d, sentinel %d)", (int)std::size(kSites), patched[kInfoArray],
                patched[kPtrArray], patched[kAtomicStore], patched[kTimeStore], patched[kResourceBase],

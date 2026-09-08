@@ -46,6 +46,7 @@
 #include <cstring>
 #include <vector>
 #include "RegionPolice.h"
+#include "ModelLimits.h"
 #include "RegionPeds.h"
 #include "Settings.h"
 #include "Log.h"
@@ -175,7 +176,7 @@ void Tick(const CVector& playerPosition) {
 
     int model = CStreaming::GetDefaultCopModel();
     if (model < 0) return;
-    if (!CStreaming::HasModelLoaded(model)) {
+    if (!ModelLimits::ModelIsLoaded(model)) {
         // The cop model for wherever the region has been placed. Ask and come back: the streamer
         // has it in a moment and a chase that starts a second late is better than one that does
         // not start.

@@ -16,6 +16,11 @@ namespace ModelLimits {
     int ScmBase();
     int TotalCount();   // CStreamingInfo entries: every resource id plus the 4 list-head sentinels
 
+    // Is this model in memory? There is no CStreaming::HasModelLoaded to call in 1.0 US, and the
+    // flag has to be read out of whichever ms_aInfoForModel is the live one - which is the whole
+    // reason this lives here and not in the caller.
+    bool ModelIsLoaded(int model);
+
     // Where the arrays live now: the vanilla globals, or the heap blocks they were moved to.
     uintptr_t StreamingInfo();   // CStreaming::ms_aInfoForModel
     uintptr_t ModelInfoPtrs();   // CModelInfo::ms_modelInfoPtrs

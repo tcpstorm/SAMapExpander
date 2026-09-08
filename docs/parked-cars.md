@@ -299,10 +299,37 @@ competes with the traffic, the peds or the map for a streaming slot.
 
 ---
 
-## One more the engine does that is not obvious
+## Two more the engine does that are not obvious
 
-This was found the expensive way, in a shipped build. `docs/traffic-and-population.md` numbers six
-of these; this is the seventh, and it belongs with them.
+Both were found the expensive way, in a shipped build. `docs/traffic-and-population.md` numbers six
+of these; these are the seventh and the eighth, and they belong with them.
+
+### 7. There are two `ms_aInfoForModel` arrays once the model id limit is raised
+
+`[World] ModelIdLimit` moves `CStreaming::ms_aInfoForModel` to the heap (`src/limits/ModelLimits.cpp`)
+and rewrites the 363 instructions that name it. What it cannot rewrite is a *plugin* that reads the
+vanilla address, and every "is this model in memory" test in this project did:
+`cmp byte ptr [m*0x14 + 0x8E4CD0], 1` is how San Andreas asks, because 1.0 US has no
+`CStreaming::HasModelLoaded` to call, and 0x8E4CD0 is a literal. After the move that array is
+abandoned, still holding the zeros `CStreaming::Init` left in it, so **the answer is "nothing in
+the game is loaded", for ever**.
+
+That is not a crash and not a log line. Every subsystem installs, reports its node counts and its
+budgets, and then never creates anything: the traffic's `ChooseLoadedCar`, the parked cars'
+`ChooseModel` and the pedestrians' district model pick all give up on the first test. An imported
+city with a correct log and nothing alive in it is this.
+
+`ModelLimits::ModelIsLoaded` is now the only place that reads the flag, and it reads whichever
+array is the live one. F8 reports how many of the placeholder vehicle models are in memory, which
+is the number that tells this apart from "no room in the pool" and from "no bay in range".
+
+The same trap catches plugin-sdk, which caches both arrays at static-initialisation time by reading
+the disp32 out of an instruction — `ms_aInfoForModel` from 0x408B25 in `CStreaming::RemoveModel`,
+`ms_modelInfoPtrs` from 0x40CD67 in `RequestModelStream`. Both operands are in the site table, so
+the SDK gets the right answer **if and only if its initialiser runs after ours**, and the two are
+ordinary C++ static initialisers in one DLL whose relative order nothing fixes (mingw's `.ctors`
+walk runs backwards through the link order, which puts a static library's initialisers first).
+`ModelLimits::Install` now assigns both pointers itself and the log says which way round it fell.
 
 ### 8. A car of ours that is forgotten rather than handed back reaches Los Santos
 
@@ -426,7 +453,34 @@ whose car has not streamed in holding an ordinary saloon instead.
 
 ---
 
-### 6. San Andreas' own cars are healthy — the check that matters most
+### 6. Nothing spawns anywhere — the one that reports itself working
+
+This is section 5's and section 4's failure with no signature of their own, so it gets a check of
+its own. The symptom is: the log is perfect — node counts, bay counts, budgets, "will be
+populated", "will have their own cars at the kerb" — and an imported city has no people, no
+traffic and no parked cars in it at all.
+
+- **Read the two new start-up lines.** `model id limit ...: plugin-sdk's cached array pointers ...`
+  says which of two static initialisers ran first, and either answer is fine — it saying nothing at
+  all means the model id limit was not raised, in which case nothing here applies.
+- **Stand in a Vice City street and press F8.** The line to read is
+  `population budgets: traffic N car(s) from the zone's popcycle row, M of 20 placeholder model(s)
+  in memory; parked cars K at once, J bay(s) armed and in range`.
+  - **M is 0** — no vehicle model in the whole game reads as loaded. That is the streaming array
+    being read in the wrong place; see *Two more the engine does that are not obvious*, §7. It is
+    the only one of these that also takes the pedestrians down.
+  - **N is 0** with M nonzero — San Andreas' own popcycle says no cars belong here. Out beyond the
+    map every zone resolves to info zone 0, so this is the whole-map `SAN_AND` row; `RegionTrafficDensity`
+    scales it and cannot rescue a zero.
+  - **J is 0** while standing on a street the source game parked cars in — the bays are all
+    remembered as emptied, or the radius is too small, or the region origin does not match the one
+    the bays were written in.
+- **The start-up line no longer prints a traffic car count**, and that is deliberate: at start-up
+  the player is not standing in any zone, all four popcycle floats are zero, and the old line said
+  "up to 0 car(s)" in a game whose traffic was about to work perfectly well. F8 is where the live
+  number is.
+
+### 7. San Andreas' own cars are healthy — the check that matters most
 
 Do this **before and after** a trip to an imported city, in the same session, without restarting.
 It is the whole of what "we did not break San Andreas" means, and it is cheap.
