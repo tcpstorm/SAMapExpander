@@ -28,6 +28,7 @@
 #include "RegionPeds.h"
 #include "RegionPolice.h"
 #include "RegionTraffic.h"
+#include "RegionParkedCars.h"
 #include "PickupSlots.h"
 
 using namespace plugin;
@@ -78,6 +79,7 @@ public:
             // start before they know whether they can task a ped at all.
             RegionPolice::Install();
             RegionTraffic::Install();
+            RegionParkedCars::Install();
             RegionPeds::Install();
         }
         if (Settings::world.fixPickupPositions || Settings::world.fixCarGeneratorPositions) PickupFix::Install();

@@ -54,6 +54,7 @@ struct MapRegion {
     std::string pedNodeFile;             // importer's pednodes.dat: the source game's pedestrian path graph
     std::string pedGroupFile;            // importer's pedgrp.dat: who walks in which of its districts
     std::string carNodeFile;             // importer's carnodes.dat: the source game's carriageways
+    std::string parkedCarFile;           // importer's parkedcars.dat: where its own script parked a car
 
     // Interior<N> lines from this region's ini section, in the region's own coordinates. Several
     // may name the same area: an interior split over rooms that are not one box (Vercetti's house
@@ -100,6 +101,10 @@ struct WorldSettings {
     bool regionTraffic;                    // drive cars on a region's own carriageways, in our own memory
     float regionTrafficDensity;            // multiplier on how many, 1.0 being what San Andreas asks for
     float regionTrafficRadius;             // world units around the player traffic lives in
+    bool regionParkedCars;                 // stand cars in the kerbside spaces a region's own script used
+    float regionParkedCarsDensity;         // multiplier on the ceiling of how many exist at once
+    float regionParkedCarsRadius;          // world units around the player a space is worth filling in
+    float regionParkedCarsRespawn;         // seconds a space the player emptied stays empty; 0 = for ever
     bool regionPaths;                      // put a region's own carriageways into CPathFind, i.e. traffic
     bool widenPathNodes;                   // repoint the path coordinate scale so a node reaches a region
     float pathNodeScale;                   // int16 units per world unit; <= 0 = derive from the world

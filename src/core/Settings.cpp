@@ -320,6 +320,10 @@ namespace Settings {
         world.regionTraffic = true;
         world.regionTrafficDensity = 1.0f;
         world.regionTrafficRadius = 90.0f;
+        world.regionParkedCars = true;
+        world.regionParkedCarsDensity = 1.0f;
+        world.regionParkedCarsRadius = 110.0f;
+        world.regionParkedCarsRespawn = 720.0f;
         world.regionPaths = false;         // see MapExpander.ini: this is the untested half
         world.widenPathNodes = true;
         world.pathNodeScale = 0.0f;        // derive from the world the regions actually make
@@ -374,6 +378,10 @@ namespace Settings {
             world.regionTraffic = w->GetBool("RegionTraffic", true);
             world.regionTrafficDensity = w->GetFloat("RegionTrafficDensity", 1.0f);
             world.regionTrafficRadius = w->GetFloat("RegionTrafficRadius", 90.0f);
+            world.regionParkedCars = w->GetBool("RegionParkedCars", true);
+            world.regionParkedCarsDensity = w->GetFloat("RegionParkedCarsDensity", 1.0f);
+            world.regionParkedCarsRadius = w->GetFloat("RegionParkedCarsRadius", 110.0f);
+            world.regionParkedCarsRespawn = w->GetFloat("RegionParkedCarsRespawn", 720.0f);
             world.regionPaths = w->GetBool("RegionPaths", false);
             world.widenPathNodes = w->GetBool("WidenPathNodes", true);
             world.pathNodeScale = w->GetFloat("PathNodeScale", 0.0f);
@@ -453,6 +461,7 @@ namespace Settings {
             if (s.Has("PedNodes")) r.pedNodeFile = ResolveGamePath(s.GetString("PedNodes", ""));
             if (s.Has("PedGroups")) r.pedGroupFile = ResolveGamePath(s.GetString("PedGroups", ""));
             if (s.Has("CarNodes")) r.carNodeFile = ResolveGamePath(s.GetString("CarNodes", ""));
+            if (s.Has("ParkedCars")) r.parkedCarFile = ResolveGamePath(s.GetString("ParkedCars", ""));
             r.zoneInfoLabel = s.GetString("ZoneInfoLabel", "SAN_AND");
             r.regionName = s.GetString("RegionName", "");
 

@@ -63,6 +63,7 @@
 #include "RegionPeds.h"
 #include "RegionPolice.h"
 #include "RegionTraffic.h"
+#include "RegionParkedCars.h"
 #include "Settings.h"
 #include "Log.h"
 
@@ -617,9 +618,15 @@ void __cdecl UpdateHook(bool generatePeds) {
         for (RegionState& rs : Regions()) rs.walkers.clear();
         RegionPolice::Forget();
         RegionTraffic::Forget();
+        RegionParkedCars::Forget();
         return;
     }
     CVector at = player->GetPosition();
+    // The parked cars are driven from outside the loop below, and deliberately. That loop stops at
+    // the first region the player is standing over and does nothing at all when they are over
+    // none - which is exactly when a car standing at a Vice City kerb needs taking away, because
+    // the player has just driven out of Vice City.
+    RegionParkedCars::Tick(at);
     for (RegionState& rs : Regions()) {
         if (!PlayerOver(rs, at, Settings::world.regionPedRadius * kCullMargin)) {
             // Out of this region altogether: let go of everybody, the game will remove them the

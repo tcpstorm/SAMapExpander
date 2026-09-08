@@ -54,6 +54,7 @@
 #include <unordered_map>
 #include <vector>
 #include "RegionTraffic.h"
+#include "VehicleSpawn.h"
 #include "Settings.h"
 #include "Log.h"
 
@@ -97,22 +98,11 @@ constexpr char kMissionGotoCoordsStraight = 9;
 // halves of the game's own avoidance. Style 0, which this used to set, gets neither.
 constexpr char kDrivingStyleWeave = 6;
 
-// eVehicleCreatedBy. PERMANENT, not RANDOM, and this matters to San Andreas rather than to us.
+// Which of San Andreas' car counters ours sit on, why it is PERMANENT and not RANDOM, how a model
+// is found to be in memory, and how a car of ours is taken back out of the world, all live in
+// VehicleSpawn.cpp now - because the parked cars need every one of the same facts, and one of them
+// (PARKED being a budget of five) was only found while writing them.
 //
-// CCarCtrl::GenerateOneRandomCar gates on NumRandomCars + NumLawEnforcerCars + NumMissionCars +
-// the two emergency counters against MaxNumberOfCars, which is 12 - and CCarCtrl::GenerateRandomCars
-// bails outright once NumRandomCars reaches 45. Thirty of our cars marked RANDOM would therefore
-// stop San Andreas generating any civilian traffic of its own, anywhere, for as long as they exist.
-// That is a regression of the game's own traffic, which is the one thing this work must not cause.
-//
-// NumPermanentCars is in neither sum and is read by nothing. The price is that
-// CVehicle::CanBeDeleted returns false for it, so San Andreas will not cull these for us - which is
-// correct, because we cull them ourselves and know which ones are ours.
-constexpr unsigned char kVehicleCreatedByPermanent = 4;
-
-// CVehicle::SetVehicleCreatedBy. Never poke m_nCreatedBy directly: this decrements the old
-// counter and increments the new one, and the constructor has already counted the car once.
-constexpr uintptr_t kSetVehicleCreatedBy = 0x6D5D70;
 // CCarCtrl::FindMaximumSpeedForThisCarInTraffic. cdecl, one argument, verified free of CPathFind,
 // and unreachable from our mission - so it is called directly to get back the one piece of
 // avoidance the mission does not provide: not driving into the back of the car in front.
@@ -401,36 +391,17 @@ const int kPlaceholderCars[] = {
     527,  // Cadrona
 };
 
-// Is this vehicle model actually in memory?
-//
-// Read straight out of CStreaming::ms_aInfoForModel rather than through a helper, because the
-// helper does not exist: in 1.0 US the test is inlined at over a hundred sites as
-// `cmp byte ptr [m*5*4 + 0x8E4CD0], 1`. Getting this wrong is not a graceful failure - the vehicle
-// constructor reaches CVehicleModelInfo::CreateInstance, which dereferences m_pVehicleStruct
-// without checking it, and faults at 0x4C9691 reading 0x30C.
-constexpr uintptr_t kStreamingLoadState = 0x8E4CD0;   // ms_aInfoForModel[0].m_nLoadState
-constexpr unsigned kStreamingInfoStride = 0x14;
-constexpr unsigned char kLoadStateLoaded = 1;
-
-bool ModelIsLoaded(int model) {
-    if (model < 0 || model > 30000) return false;
-    return *(const unsigned char*)(kStreamingLoadState + (uintptr_t)model * kStreamingInfoStride)
-           == kLoadStateLoaded;
-}
-
+// Is this vehicle model actually in memory? VehicleSpawn::ModelIsLoaded reads the streaming flag
+// straight out of ms_aInfoForModel, because in 1.0 US there is no HasModelLoaded to call and
+// getting the test wrong faults inside CVehicleModelInfo::CreateInstance at 0x4C9691.
 int ChooseLoadedCar() {
     const int count = (int)(sizeof(kPlaceholderCars) / sizeof(int));
     int start = rand() % count;
     for (int i = 0; i < count; i++) {
         int model = kPlaceholderCars[(start + i) % count];
-        if (ModelIsLoaded(model)) return model;
+        if (VehicleSpawn::ModelIsLoaded(model)) return model;
     }
     return -1;   // nothing of ours is in memory; wait rather than fetch and stall the streamer
-}
-
-bool RoomForACar() {
-    auto* pool = CPools::ms_pVehiclePool;
-    return pool && (int)pool->GetNoOfFreeSpaces() > kVehiclePoolReserve;
 }
 
 // Point the car at the far end of the road it is on, in its own lane, and let the game drive.
@@ -469,25 +440,10 @@ void SetDestination(CVehicle* car, const RegionState& rs, const Driver& d) {
     *((unsigned char*)car + kAutoPilotRejoinFlags) &= (unsigned char)~1u;
 }
 
-// CCarCtrl::CreateCarForScript(modelId, posn, missionCleanup) and CPopulation::AddPedInCar, which
-// are called rather than patched - but checked the same way anything else here is checked, because
-// calling the wrong address is worse than not calling it.
-constexpr uintptr_t kCreateCarForScript = 0x431F80;
-constexpr uintptr_t kAddPedInCar = 0x613A00;
-const uint8_t kCreateCarPrologue[] = { 0x6A, 0xFF, 0x68, 0xBB, 0x74, 0x83, 0x00 };
-const uint8_t kAddPedInCarPrologue[] = { 0x83, 0xEC, 0x18, 0x53, 0x56, 0x57 };
-bool gCanDrive = false;
-
-bool VerifyCall(uintptr_t address, const uint8_t* expected, size_t length, const char* what) {
-    uint8_t here[8] = {};
-    memcpy(here, (const void*)address, length);
-    if (memcmp(here, expected, length) == 0) return true;
-    Log::Write("traffic: %s at 0x%X does not read as expected (%02X %02X %02X %02X...); no cars "
-               "will be put on the region's roads", what, (unsigned)address,
-               here[0], here[1], here[2], here[3]);
-    return false;
-}
-
+// CCarCtrl::CreateCarForScript(modelId, posn, missionCleanup) and CPopulation::AddPedInCar are
+// called rather than patched - but checked the same way anything else here is checked, because
+// calling the wrong address is worse than not calling it. VehicleSpawn::Ready() is that check,
+// shared with the parked cars, which call the same two.
 CVehicle* CreateCar(RegionState& rs, int from, int to, int lane, int model) {
     CVector at = LanePoint(rs, from, to, lane);
     // CreateCarForScript does the whole placement properly - ground height, clearing space, adding
@@ -501,8 +457,7 @@ CVehicle* CreateCar(RegionState& rs, int from, int to, int lane, int model) {
     if (!car) return nullptr;
     // Through the game's own setter, which moves the car between the counters CCarCtrl budgets
     // against. The constructor has already counted it once as a mission car.
-    reinterpret_cast<void(__thiscall*)(void*, unsigned char)>(kSetVehicleCreatedBy)(
-        car, kVehicleCreatedByPermanent);
+    VehicleSpawn::MakePermanent(car);
     car->m_nStatus = (eEntityStatus)kStatusPhysics;
     car->m_autoPilot.m_nCarDrivingStyle = (eCarDrivingStyle)kDrivingStyleWeave;
     car->m_autoPilot.m_nCruiseSpeed = kCruiseSpeed;
@@ -515,19 +470,8 @@ CVehicle* CreateCar(RegionState& rs, int from, int to, int lane, int model) {
     return car;
 }
 
-// Take a car back out of the world, the way the game does it.
-//
-// NOT with C++ `delete`. A CVehicle comes out of the game's own pool through its own allocator, and
-// the plugin's operator delete knows nothing about that - freeing one that way corrupts a heap that
-// is not ours. What the game does, in CPopulation::RemovePedsIfThePoolGetsFull and everywhere else
-// it disposes of an entity, is CWorld::Remove followed by the first vtable entry with the deleting
-// flag set, which is the scalar deleting destructor and returns the memory whence it came.
-void RemoveCar(CVehicle* car) {
-    CWorld::Remove(car);
-    typedef void(__thiscall* ScalarDeletingDtorFn)(void* self, unsigned char deleting);
-    void** vtable = *(void***)car;
-    reinterpret_cast<ScalarDeletingDtorFn>(vtable[0])(car, 1);
-}
+// Taking a car back out of the world is VehicleSpawn::Remove - never with C++ `delete`, for the
+// reason written down there.
 
 // ------------------------------------------------------------------ giving way at a junction
 //
@@ -585,7 +529,7 @@ void ManageDrivers(RegionState& rs, const CVector& player) {
         CVector p = car->GetPosition();
         float dx = p.x - player.x, dy = p.y - player.y;
         if (dx * dx + dy * dy > cull * cull && !TheCamera.IsSphereVisible(p, 4.0f)) {
-            RemoveCar(car);
+            VehicleSpawn::Remove(car);
             continue;
         }
         // Once the player is driving it, it is the player's car and none of this module's business.
@@ -632,11 +576,11 @@ void ManageDrivers(RegionState& rs, const CVector& player) {
 }
 
 void SpawnSome(RegionState& rs, const CVector& player, int wanted) {
-    if (!gCanDrive) return;
+    if (!VehicleSpawn::Ready()) return;
     if ((int)rs.drivers.size() >= wanted) return;
     if (CTimer::m_snTimeInMilliseconds < gNextSpawn) return;
     gNextSpawn = CTimer::m_snTimeInMilliseconds + kSpawnIntervalMs;
-    if (!RoomForACar()) return;
+    if (!VehicleSpawn::PoolHasRoom(kVehiclePoolReserve)) return;
     int model = ChooseLoadedCar();
     if (model < 0) return;
 
@@ -726,11 +670,7 @@ void Install() {
     }
     if (Regions().empty()) return;
 
-    gCanDrive = VerifyCall(kCreateCarForScript, kCreateCarPrologue, sizeof(kCreateCarPrologue),
-                           "CCarCtrl::CreateCarForScript") &&
-                VerifyCall(kAddPedInCar, kAddPedInCarPrologue, sizeof(kAddPedInCarPrologue),
-                           "CPopulation::AddPedInCar");
-    if (!gCanDrive) {
+    if (!VehicleSpawn::Ready()) {
         Regions().clear();
         return;
     }
