@@ -169,20 +169,14 @@ SafetyHookInline& CarsHook() { static SafetyHookInline h; return h; }
 
 bool gInstalled = false;
 
-// The last place the player was seen standing on a region's own ground: the safety net for when the
-// ring search finds nothing at all.
+// The last place the player was seen standing on a region's own ground. It does two jobs: its
+// height is the level the ring search casts down from, and the spot itself is the safety net for
+// when the search finds nothing at all.
 struct SafeSpot {
     const MapRegion* region = nullptr;
     float x = 0.0f, y = 0.0f, z = 0.0f;   // z is ground level, not the player's origin
 };
 SafeSpot gSafe;
-
-// The last height the player was at while above the fall floor, which is where the ring search
-// starts looking from. Not the same as gSafe.z: a player who fell off a roof was last *at* roof
-// height and last *standing* wherever they took off from.
-const MapRegion* gLastRegion = nullptr;
-float gLastGoodZ = 0.0f;
-bool gHaveLastGoodZ = false;
 
 int gRepeats = 0;                 // consecutive relocations inside kRepeatWindowMs of each other
 unsigned gLastRecoveryMs = 0;
@@ -232,14 +226,14 @@ bool SearchGround(float x, float y, float fromZ, int firstRing,
 
 // Put `mover` on the ground at (x, groundZ), the way the game does it: through the entity's own
 // Teleport override, then with its speed zeroed.
-void PlaceOnGround(CEntity* mover, float x, float y, float groundZ, bool resetRotation) {
+bool PlaceOnGround(CEntity* mover, float x, float y, float groundZ, bool resetRotation) {
     void** vtable = *reinterpret_cast<void***>(mover);
     void* slot = vtable ? vtable[kTeleportSlot] : nullptr;
     uintptr_t slotAddr = reinterpret_cast<uintptr_t>(slot);
     if (slotAddr < kCodeLow || slotAddr >= kCodeHigh) {
         Log::Write("fall recovery: the Teleport slot holds %08X, which is not code; leaving the "
                    "fall to the game", (unsigned)slotAddr);
-        return;
+        return false;
     }
 
     float base = CallDistanceToBaseOfModel(mover);
@@ -248,6 +242,7 @@ void PlaceOnGround(CEntity* mover, float x, float y, float groundZ, bool resetRo
     RawVector at = { x, y, groundZ + base };
     reinterpret_cast<TeleportFn>(slot)(mover, at, resetRotation);
     static_cast<CPhysical*>(mover)->m_vecMoveSpeed = CVector(0.0f, 0.0f, 0.0f);
+    return true;
 }
 
 // Everything below the fall floor that is over a region. Returns true when the player was moved.
@@ -269,11 +264,11 @@ bool Recover(CEntity* mover, CPlayerPed* player, const MapRegion& r, bool isVehi
     }
 
     CVector fell = mover->GetPosition();
-    // Where to look from. The height the player was last at over this region is the best guide;
-    // failing that, the last ground they stood on; failing that, the region's own floor.
-    float referenceZ = r.originZ;
-    if (gHaveLastGoodZ && gLastRegion == &r) referenceZ = gLastGoodZ;
-    else if (gSafe.region == &r) referenceZ = gSafe.z;
+    // The height to look from is the last ground the player was standing on in this region - which
+    // is the floor they have just gone through, so it is the level the replacement ground should be
+    // at. Deliberately not "the last height they were seen at": this check runs while they are
+    // falling too, so that would be about -100 by the time it mattered.
+    float referenceZ = gSafe.region == &r ? gSafe.z : r.originZ;
 
     // Each repeat of the same fall starts a ring wider than the last, so a hole that has already
     // swallowed the player is not offered back to them - but never past the widest ring, or the
@@ -305,7 +300,7 @@ bool Recover(CEntity* mover, CPlayerPed* player, const MapRegion& r, bool isVehi
 
     // A car gets its rotation reset and a man does not, which is what the game does at 0x566012
     // (push 1) and 0x565DE6 (push 0).
-    PlaceOnGround(mover, x, y, z, isVehicle);
+    if (!PlaceOnGround(mover, x, y, z, isVehicle)) return false;
     // The man in the car is carried by the car's own matrix from next frame, but the game's ped
     // pass may run before that happens and would see him still under the world. Put him where the
     // car now is so nothing else has an opinion about it.
@@ -341,15 +336,9 @@ void Check() {
     const MapRegion* r = RegionAt(pos.x, pos.y, kFootprintMargin);
 
     if (pos.z > *kFallFloor) {
-        if (!r) {                       // back on San Andreas' own map; the region's notes are stale
-            gLastRegion = nullptr;
-            gHaveLastGoodZ = false;
-            return;
-        }
-        gLastRegion = r;
-        gLastGoodZ = pos.z;
-        gHaveLastGoodZ = true;
-        // And if they are standing on something, remember it as the safety net.
+        if (!r) return;                 // on San Andreas' own map; none of this is our business
+        // If they are standing on something, remember it: it is both the height the ring search
+        // looks from and the safety net for when the search finds nothing at all.
         bool found = false;
         float g = CWorld::FindGroundZFor3DCoord(pos.x, pos.y, pos.z + 2.0f, &found, nullptr);
         if (found && pos.z - g <= kStandingClearance) {
