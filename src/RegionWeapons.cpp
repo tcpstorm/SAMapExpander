@@ -611,6 +611,25 @@ int WeaponType(const char* name) {
     return donor;
 }
 
+// Every weapon type a region actually put in, whether it was given one of its own or took its
+// donor's. Written for the F9 debug key, which cannot simply walk the new-type range: a gun that
+// asked for its donor's identity with a leading '!' has a type well below that range and would be
+// missed, which is exactly what happened to the laser sniper the moment it took type 34.
+int ImportedCount() {
+    int n = 0;
+    for (const RegionArms& arms : Arms())
+        for (const Line& line : arms.lines)
+            if (line.type >= 0) n++;
+    return n;
+}
+
+int ImportedType(int index) {
+    for (const RegionArms& arms : Arms())
+        for (const Line& line : arms.lines)
+            if (line.type >= 0 && index-- == 0) return line.type;
+    return -1;
+}
+
 int WeaponModel(int weaponType) {
     uintptr_t record = WeaponInfoAt(weaponType, 1);   // the STD record, which every weapon has
     return record ? *(int32_t*)(record + kModelId1) : -1;

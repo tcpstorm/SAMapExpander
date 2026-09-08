@@ -20,6 +20,11 @@ namespace RegionWeapons {
     // The game's own tables, read rather than called: CWeaponInfo::FindWeaponType answers 0 for a
     // name it does not know, which is UNARMED, so anything that has to tell "no such weapon" from
     // "unarmed" has to do the lookup itself. -1 for an unknown name, -1 for a weapon with no model.
+    // The weapon types a region actually put in - new ones, and any that took their donor's
+    // identity outright, which are not in the new-type range at all. For the F9 debug key.
+    int ImportedCount();
+    int ImportedType(int index);
+
     int WeaponType(const char* name);
     int WeaponModel(int weaponType);
 }

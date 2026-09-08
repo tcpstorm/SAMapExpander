@@ -65,9 +65,11 @@ static void GiveRegionWeapons() {
     // inventory and leaves the model to whoever wants it, so a gun handed over this way arrives
     // with nothing to draw - invisible in the hands, and no icon either, since the icon is a
     // texture in the model's own dictionary and that dictionary comes with the model.
+    const int imported = RegionWeapons::ImportedCount();
     int wanted = 0;
-    for (int type = WeaponTypes::FirstType(); type <= WeaponTypes::LastType(); type++) {
-        if (WeaponTypes::DonorOf(type) < 0) continue;
+    for (int i = 0; i < imported; i++) {
+        const int type = RegionWeapons::ImportedType(i);
+        if (type < 0) continue;
         const int model = RegionWeapons::WeaponModel(type);
         if (model <= 0) continue;
         CallRequestModel(model, 0x16);   // the flags CPickups uses for a weapon it is about to show
@@ -76,10 +78,11 @@ static void GiveRegionWeapons() {
     if (wanted) CallLoadAllRequestedModels(false);
 
     int given = 0;
-    for (int type = WeaponTypes::FirstType(); type <= WeaponTypes::LastType(); type++) {
+    for (int i = 0; i < imported; i++) {
+        const int type = RegionWeapons::ImportedType(i);
         // A type this never handed out has no record of its own and would arrive as whatever the
         // slot happened to hold, so only the ones with a donor - the ones actually claimed - count.
-        if (WeaponTypes::DonorOf(type) < 0) continue;
+        if (type < 0) continue;
         CallGiveWeapon(player, type, 500, false);
         Log::Write("F9: gave weapon type %d (behaving as %d), model %d", type,
                    WeaponTypes::DonorOf(type), RegionWeapons::WeaponModel(type));
