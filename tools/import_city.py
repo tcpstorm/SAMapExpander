@@ -2639,7 +2639,15 @@ PATH_GROUP_SLOTS = 12
 # 2 a boat path. Established from the data rather than assumed - across Vice City's IPLs type 0 has
 # 9514 nodes spread over the road heights, type 1 has 4588 with the lane-width column always zero,
 # and type 2 has 630 all sitting at z 6.0, which is its sea level.
-VC_PATH_PED = 1
+VC_PATH_CAR, VC_PATH_PED, VC_PATH_BOAT = 0, 1, 2
+# GTA III says it in words instead, in the group header's first column.
+III_PATH_KIND = {"car": VC_PATH_CAR, "ped": VC_PATH_PED}
+
+# Columns after the three coordinates. Both games write the first nine columns the same way -
+# type, next, crossing, x, y, z, median, left lanes, right lanes - and Vice City adds three more
+# that GTA III has no equivalent of. The median is in the same sixteenths as the coordinates:
+# GTA III writes 160 for every car node, which is 10 units, and Vice City varies it.
+PATH_COL_CROSSING, PATH_COL_MEDIAN, PATH_COL_LEFT, PATH_COL_RIGHT = 2, 6, 7, 8
 
 # How close two external nodes have to be before they are taken to be the same point. The two games
 # joined them at run time by looking for the nearest external node of another group; here they are
@@ -2694,6 +2702,8 @@ class PedGraph:
         self.pos = []         # [x, y, z] per node
         self.links = []       # set of neighbour indices per node
         self.zone = []        # ped group id per node, filled in later; -1 until then
+        self.lanes = []       # (median, left lanes, right lanes, crossing) - what traffic needs
+        self.merges = 0       # external nodes that landed on one already there
         self._cells = {}
 
     def _key(self, x, y, z):
@@ -2713,11 +2723,13 @@ class PedGraph:
                             if d < bestd:
                                 best, bestd = i, d
             if best >= 0:
+                self.merges += 1
                 return best
         index = len(self.pos)
         self.pos.append([x, y, z])
         self.links.append(set())
         self.zone.append(-1)
+        self.lanes.append((10.0, 1, 1, 0))   # median, left lanes, right lanes, crossing
         if merge:
             self._cells.setdefault(self._key(x, y, z), []).append(index)
         return index
@@ -2745,8 +2757,21 @@ class PedGraph:
             # Only the group's ends are merged with other groups. An internal node that happened to
             # land on another group's internal node is a coincidence, not a junction, and merging
             # the two would join two pavements that the source game kept apart.
-            mine[slot] = self.add(x, y, z, kind == PATH_NODE_EXTERNAL)
+            index = self.add(x, y, z, kind == PATH_NODE_EXTERNAL)
+            mine[slot] = index
             live += 1
+            # What traffic needs and a pedestrian does not: how wide the central reservation is and
+            # how many lanes run each way. A merged node keeps whichever description came first;
+            # they are two ends of the same junction and the source game agreed with itself.
+            if len(self.lanes) > index and self.lanes[index] == (10.0, 1, 1, 0):
+                def column(at, default, cast=int):
+                    try:
+                        return cast(float(fields[at]))
+                    except (IndexError, ValueError):
+                        return default
+                self.lanes[index] = (column(PATH_COL_MEDIAN, 160.0, float) / PATH_SCALE,
+                                     column(PATH_COL_LEFT, 1), column(PATH_COL_RIGHT, 1),
+                                     column(PATH_COL_CROSSING, 0))
         for slot, fields in enumerate(nodes[:PATH_GROUP_SLOTS]):
             if slot not in mine or len(fields) < 2:
                 continue
@@ -2771,15 +2796,16 @@ class PedGraph:
         dropped = len(self.pos) - len(keep)
         self.pos = [self.pos[i] for i in keep]
         self.zone = [self.zone[i] for i in keep]
+        self.lanes = [self.lanes[i] for i in keep]
         self.links = [set(renumber[n] for n in self.links[i] if n in renumber) for i in keep]
         return dropped
 
 
-def vc_ped_graph(ipl_texts):
-    """Vice City: the pedestrian graph out of the `path` sections of its IPL files.
+def vc_path_graph(ipl_texts, want):
+    """Vice City: one kind of path graph out of the `path` sections of its IPL files.
 
     Vice City puts its whole path network in the IPLs, at absolute world coordinates, so this is
-    only a matter of reading it. GTA III does not - see iii_ped_graph.
+    only a matter of reading it. GTA III does not - see iii_path_graph.
     """
     graph, groups = PedGraph(), 0
     for text in ipl_texts:
@@ -2790,32 +2816,34 @@ def vc_ped_graph(ipl_texts):
                 kind = int(float(group["head"][0]))
             except ValueError:
                 continue
-            if kind != VC_PATH_PED:
+            if kind != want:
                 continue
             if graph.add_group(group["nodes"]):
                 groups += 1
     return graph, groups
 
 
-def iii_ped_graph(ide_texts, ipl_texts, renames):
-    """GTA III: the pedestrian graph, assembled from path groups attached to road models.
+def iii_path_graph(ide_texts, ipl_texts, renames, want, negate_w=True):
+    """GTA III: one kind of path graph, assembled from path groups attached to road models.
 
     III stores its paths quite differently from Vice City, which is why they are read separately.
-    A III path group lives in an IDE, is headed `ped, <model id>, <model name>`, and its
-    coordinates are relative to the model rather than to the world: the group describes the
-    pavement across one road tile, and the tile is placed many times. So the world nodes are the
-    group transformed by every `inst` line that places that model - which is also why III's road
-    tiles are the same handful of meshes laid end to end.
+    A III path group lives in an IDE, is headed `ped, <model id>, <model name>` or `car, ...`, and
+    its coordinates are relative to the model rather than to the world: the group describes the
+    pavement or the carriageway across one road tile, and the tile is placed many times. So the
+    world nodes are the group transformed by every `inst` line that places that model - which is
+    also why III's road tiles are the same handful of meshes laid end to end.
 
     An inst line carries a quaternion, and III's road tiles are laid flat and turned only about the
     vertical, so only that rotation is applied. A tile pitched or rolled would come out wrong, and
-    none of III's are.
+    none of III's are. Which sign that rotation takes is decided by measurement rather than by
+    argument - see iii_rotation_sign.
     """
+    want_word = "ped" if want == VC_PATH_PED else "car"
     by_model, graph, groups, placed = {}, PedGraph(), 0, 0
     for text in ide_texts:
         for group in read_path_groups(text):
             head = group["head"]
-            if len(head) < 3 or head[0].strip().lower() != "ped":
+            if len(head) < 3 or head[0].strip().lower() != want_word:
                 continue
             by_model.setdefault(head[2].strip().lower(), []).append(group["nodes"])
             groups += 1
@@ -2856,9 +2884,9 @@ def iii_ped_graph(ide_texts, ipl_texts, renames):
             except ValueError:
                 continue
             # A quaternion turning only about the vertical is (0, 0, sin(a/2), cos(a/2)); III writes
-            # the scalar part last and negated relative to the usual convention, which is why the
-            # angle comes out as -2*atan2(z, w).
-            angle = -2.0 * math.atan2(rz, rw)
+            # the scalar part last, and whether it is negated relative to the usual convention is
+            # settled by measurement rather than by reading it off - see iii_rotation_sign.
+            angle = (-2.0 if negate_w else 2.0) * math.atan2(rz, rw)
             cos_a, sin_a = math.cos(angle), math.sin(angle)
             for nodes in nodesets:
                 turned = []
@@ -2883,35 +2911,67 @@ def iii_ped_graph(ide_texts, ipl_texts, renames):
     return graph, placed
 
 
-def write_ped_nodes(out, graph, zones):
-    """pednodes.dat: where a pedestrian may stand in this region and where they may walk next."""
+def iii_rotation_sign(ide_texts, ipl_texts, renames, want):
+    """Which way GTA III's placement quaternions turn, decided by the data rather than by argument.
+
+    A III path group is authored once and instanced at every placement of its road model, so the
+    ends of two adjacent tiles only land on each other if the rotation is applied the right way
+    round. Get the sign wrong and every group is turned the wrong way about its tile: the graph
+    still builds, but the external ends that should be the same point are not, so far fewer of them
+    merge. So both signs are tried and the one that merges more wins - which is a measurement of
+    the answer rather than a reading of the convention, and it says so in the log either way.
+    """
+    best = None
+    for negate_w in (True, False):
+        graph, placed = iii_path_graph(ide_texts, ipl_texts, renames, want, negate_w)
+        if best is None or graph.merges > best[0].merges:
+            best = (graph, placed, negate_w)
+    return best
+
+
+def write_path_nodes(out, name, graph, zones, what, extra):
+    """One path graph as a table: a node per line, its links on the same line.
+
+    `extra` says whether the lane columns are written. A pedestrian has no use for them - both
+    games leave the median at zero for a ped node - and traffic needs all of them.
+    """
     lines = [
-        "# Pedestrian path nodes for this region, written by tools/import_city.py.",
+        "# %s for this region, written by tools/import_city.py." % what,
         "#",
-        "# The source game's own pedestrian graph, in the region's own coordinates: every node is",
-        "# a point its designers marked as pavement, and the links are the pavement between them.",
-        "# San Andreas cannot hold these itself - it stores a path node position as an int16 times",
-        "# 0.125, which reaches only +/-4095.875, and this region sits well past that - so the",
-        "# plugin keeps the graph in its own memory and walks pedestrians along it directly. See",
-        "# docs/known-limitations.md.",
+        "# The source game's own graph, in the region's own coordinates. San Andreas cannot hold",
+        "# these as they are: it stores a path node position as an int16 times 0.125, which reaches",
+        "# only +/-4095.875, and this region sits well past that. See docs/known-limitations.md.",
         "#",
         "# One node per line, numbered by the order they appear in:",
         "#",
-        "#   x y z zone link link ...",
+        ("#   x y z zone median left right crossing link link ..." if extra else
+         "#   x y z zone link link ..."),
         "#",
-        "# zone is a line number in pedgrp.dat's zone table, saying who walks here, or -1 for",
-        "# nowhere in particular, which draws the source game's default group. The links are node",
-        "# numbers and every one of them is written on both nodes.",
+        "# zone is a line number in pedgrp.dat's zone table, or -1 for nowhere in particular. The",
+        "# links are node numbers and every one of them is written on both nodes.",
+    ]
+    if extra:
+        lines += [
+            "# median is the width of the central reservation in world units, and left and right",
+            "# are how many lanes run each way - the columns the source game's own traffic drove",
+            "# by. crossing is its pedestrian-crossing flag.",
+        ]
+    lines += [
         "#",
         "# %d node(s), %d link(s), %d zone(s)."
         % (len(graph.pos), sum(len(l) for l in graph.links) // 2, len(zones)),
     ]
     for i, (x, y, z) in enumerate(graph.pos):
         links = " ".join(str(n) for n in sorted(graph.links[i]))
-        lines.append("%.3f %.3f %.3f %d %s" % (x, y, z, graph.zone[i], links))
-    with open(os.path.join(out, "pednodes.dat"), "w", encoding="latin-1") as f:
+        if extra:
+            median, left, right, crossing = graph.lanes[i]
+            lines.append("%.3f %.3f %.3f %d %.2f %d %d %d %s"
+                         % (x, y, z, graph.zone[i], median, left, right, crossing, links))
+        else:
+            lines.append("%.3f %.3f %.3f %d %s" % (x, y, z, graph.zone[i], links))
+    with open(os.path.join(out, name), "w", encoding="latin-1") as f:
         f.write("\n".join(lines) + "\n")
-    return "pednodes.dat"
+    return name
 
 
 # ---------------------------------------------------------------- who walks where
@@ -3805,14 +3865,19 @@ def main():
     # The pedestrian graph and the crowd that walks it. Both come out of files this script has
     # already opened for other reasons, so the cost is only the reading; both are skipped for a
     # --lite import, which places no map and therefore has no pavement to put anybody on.
-    ped_nodes_out, ped_groups_out = None, None
+    ped_nodes_out, ped_groups_out, car_nodes_out = None, None, None
     if not lite:
         if prefix == "iii_":
-            graph, contributed = iii_ped_graph(ide_texts, ipl_texts, renames)
+            graph, contributed, negate_w = iii_rotation_sign(ide_texts, ipl_texts, renames,
+                                                             VC_PATH_PED)
             source_of_paths = "%d road placement(s) carrying a ped path group" % contributed
+            print("paths: GTA III's placement quaternion turns with w %s - it merges %d external "
+                  "end(s) that way and fewer the other, which is how the sign was settled"
+                  % ("negated" if negate_w else "as written", graph.merges))
         else:
-            graph, contributed = vc_ped_graph(ipl_texts)
+            graph, contributed = vc_path_graph(ipl_texts, VC_PATH_PED)
             source_of_paths = "%d ped path group(s)" % contributed
+            negate_w = True
         orphans = graph.drop_isolated()
         if not graph.pos:
             print("no pedestrian path nodes found - the region gets no peds")
@@ -3842,8 +3907,36 @@ def main():
 
             wanted = sorted(set(n for _c, names in groups for n in names))
             ped_map = build_ped_map(wanted, sa_ped_models(sa), prefix)
-            ped_nodes_out = write_ped_nodes(out, graph, zones)
+            ped_nodes_out = write_path_nodes(out, "pednodes.dat", graph, zones,
+                                             "Pedestrian path nodes", False)
             ped_groups_out = write_ped_groups(out, groups, zones, ped_map, prefix)
+
+            # The carriageways, read the same way and out of the same files. These are what the
+            # plugin hands to CPathFind once the node encoding has been widened, which is what
+            # traffic is made of; the pedestrian graph above stays in the plugin's own memory,
+            # because San Andreas' own ped spawner would otherwise draw its own crowd over the top
+            # of the source game's districts.
+            if prefix == "iii_":
+                cars, car_groups = iii_path_graph(ide_texts, ipl_texts, renames, VC_PATH_CAR,
+                                                  negate_w)
+                car_source = "%d road placement(s) carrying a car path group" % car_groups
+            else:
+                cars, car_groups = vc_path_graph(ipl_texts, VC_PATH_CAR)
+                car_source = "%d car path group(s)" % car_groups
+            car_orphans = cars.drop_isolated()
+            if cars.pos:
+                if zones:
+                    stamp_zones(cars, boxes, zone_index)
+                car_nodes_out = write_path_nodes(out, "carnodes.dat", cars, zones,
+                                                 "Vehicle path nodes", True)
+                lanes = collections.Counter(l[1] + l[2] for l in cars.lanes)
+                print("carnodes.dat: %d node(s) and %d link(s) from %s%s; lanes per node %s"
+                      % (len(cars.pos), sum(len(l) for l in cars.links) // 2, car_source,
+                         "" if not car_orphans else
+                         ", %d node(s) nothing links to left out" % car_orphans,
+                         ", ".join("%d with %d" % (n, k) for k, n in sorted(lanes.items()))))
+            else:
+                print("no vehicle path nodes found - the region gets no traffic")
 
             why = collections.Counter(w for _n, w in ped_map.values())
             print("pednodes.dat: %d node(s) and %d link(s) from %s%s; %d stand in one of %d "

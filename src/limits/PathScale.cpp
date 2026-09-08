@@ -37,6 +37,53 @@
 // two call sites and both matter: 0x452F75 is the synchronous one and 0x40CA2B is the one inside
 // CStreaming::ConvertBufferToObject, which is the one that actually runs while you play.
 //
+// WHAT THIS COSTS SAN ANDREAS' OWN TRAFFIC, measured against all 64 shipped node files rather
+// than argued from the arithmetic. 68237 nodes, 204711 coordinates, 31466 car path links.
+//
+// Re-expressing an int16 x 0.125 as an int16 x 0.25 loses the low bit and nothing else. A
+// coordinate whose stored value is even survives exactly - 56.0% of node coordinates and 51.9% of
+// link coordinates do - and an odd one moves by exactly 0.125 units. So:
+//
+//     worst error on any axis      0.125 units   -  exactly one step of the vanilla encoding
+//     worst 3D displacement        0.2165 units
+//     mean error per axis          0.055 units
+//
+// The bound is the point. Rockstar's own exporter snapped every one of these nodes to a 0.125
+// grid, so the stored position was already up to 0.0625 from where the road really was; this moves
+// it by at most one more of the same step. Whatever tolerance San Andreas' traffic has, it has to
+// have had it already, because that is the resolution of its own data.
+//
+// Against the numbers that decide whether a car looks right: San Andreas' lane width is 5.4 units
+// (the float at 0x858C50, read by 26 instructions across CCarCtrl's lane placement and steering
+// and CAutoPilot::RemoveOnePathNode). The worst error is 2.3% of a lane on one axis and 4.0% as a
+// displacement; the mean is 1.0%. The median distance between a node and its nearest neighbour is
+// 7.7 units, so the worst error is 2.8% of a typical node spacing. The one place it is not small
+// is the bottom percentile: the closest pair of nodes in the whole game is 0.125 apart, which is
+// two nodes on the same spot, and after this they are on the same spot exactly. Nothing chooses
+// between two coincident nodes on their separation.
+//
+// Rescaling also only ever shrinks the stored value, so it cannot overflow: San Andreas' widest
+// coordinate is 23936, which becomes 11968.
+//
+// WHAT IS IN THOSE WORDS, since a position a quarter of a unit out is invisible and a flag that
+// got rescaled is a car through a wall. Only the position is:
+//
+//   CPathNode      +8 / +0x0A / +0x0C are x, y, z and nothing else. The field after z is at +0x0E
+//                  and holds the constant 0x7FFE in all 68237 shipped nodes, so z ends at +0x0D.
+//                  Both parities occur freely in all three (56%, 53%, 60% even), which no packed
+//                  low-bit flag would allow, and no bitwise or zero-extending access to +8, +0x0A
+//                  or +0x0C exists anywhere in CPathFind, CPathNode, CCarCtrl, CAutoPilot,
+//                  CTrafficLights, CRoadBlocks or Interior::SetupPaths.
+//   CCarPathLink   +0 / +2 are x and y. The lane counts are a byte at +0x0B, two nibbles wide -
+//                  `shr cl,3` for one side and `and cl,7` for the other; the direction is two
+//                  signed bytes at +8 and +9 scaled by 0.01 at 0x858C58; the width and flags are
+//                  at +0x0A and +0x0C. None of those share a word with a coordinate.
+//
+// +0 and +2 are also CNodeAddress' area and index, which is a different structure that happens to
+// use the same offsets - so the rescale walks the m_pCarPathLinks array specifically and can never
+// reach one. The census settles which is which: those two words in that array hold values spanning
+// -23641..23443, which is a world coordinate and not an area id.
+//
 // Every site is checked to hold the six bytes it is supposed to before a single one is written,
 // and a mismatch anywhere patches nothing at all and leaves the game vanilla with a line saying
 // which site and what it read instead. That matters more here than usual: a path decode that was
