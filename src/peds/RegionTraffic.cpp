@@ -439,6 +439,20 @@ CVehicle* CreateCar(RegionState& rs, int from, int to, int lane, int model) {
     return car;
 }
 
+// Take a car back out of the world, the way the game does it.
+//
+// NOT with C++ `delete`. A CVehicle comes out of the game's own pool through its own allocator, and
+// the plugin's operator delete knows nothing about that - freeing one that way corrupts a heap that
+// is not ours. What the game does, in CPopulation::RemovePedsIfThePoolGetsFull and everywhere else
+// it disposes of an entity, is CWorld::Remove followed by the first vtable entry with the deleting
+// flag set, which is the scalar deleting destructor and returns the memory whence it came.
+void RemoveCar(CVehicle* car) {
+    CWorld::Remove(car);
+    typedef void(__thiscall* ScalarDeletingDtorFn)(void* self, unsigned char deleting);
+    void** vtable = *(void***)car;
+    reinterpret_cast<ScalarDeletingDtorFn>(vtable[0])(car, 1);
+}
+
 // ------------------------------------------------------------------ giving way at a junction
 //
 // What San Andreas does for us, checked rather than assumed:
@@ -495,8 +509,7 @@ void ManageDrivers(RegionState& rs, const CVector& player) {
         CVector p = car->GetPosition();
         float dx = p.x - player.x, dy = p.y - player.y;
         if (dx * dx + dy * dy > cull * cull && !TheCamera.IsSphereVisible(p, 4.0f)) {
-            CWorld::Remove(car);
-            delete car;
+            RemoveCar(car);
             continue;
         }
         // Once the player is driving it, it is the player's car and none of this module's business.
