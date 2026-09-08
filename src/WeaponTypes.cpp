@@ -735,6 +735,23 @@ bool ScopeFillWantsMode(int mode) {
     return false;
 }
 
+// Whether a scope is actually raised, which is when the lend is worth making.
+//
+// Not the same question as ScopeFillWantsMode, and confusing the two is why the first attempt at
+// this drew nothing. Render2dStuff reads the active camera mode and compares it against those six,
+// but only to set a flag; the gate on the whole black-fill block, at 0x53E31B, is the weapon type
+// and nothing else. So the fill does not need the camera to be in one of the six - and while a
+// scope is up it is not in one of them, it is in 0x22, which is why a lend conditioned on them
+// never happened and the sides stayed clear.
+//
+// These are the modes CHud::DrawCrossHairs treats as looking down a sight, at 0x58E4C3. Lending
+// only in them keeps the donor's number out of ordinary play, which is the whole reason for
+// narrowing it: while the lend is up the weapon wheel shows the donor's icon, and that is worth
+// wearing for the seconds a scope is raised and not a moment longer.
+bool LookingDownASight(int mode) {
+    return mode == 0x22 || mode == 0x2A || mode == 0x29 || mode == 0x2D;
+}
+
 SafetyHookInline& Render2dOriginal() { static SafetyHookInline h; return h; }
 bool gSaidScopeFill = false;
 
@@ -746,7 +763,7 @@ void __cdecl Render2dStuffHook() {
         // Only when the donor is one of the two types the fill is drawn for, and only in the camera
         // modes it is drawn in. Outside those the lend would buy nothing and be visible to the rest
         // of the 2D pass for no reason at all.
-        if (donor >= 0 && ScopeFillWantsType(donor) && ScopeFillWantsMode(ActiveCameraMode())) {
+        if (donor >= 0 && ScopeFillWantsType(donor) && LookingDownASight(ActiveCameraMode())) {
             int32_t* held = HeldWeaponField();
             if (held) {
                 type.Lend(held, donor);
