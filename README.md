@@ -400,6 +400,14 @@ All run in throwaway containers; nothing is installed on the host.
   rounded up to a multiple of ten because `GenerateNewOne`'s free-slot search is unrolled ten entries at a time.
   A mod that reads 0x9788C0 directly sees the old, now unused, array.
 
+## Known limitations
+
+What does not work, and why, is written up in [docs/known-limitations.md](docs/known-limitations.md):
+traffic and pedestrians (path nodes cannot reach an imported city), the six Vice City models still
+over San Andreas' own mesh ceiling, what a map placed far from San Andreas costs in frame rate and
+why the sector grid cannot be enlarged, and the rough edges left on the imported weapons. Each entry
+says how it was established and what a fix would take, so nobody rediscovers them the expensive way.
+
 ## Roadmap
 
 - **More than 26400 models.** `ModelIdLimit` frees DFF ids past 20000 and grows the atomic model-info

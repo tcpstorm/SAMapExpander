@@ -4,6 +4,16 @@ if not sdkdir or sdkdir == "" then
 end
 sdkdir = path.translate(sdkdir, "/")
 
+-- The one place the version is written down. Anything that needs it - the build, a release, the
+-- line the plugin logs on start-up - reads this file rather than carrying its own copy.
+local function readVersion()
+    local f = io.open("VERSION", "r")
+    if not f then return "0.0.0" end
+    local v = f:read("*l") or "0.0.0"
+    f:close()
+    return (v:gsub("%s+$", ""))
+end
+
 workspace "MapExpander"
     configurations { "Release", "Debug" }
     location "build"
@@ -45,6 +55,12 @@ project "MapExpander"
 
     includedirs {
         "src",
+        "src/core",
+        "src/region",
+        "src/limits",
+        "src/weapons",
+        "src/patches",
+        "src/debug",
         sdkdir .. "/shared",
         sdkdir .. "/shared/game",
         sdkdir .. "/shared/dxsdk",
@@ -67,7 +83,7 @@ project "MapExpander"
         "PLUGIN_SGV_10US",
         "RW",
         "TARGET_NAME=\"MapExpander\"",
-        "MAPEXPANDER_VERSION=\"" .. (os.getenv("MAPEXPANDER_VERSION") or "0.1.0") .. "\"",
+        "MAPEXPANDER_VERSION=\"" .. (os.getenv("MAPEXPANDER_VERSION") or readVersion()) .. "\"",
     }
 
     filter "configurations:Release"
