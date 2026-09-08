@@ -27,6 +27,15 @@ What it does today:
   task that never touches `CPathFind`. A wanted level is answered on foot. San Andreas' own peds,
   over San Andreas' own map, are untouched. Traffic still needs the path encoding widened; see
   *docs/known-limitations.md*.
+- **Traffic on the imported city's own roads.** San Andreas' path system cannot hold them and never
+  will: a vehicle link is addressed by a packed `uint16` with a ten-bit index, so 1024 per path area,
+  and Vice City's roads need three times the total capacity of the areas its ground falls into. So
+  the importer writes out the source game's own carriageways and the plugin holds them itself,
+  spawning cars and putting them on a go-to-coordinates mission from node to node — the game does
+  all the driving. Lanes come from the donor's own lane counts, offset to the right of travel by San
+  Andreas' own 5.4-unit lane width. **San Andreas' path data is not touched at all**, so its own
+  traffic cannot regress. What this does not give is traffic lights or path-based pursuit AI; see
+  *docs/known-limitations.md*.
 - **A region's own map assets.** Point a region at its original `.img`, `.ide`, `.ipl` and `.col` and the
   plugin registers the archive, remaps the model ids into a free range and places every `inst` line at
   the region's origin — through the game's own loaders. See *Loading a city's own assets*; `ModelIdLimit`
@@ -125,6 +134,9 @@ SA x 4171..6963, y −778..2626).
 | `RegionPedDensity` | 1.0 | multiplier on how many; stacks with the game's own population slider |
 | `RegionPedRadius` | 55.0 | how far from the player they live. 55 sits inside the band the game itself uses — it creates its own at 42.5–50.5 and removes them past 65 off screen, 54.5 on it |
 | `RegionPolice` | 1 | answer a wanted level in a region with cops on foot. Skipped under SA-MP. |
+| `RegionTraffic` | 1 | drive cars on a region's own `CarNodes` carriageways. Skipped under SA-MP. |
+| `RegionTrafficDensity` | 1.0 | multiplier on how many, over the car budget popcycle.dat gives for the player's zone |
+| `RegionTrafficRadius` | 90.0 | how far from the player traffic lives |
 | `Debug` | 0 | verbose log, F8 diagnostics, water render statistics |
 
 ### Region data (feature branches)
