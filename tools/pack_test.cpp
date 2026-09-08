@@ -6,8 +6,8 @@
 // the real ones, measured from the converted IPLs (tools/sector_cost.py prints them), so the spans
 // asserted here are the spans the plugin will actually produce.
 //
-//     docker run --rm -v "<repo>:/work" -w /work gcc:13 \
-//         sh -c "g++ -std=c++17 -O1 -I src/core tools/pack_test.cpp -o /tmp/t && /tmp/t"
+//     docker run --rm -v "<repo>:/work" -w /work gcc:13 sh -c
+//         "g++ -std=c++17 -O1 -I src/core tools/pack_test.cpp -o /tmp/t && /tmp/t"
 #include "RegionPacking.h"
 
 #include <cmath>

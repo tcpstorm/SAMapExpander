@@ -11,6 +11,7 @@
 #include "WaterRender.h"
 #include "CityLoader.h"
 #include "WorldSectors.h"
+#include "MapWindow.h"
 #include "DebugKeys.h"
 #include "Teleport.h"
 #include "Watchdog.h"
@@ -50,6 +51,7 @@ public:
             // the objects and already handles distant ones, so the world grid is left alone.
             if (CityLoader::PlacesOwnEntities() && Settings::world.extendWorldSectors)
                 WorldSectors::Install();
+                MapWindow::Install();
             Interiors::Install();
         }
         if (Settings::world.fixPickupPositions || Settings::world.fixCarGeneratorPositions) PickupFix::Install();

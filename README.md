@@ -104,6 +104,13 @@ SA x 4171..6963, y −778..2626).
 | `PauseMapMargin` | 1500 | extra scrollable world units past the map and all regions |
 | `PauseMapMinX/MaxX/MinY/MaxY` | – | fix the scrollable area explicitly instead (all four) |
 | `ExtendWaterRendering` | 1 | draw region water beyond ±3000 instead of SA's flat ocean (see *Region data*); 2/3 are bisect modes for diagnosing rendering problems |
+| `ExtendWorldSectors` | 1 | fit San Andreas' 120×120 static-entity grid to the ground actually in use, so a region beyond ±3000 is filed where it really is. Skipped under SA-MP, and skipped when another mod (a limit adjuster) has already fitted the grid |
+| `FitSectorsToContent` | 1 | fit that grid to where a region's `inst` lines stand rather than to the radar tile grid its ini declares — Vice City declares 4000×4000 and occupies 3436×3681, which is 92-unit sectors against 86 for no map movement at all |
+| `SectorContentMargin` | 150 | slack round the measured box, since an `inst` line is a position and the model hangs off it by its own radius |
+| `PackRegions` | 0 | put each region in a *corner* of the ground already in use, keeping whichever placement leaves the smallest square. Five maps then need the same 9936 units a side that one does, so a fifth map is free. Off by default because moving a map moves savegame pickups, parked cars, teleport coordinates and screenshots with it; deterministic, so a save made with it on stays valid until the region list changes. Ignored under SA-MP. |
+| `RegionGap` | 500 | clear ground packing leaves between a region and its neighbour |
+| `MapWindow` | 0 | **experimental.** Fit the 120 cells to the one map the player is standing on and re-file the world when they cross to another — the only route to genuinely vanilla-sized sectors that needs no new instruction sites. The re-file is the one thing here that has not been run in the game; it checks itself and freezes rather than risk a second crossing if the check fails. See *Known limitations*. |
+| `MapWindowMargin` | 400 | how far past a map's edge the player goes before the window follows |
 | `Gxt` | – | comma list of GXT files (III/VC/SA format) merged into the game's text table; ours win on a shared key |
 | `GxtLogMisses` | 0 | diagnostic: hook `CText::Get` to log keys nobody provides (conflicts with SA-MP's own hook; keep off) |
 | `ModelIdLimit` | 25000 | number of DFF model ids; 20000 turns it off, 26400 is the ceiling. Skipped under SA-MP. Savegames are not compatible across a change. |
@@ -279,7 +286,7 @@ All run in throwaway containers; nothing is installed on the host.
 
 ## Engine facts worth knowing
 
-- SA's static world is 120×120 sectors of 50 units = ±3000; beyond that, sector lookups clamp into the edge sector (works, degrades). Fully enlarging the sector grid is fastman92 Limit Adjuster territory (~700 patch sites) and is not attempted here.
+- SA's static world is 120×120 sectors of 50 units = ±3000; beyond that, sector lookups clamp into the edge sector (works, degrades). The plugin moves and stretches those 120 cells instead, which keeps everything findable but makes the cell the world span over 120. Growing the *count* is fastman92 Limit Adjuster territory — it relocates the array and replaces whole routines in hand-written assembly for the index clamps, which are `cmp reg, imm8` and cannot hold a number above 127 in place — and is not attempted here; the plugin stands aside when it finds that already done. What is done here instead is to keep the span small: see `PackRegions` above and *Known limitations*.
 - Moving entities (peds, vehicles, objects) live in `ms_aRepeatSectors`, a 16×16 grid the game indexes by
   masking the 0..119 static sector index with 15 — so it wraps every 800 units and keeps working outside
   ±3000, as long as a caller masks the *raw* index instead of clamping it first. `CPhysical::Add`, `CWorld::FindObjectsInRange`

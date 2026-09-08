@@ -231,6 +231,33 @@ void WidenStoreQuadTrees() {
                minX, minY, maxX, maxY);
 }
 
+// Set by Install once the whole table has been written; nothing may move the grid unless it is.
+bool gOwns = false;
+float gFitLo = -3000.0f, gFitHi = 3000.0f;
+
+// The six numbers that place both grids. SCALE says how much ground a cell covers, CENTRE says
+// where index 0 begins, and the two bounds are what CEntity::Add and CEntity::Remove clamp a
+// coordinate to before converting it. The conversion sites read the first four through a pointer,
+// so those are stores; the bounds appear twice each - once as a pointer to a float and once as an
+// immediate inside the two functions - so the immediates have to be written into the code.
+void SetFit(float lo, float hi) {
+    const float span = hi - lo;
+    const float cell = span / 120.0f;
+    gFineScale = 120.0f / span;
+    gCoarseScale = 30.0f / span;
+    gFineCentre = -lo * gFineScale;
+    gCoarseCentre = -lo * gCoarseScale;
+    gLowBound = lo;
+    gHighBound = hi;
+    // The clamp stores a value one hundredth of a cell inside the top edge, so that the coordinate
+    // it writes converts to the last index rather than one past it - the same margin vanilla keeps
+    // by storing 2999.5 against a bound of 3000.
+    gLowImmediateBits = AsBits(lo);
+    gHighImmediateBits = AsBits(hi - cell * 0.01f);
+    gFitLo = lo;
+    gFitHi = hi;
+}
+
 uint32_t NewValue(const WorldSectors::Site& s) {
     switch (s.kind) {
         case WorldSectors::kFineScale:     return (uint32_t)(uintptr_t)&gFineScale;
@@ -309,23 +336,14 @@ void Install() {
         return;
     }
 
-    gFineScale = 120.0f / span;
-    gCoarseScale = 30.0f / span;
-    gFineCentre = -lo * gFineScale;
-    gCoarseCentre = -lo * gCoarseScale;
-    gLowBound = lo;
-    gHighBound = hi;
-    // The clamp stores a value one hundredth of a cell inside the top edge, so that the coordinate
-    // it writes converts to the last index rather than one past it - the same margin vanilla keeps
-    // by storing 2999.5 against a bound of 3000.
-    gLowImmediateBits = AsBits(lo);
-    gHighImmediateBits = AsBits(hi - cell * 0.01f);
+    SetFit(lo, hi);
 
     int patched[kSiteKindCount] = {};
     for (const Site& s : kSites) {
         patch::SetUInt(s.operand, NewValue(s));
         patched[s.kind]++;
     }
+    gOwns = true;
 
     const float ratio = (cell / 50.0f) * (cell / 50.0f);
     Log::Write("world sectors fitted to %.0f..%.0f: 120x120 sectors of %.0f units and 30x30 of "
@@ -354,6 +372,22 @@ void Install() {
     }
 
     WidenStoreQuadTrees();
+}
+
+bool Owns() { return gOwns; }
+
+void CurrentFit(float& lo, float& hi) { lo = gFitLo; hi = gFitHi; }
+
+void Refit(float lo, float hi) {
+    if (!gOwns || !(hi > lo)) return;
+    SetFit(lo, hi);
+    // The four conversion constants are read through a pointer and so are already live; only the
+    // two clamp bounds are baked into CEntity::Add and CEntity::Remove as immediates and have to
+    // be written again. Seven sites, and they were verified against their vanilla values before
+    // Install wrote them the first time.
+    for (const Site& s : kSites)
+        if (s.kind == kLowImmediate || s.kind == kHighImmediate)
+            patch::SetUInt(s.operand, NewValue(s));
 }
 
 }  // namespace WorldSectors
