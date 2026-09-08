@@ -46,11 +46,41 @@ reads a widened node through the old scale and silently produces a position four
 and the A2 evidence is inference from struct-offset sets rather than a proven pointer chain. Only
 running the game settles that, and nobody has.
 
-**Not fixed, and this is why.** The work is a coherent day or two — repoint 284 sites behind an
-off-by-default switch, rescale San Andreas' own nodes on load, and hand the region its own
-`nodes<N>.dat` from the converter that already exists — but it cannot be finished without a game to
-try it in, and shipping a switch that has never been switched on is not the same as shipping
-traffic. The measurement is committed so the next attempt starts from a list rather than a guess.
+**Half of it is now done.** `src/limits/PathScale.cpp` repoints all 288 sites — 188 node decodes,
+94 link decodes and 6 encodes — to floats of its own, and rescales San Andreas' own shipped nodes
+as each area loads, so nothing in `data\paths` is edited. The scale is derived from the region set:
+the smallest power of two whose ±32767 covers it, which for the two shipped cities is 4, giving
+±8191.75 in steps of 0.25. Vice City's roads reach SA x 6873 and Liberty City's y 6570, so vanilla's
+±4095.9 is short and the next step up is enough.
+
+What that costs San Andreas is measured, not asserted (`tools/measure_path_rescale.py`, run over all
+68237 shipped nodes): 56% of coordinates survive exactly, the rest move by exactly **0.125 units —
+one step of the encoding the game shipped with**. Worst 3D displacement 0.2165, mean per axis 0.055.
+San Andreas' lane width is 5.4 (the float at `0x858C50`, read by 26 instructions across `CCarCtrl`'s
+lane placement and steering), so the worst case is 4% of a lane and the mean 1%. Only position is
+touched: `CPathNode`'s x/y/z at +8/+0x0A/+0x0C are followed at +0x0E by a field holding a constant
+`0x7FFE` in every shipped node, all three carry both parities freely, and no bitwise or
+zero-extending access to those offsets exists anywhere in the path code. `CCarPathLink` keeps its
+lane counts in two nibbles at +0x0B and its direction in two signed bytes at +8/+9.
+
+**The other half — `RegionPaths` — is not done, and is off.** A region's roads are not in `CPathFind`
+until something merges them into the path areas its ground falls into, and **all 64 areas already
+hold nodes**, so there is no empty area to write into: it has to be a merge, with every node index
+remapped. None of that can be checked without running the game, and getting it wrong damages San
+Andreas' own traffic rather than only the imported city's. So `PathScale` refuses to patch anything
+unless `RegionPaths` is on — widening the scale alone would change how the game reads its own paths
+and buy nothing.
+
+**Where the maps join.** Vice City's ground clamps into areas 31, 39, 47, 55 and 63 (column 7,
+rows 3–7); Liberty City's into 57–62 (row 7, columns 1–6). They do not overlap each other. Driving
+east out of San Andreas into Vice City stays in the *same* path area the whole way, so nothing
+reloads at the boundary. But there is no road between the maps: San Andreas ends at x 3000 and Vice
+City's westmost node is at 4176, about 1170 units of ground with no nodes at all (500 with
+`PackRegions`). Traffic stops where the source game's roads stop, exactly as it does at San Andreas'
+own map edge today — a connecting road would be content, not code. The cost of the merge, when it
+lands, is that those five or six areas roughly double in node count, and `FindNodeClosestToCoors` is
+linear over an area, so node searches along San Andreas' eastern and northern edges get about twice
+as slow. Bounded, and in the emptiest part of the map.
 
 **A 65th path area is not the way round it.** Four separate things are hard-wired to 64: the 0..7
 clamps and `xreg + yreg*8` in `FindRegionForCoors`, a hard-coded `+0x100` interior block in nine
