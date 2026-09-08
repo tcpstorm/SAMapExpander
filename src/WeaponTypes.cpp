@@ -763,7 +763,19 @@ void __cdecl Render2dStuffHook() {
         // Only when the donor is one of the two types the fill is drawn for, and only in the camera
         // modes it is drawn in. Outside those the lend would buy nothing and be visible to the rest
         // of the 2D pass for no reason at all.
-        if (donor >= 0 && ScopeFillWantsType(donor) && LookingDownASight(ActiveCameraMode())) {
+        // Either set: the six the fill's own flag looks at - which includes 7, the mode a raised
+        // scope actually runs in - or the ones CHud treats as looking down a sight. Narrowing this
+        // to one set has now been wrong twice in both directions, and the cost of being too wide is
+        // only that the wheel shows the donor's icon a moment longer.
+        const int mode = ActiveCameraMode();
+        const bool wantMode = ScopeFillWantsMode(mode) || LookingDownASight(mode);
+        if (!gSaidScopeFill)
+            Log::Write("weapon types: scope-fill gate - holding type %d, donor %d, camera mode %d "
+                       "(0x%X); fill knows its site: %s, donor is a filled type: %s, mode wanted: "
+                       "%s", mine, donor, mode, mode, gScopeFillKnown ? "yes" : "NO",
+                       (donor >= 0 && ScopeFillWantsType(donor)) ? "yes" : "NO",
+                       wantMode ? "yes" : "NO");
+        if (donor >= 0 && ScopeFillWantsType(donor) && wantMode) {
             int32_t* held = HeldWeaponField();
             if (held) {
                 type.Lend(held, donor);
