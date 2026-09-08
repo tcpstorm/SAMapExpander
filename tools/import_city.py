@@ -4098,6 +4098,8 @@ def main():
         lines.append("PedNodes     = %s%s" % (base, ped_nodes_out))
     if ped_groups_out:
         lines.append("PedGroups    = %s%s" % (base, ped_groups_out))
+    if car_nodes_out:
+        lines.append("CarNodes     = %s%s" % (base, car_nodes_out))
     if not lite:
         lines += ["Img          = %s%s.img" % (base, region),
                   "Ide          = " + ", ".join(base + "ide\\" + n for n in ide_out),

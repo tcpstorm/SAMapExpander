@@ -317,6 +317,7 @@ namespace Settings {
         world.regionPedDensity = 1.0f;
         world.regionPedRadius = 55.0f;
         world.regionPolice = true;
+        world.regionPaths = false;         // see MapExpander.ini: this is the untested half
         world.widenPathNodes = true;
         world.pathNodeScale = 0.0f;        // derive from the world the regions actually make
 
@@ -367,6 +368,7 @@ namespace Settings {
             world.regionPedDensity = w->GetFloat("RegionPedDensity", 1.0f);
             world.regionPedRadius = w->GetFloat("RegionPedRadius", 55.0f);
             world.regionPolice = w->GetBool("RegionPolice", true);
+            world.regionPaths = w->GetBool("RegionPaths", false);
             world.widenPathNodes = w->GetBool("WidenPathNodes", true);
             world.pathNodeScale = w->GetFloat("PathNodeScale", 0.0f);
             for (const std::string& s : SplitPaths(w->GetString("DebugSkipModels", ""))) world.skipRenderModels.push_back(atoi(s.c_str()));
@@ -444,6 +446,7 @@ namespace Settings {
             if (s.Has("Pickups")) r.pickupFile = ResolveGamePath(s.GetString("Pickups", ""));
             if (s.Has("PedNodes")) r.pedNodeFile = ResolveGamePath(s.GetString("PedNodes", ""));
             if (s.Has("PedGroups")) r.pedGroupFile = ResolveGamePath(s.GetString("PedGroups", ""));
+            if (s.Has("CarNodes")) r.carNodeFile = ResolveGamePath(s.GetString("CarNodes", ""));
             r.zoneInfoLabel = s.GetString("ZoneInfoLabel", "SAN_AND");
             r.regionName = s.GetString("RegionName", "");
 

@@ -53,6 +53,7 @@ struct MapRegion {
     std::string pickupFile;              // importer's pickups.dat: the world pickups its main script placed
     std::string pedNodeFile;             // importer's pednodes.dat: the source game's pedestrian path graph
     std::string pedGroupFile;            // importer's pedgrp.dat: who walks in which of its districts
+    std::string carNodeFile;             // importer's carnodes.dat: the source game's carriageways
 
     // Interior<N> lines from this region's ini section, in the region's own coordinates. Several
     // may name the same area: an interior split over rooms that are not one box (Vercetti's house
@@ -96,6 +97,7 @@ struct WorldSettings {
     float regionPedDensity;                // multiplier on how many of them, 1.0 being San Andreas' own
     float regionPedRadius;                 // world units around the player region peds live in
     bool regionPolice;                     // answer a wanted level in a region with cops on foot
+    bool regionPaths;                      // put a region's own carriageways into CPathFind, i.e. traffic
     bool widenPathNodes;                   // repoint the path coordinate scale so a node reaches a region
     float pathNodeScale;                   // int16 units per world unit; <= 0 = derive from the world
     bool debug;                      // verbose log, F8 diagnostics, water render statistics

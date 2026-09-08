@@ -266,6 +266,22 @@ float Reach() { return kInt16Reach / gUnitsPerMetre; }
 void Install() {
     if (!Settings::world.widenPathNodes) return;
     if (Settings::regions.empty()) return;
+    // Widening the scale is a means, not an end: on its own it changes how San Andreas reads its
+    // own path data and gives nothing back, because a region's roads are not in CPathFind until
+    // RegionPaths puts them there. Shipping the risk without the payoff would be strictly worse
+    // than vanilla, so this engages only when there is something to use it for.
+    if (!Settings::world.regionPaths) {
+        Log::Debug("paths: RegionPaths is off, so the node scale is left vanilla - widening it "
+                   "alone would change San Andreas' own paths and buy nothing");
+        return;
+    }
+    bool anyRoads = false;
+    for (const MapRegion& r : Settings::regions) anyRoads |= !r.carNodeFile.empty();
+    if (!anyRoads) {
+        Log::Write("paths: no region supplies a CarNodes file, so there are no roads to widen the "
+                   "node scale for; it is left vanilla");
+        return;
+    }
     if (Settings::RunningUnderSaMp()) {
         Log::Write("SA-MP: the path node scale is left vanilla, the server owns traffic");
         return;
