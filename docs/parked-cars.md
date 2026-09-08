@@ -215,12 +215,21 @@ The rules, in order:
 **Why hand a stolen one back rather than keep owning it.** The alternative was to keep it and delete
 it once it got far enough away, which would take a car the player had parked somewhere on purpose.
 Handing it back is what the game's own script does — opcode 01C3 `MARK_CAR_AS_NO_LONGER_NEEDED`
-goes through the same setter to the same counter — and from that moment every rule that applies to
-a car found in the street applies to this one, including garages and the game's own cleanup. What
-it costs is one entry on `NumRandomCars` while that car lives, against a generator that slows at 12
-and stops at 45; San Andreas' own parked cars have exactly the same property with a budget of five,
-so this is the game's own trade and not a new one. It is still the thing to look at if San Andreas'
+reaches `CTheScripts::CleanUpThisVehicle` — and from that moment every rule that applies to a car
+found in the street applies to this one, including garages and the game's own cleanup. What it
+costs is one entry on `NumRandomCars` while that car lives, against a generator that slows at 12 and
+stops at 45; San Andreas' own parked cars have exactly the same property with a budget of five, so
+this is the game's own trade and not a new one. It is still the thing to look at if San Andreas'
 traffic thins after a long session of stealing parked cars in an imported city.
+
+**And the half of that idiom it is easy to miss.** `CleanUpThisVehicle` (0x486670, behind the
+HOODLUM jump at 0x1565CA0) does not only move the counter. It first does
+`and byte ptr [esi+0x428], 0xF7`, clearing **`bIsLocked`** — the flag whose own name is "locked by
+the script (cannot be removed)". `CCarCtrl::CreateCarForScript` *sets* that bit at 0x43205F, which
+is what keeps San Andreas' distance and pool sweeps off any vehicle of ours while it is ours (and
+therefore what makes a car of ours vanishing mean it was destroyed rather than culled). Handing one
+back without clearing it would put the car on the `RANDOM` counter and still leave nothing able to
+remove it — the leak the hand-back exists to avoid, wearing the costume of the fix.
 
 ---
 

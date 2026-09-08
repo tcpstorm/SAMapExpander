@@ -130,6 +130,16 @@ constexpr float kDisturbedDistance = 6.0f;
 constexpr float kWreckedHealth = 300.0f;
 constexpr unsigned char kStatusWrecked = 5;
 
+// How near the player has to be for a car of ours vanishing to count as the player having done it.
+//
+// This should not be able to happen at all: CCarCtrl::CreateCarForScript sets bIsLocked at
+// 0x43205C - the flag whose own comment is "locked by the script (cannot be removed)" - so San
+// Andreas' distance and pool sweeps leave ours alone, and a car of ours going away while it is
+// still in range means it was destroyed. But "should not" rests on one bit read out of a header,
+// and if it were wrong the failure would be a city that quietly empties over a session as space
+// after space is remembered as taken. Three lines is a cheap price for not having that bug.
+constexpr float kBlamePlayerWithin = 80.0f;
+
 // One place the source game parked a car.
 struct Bay {
     float x, y, z;          // the region's own coordinates; z of -100 means "on the ground"
@@ -408,10 +418,13 @@ void ManageBays(RegionState& rs, const CVector& player, bool over) {
         if (b.ref < 0) continue;
         CVehicle* car = CPools::GetVehicle(b.ref);
         if (!car) {
-            // The game took it away - blown up and burnt out, most likely. The space is empty
-            // because something happened to the car, so it stays empty for a while.
+            // The car is gone and we did not take it - blown up and burnt out, most likely. The
+            // space is empty because something happened to it, so it stays empty for a while, but
+            // only if the player was near enough to be the thing that happened.
             b.ref = -1;
-            RememberEmptied(b);
+            CVector where = BayWorld(rs, b);
+            float ax = where.x - player.x, ay = where.y - player.y;
+            if (ax * ax + ay * ay < kBlamePlayerWithin * kBlamePlayerWithin) RememberEmptied(b);
             continue;
         }
         if (VehicleSpawn::PlayerIsIn(car)) { Release(b, car); continue; }
@@ -535,6 +548,15 @@ void Install() {
                "time within %.0f units; a space the player empties stays empty for %.0fs",
                (unsigned)Regions().size(), Budget(), Settings::world.regionParkedCarsRadius,
                Settings::world.regionParkedCarsRespawn);
+    // These are ticked from the pedestrian module's own once-a-frame hook on CPopulation::Update,
+    // which is where the traffic rides too, so if that hook is never installed nothing here runs.
+    // Say so at start-up rather than leaving an empty city and no explanation.
+    bool anyGraph = false;
+    for (const MapRegion& r : Settings::regions) anyGraph |= !r.pedNodeFile.empty();
+    if (!Settings::world.regionPeds || !anyGraph)
+        Log::Write("parked cars: ... but they are driven from the region pedestrian tick, and that "
+                   "is not running (%s), so no car will actually be placed",
+                   Settings::world.regionPeds ? "no region has a PedNodes graph" : "RegionPeds=0");
 }
 
 }   // namespace RegionParkedCars

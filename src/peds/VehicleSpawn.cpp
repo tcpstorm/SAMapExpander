@@ -122,10 +122,25 @@ void MakePermanent(CVehicle* vehicle) {
 }
 
 // The idiom San Andreas' own script uses for a car it no longer wants to own: opcode 01C3
-// MARK_CAR_AS_NO_LONGER_NEEDED puts a mission car back on the RANDOM counter and lets the game
-// dispose of it. Used here only where we genuinely stop owning a vehicle and cannot delete it -
-// the one the player is sitting in.
+// MARK_CAR_AS_NO_LONGER_NEEDED reaches CTheScripts::CleanUpThisVehicle, which is at 0x486670 and
+// behind the HOODLUM jump at 0x1565CA0. It does two things that matter and this does both:
+//
+//   `and byte ptr [esi+0x428], 0xF7` clears bit 3, which is bIsLocked - "locked by the script
+//   (cannot be removed)". CCarCtrl::CreateCarForScript SETS that bit at 0x43205F, which is what
+//   keeps San Andreas' distance and pool sweeps off a vehicle of ours while it is ours. Handing
+//   one back without clearing it would put the car on the RANDOM counter and still leave nothing
+//   able to remove it, which is the leak this is meant to avoid.
+//
+//   `SetVehicleCreatedBy(RANDOM)`, through the same setter.
+//
+// What it also does and this does not: it clears two CPhysical flags at +0x40 that
+// CreateCarForScript never set, and it takes the vehicle out of the script's mission cleanup list,
+// which ours were never in - CreateCarForScript is called with missionCleanup false.
+constexpr uintptr_t kVehicleFlagsByte0 = 0x428;
+constexpr unsigned char kFlagIsLocked = 0x08;
+
 void HandBackToTheGame(CVehicle* vehicle) {
+    *((unsigned char*)vehicle + kVehicleFlagsByte0) &= (unsigned char)~kFlagIsLocked;
     reinterpret_cast<void(__thiscall*)(void*, unsigned char)>(kSetVehicleCreatedBy)(
         vehicle, kCreatedByRandom);
 }
