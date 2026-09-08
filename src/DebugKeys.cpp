@@ -15,6 +15,7 @@
 #include "Settings.h"
 #include "Zones.h"
 #include "WeaponTypes.h"
+#include "RegionWeapons.h"
 #include "Interiors.h"
 #include "Gxt.h"
 #include "Watchdog.h"
@@ -35,6 +36,14 @@ static bool gGiveWasDown = false;
 typedef int(__thiscall* GiveWeaponFn)(void* ped, int type, unsigned int ammo, bool select);
 static const GiveWeaponFn CallGiveWeapon = reinterpret_cast<GiveWeaponFn>(0x5E6080);
 
+// CStreaming::RequestModel and LoadAllRequestedModels - what makes a model exist before something
+// tries to draw it. See the note in GiveRegionWeapons for why handing over a weapon needs them.
+typedef void(__cdecl* RequestModelFn)(int model, int flags);
+static const RequestModelFn CallRequestModel = reinterpret_cast<RequestModelFn>(0x4087E0);
+typedef void(__cdecl* LoadAllRequestedModelsFn)(bool priorityOnly);
+static const LoadAllRequestedModelsFn CallLoadAllRequestedModels =
+    reinterpret_cast<LoadAllRequestedModelsFn>(0x40EA10);
+
 // F9, with [World] Debug=1: hand over every gun a region added.
 //
 // The imported weapons are types of their own, so no cheat knows their names and the only way to
@@ -49,13 +58,31 @@ static void GiveRegionWeapons() {
         return;
     }
 
+    // Ask for every model first, and wait for them.
+    //
+    // A weapon picked up off the street is visible because the pickup itself streamed the model in
+    // before anyone could hold it. GiveWeapon does no such thing: it writes the type into the ped's
+    // inventory and leaves the model to whoever wants it, so a gun handed over this way arrives
+    // with nothing to draw - invisible in the hands, and no icon either, since the icon is a
+    // texture in the model's own dictionary and that dictionary comes with the model.
+    int wanted = 0;
+    for (int type = WeaponTypes::FirstType(); type <= WeaponTypes::LastType(); type++) {
+        if (WeaponTypes::DonorOf(type) < 0) continue;
+        const int model = RegionWeapons::WeaponModel(type);
+        if (model <= 0) continue;
+        CallRequestModel(model, 0x16);   // the flags CPickups uses for a weapon it is about to show
+        wanted++;
+    }
+    if (wanted) CallLoadAllRequestedModels(false);
+
     int given = 0;
     for (int type = WeaponTypes::FirstType(); type <= WeaponTypes::LastType(); type++) {
         // A type this never handed out has no record of its own and would arrive as whatever the
         // slot happened to hold, so only the ones with a donor - the ones actually claimed - count.
         if (WeaponTypes::DonorOf(type) < 0) continue;
         CallGiveWeapon(player, type, 500, false);
-        Log::Write("F9: gave weapon type %d (behaving as %d)", type, WeaponTypes::DonorOf(type));
+        Log::Write("F9: gave weapon type %d (behaving as %d), model %d", type,
+                   WeaponTypes::DonorOf(type), RegionWeapons::WeaponModel(type));
         given++;
     }
 
