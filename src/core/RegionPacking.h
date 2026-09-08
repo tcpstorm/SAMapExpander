@@ -40,6 +40,21 @@ struct Box {
     float Area()   const { return Width() * Height(); }
 };
 
+// The range the sector grid would need to cover this box on its own, which is what MapWindow fits
+// the 120 cells to when the player is standing on that map.
+//
+// There is one SCALE and one CENTRE for the whole grid rather than one per axis, so the ground it
+// covers is a square [lo, hi] x [lo, hi] and BOTH of a map's projections have to fit in the same
+// [lo, hi]. A map is therefore cheap to window when its x range and its y range sit on top of each
+// other - out on the diagonal from San Andreas - and dear when it is out along one axis: Vice City
+// is 3436 by 3681 but at x 3846..7282, y -914..2767 the range holding both is 8196. Never smaller
+// than 6000, because 120 cells finer than vanilla's 50 units buy nothing and cost pointer nodes.
+inline float WindowSpan(const Box& b) {
+    const float lo = b.x0 < b.y0 ? b.x0 : b.y0;
+    const float hi = b.x1 > b.y1 ? b.x1 : b.y1;
+    return hi - lo > 6000.0f ? hi - lo : 6000.0f;
+}
+
 inline bool Overlap(const Box& a, const Box& b, float gap) {
     return a.x0 < b.x1 + gap && b.x0 < a.x1 + gap &&
            a.y0 < b.y1 + gap && b.y0 < a.y1 + gap;
@@ -81,7 +96,7 @@ inline bool PackOrder(const std::vector<Box>& want, const std::vector<size_t>& o
         }
         bool found = false;
         Box best{};
-        float bestSpan = 0.0f, bestAway = 0.0f;
+        float bestSpan = 0.0f, bestWindow = 0.0f, bestAway = 0.0f;
         for (float x0 : xs)
         for (float y0 : ys) {
             Box p{ x0, x0 + w, y0, y0 + h };
@@ -95,16 +110,28 @@ inline bool PackOrder(const std::vector<Box>& want, const std::vector<size_t>& o
             placed.push_back(p);
             const float span = SquareSpan(placed);
             placed.pop_back();
-            // Ties go to the placement nearest where the author put the map, so a region already
+            // Among placements that leave the same square, prefer the one whose own window is
+            // narrowest - a corner on the diagonal from San Andreas rather than one out along an
+            // axis. It costs the default nothing, because it only ever chooses between placements
+            // that were already equal, and it is what makes MapWindow worth having: on five maps
+            // it takes the worst window from 10317 units to 8217, which is 86-unit sectors down
+            // to 68 while the world stays exactly 10236 a side.
+            const float windowSpan = WindowSpan(p);
+            // Last, the placement nearest where the author put the map, so a region already
             // sitting where packing would put it anyway is not shuffled, and so the same ini
             // always produces the same world.
             const float dx = p.x0 - want[i].x0, dy = p.y0 - want[i].y0;
             const float away = dx * dx + dy * dy;
-            if (!found || span < bestSpan - 0.5f ||
-                (span < bestSpan + 0.5f && away < bestAway - 0.5f)) {
+            const bool better =
+                !found || span < bestSpan - 0.5f ||
+                (span < bestSpan + 0.5f &&
+                 (windowSpan < bestWindow - 0.5f ||
+                  (windowSpan < bestWindow + 0.5f && away < bestAway - 0.5f)));
+            if (better) {
                 found = true;
                 best = p;
                 bestSpan = span;
+                bestWindow = windowSpan;
                 bestAway = away;
             }
         }

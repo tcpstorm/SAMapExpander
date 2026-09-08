@@ -634,7 +634,10 @@ namespace Settings {
     void RegionExtent(float& minX, float& maxX, float& minY, float& maxY) {
         minX = -3000.0f; maxX = 3000.0f; minY = -3000.0f; maxY = 3000.0f;
         for (auto& r : regions) {
-            const bool fit = world.fitSectorsToContent && r.hasContent;
+            // hasContent alone, not the setting: turning FitSectorsToContent off stops the
+            // measurement being taken, but a box written into the ini by hand is an instruction
+            // and is honoured either way.
+            const bool fit = r.hasContent;
             const float west  = fit ? r.ContentWest()  : r.TileWest(0);
             const float east  = fit ? r.ContentEast()  : r.TileWest(r.tilesX);
             const float north = fit ? r.ContentNorth() : r.TileNorth(0);

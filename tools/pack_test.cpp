@@ -141,6 +141,26 @@ int main() {
         Check(span < 9936.0f, "RegionGap = 0 packs tighter than RegionGap = 500");
     }
 
+    // The window-aware tie-break: among placements leaving the same square, the one whose own
+    // [lo, hi] is narrowest, because MapWindow fits the grid to one map at a time and one SCALE
+    // serves both axes. It must not cost the square anything.
+    {
+        std::vector<Box> best;
+        std::vector<size_t> order;
+        const float span = PackN(5, gap, best, order);
+        float worst = 0.0f;
+        for (const Box& b : best) {
+            const float win = RegionPacking::WindowSpan(b);
+            if (win > worst) worst = win;
+        }
+        printf("\nfive maps: world %.0f a side (%.1f-unit sectors), worst single-map window %.0f "
+               "(%.1f-unit sectors)\n", span, span / 120.0f, worst, worst / 120.0f);
+        Check(std::fabs(span - 9936.0f) < 1.0f,
+              "the window-aware tie-break costs the square nothing");
+        Check(worst < span,
+              "every map's own window is narrower than a single grid over all of them");
+    }
+
     printf("\n%s\n", failures ? "FAILURES" : "all checks passed");
     return failures ? 1 : 0;
 }

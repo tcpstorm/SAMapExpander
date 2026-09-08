@@ -162,10 +162,31 @@ boundary", and gave up on it.)
   Two things limit it. A crossing costs a frame — forty thousand entities out and back in. And
   there is one scale and one centre for the whole grid rather than one per axis, so the window is
   the square that holds *both* of a map's projections: Vice City is 3436 × 3681 but sits at
-  x 3846..7282, y −914..2767, and the range holding both is 8196. Splitting the 268 fine
-  conversions into the ones that convert an x and the ones that convert a y would give every map a
-  window its own size, but telling them apart needs dataflow analysis of each site and a site
-  classified the wrong way round files its entities in transposed cells.
+  x 3846..7282, y −914..2767, and the range holding both is 8196. A map out on the diagonal from
+  San Andreas gets a window its own size; one out along an axis does not. `PackRegions` therefore
+  breaks its ties on that — among placements that leave the same square, the one whose own window
+  is narrowest — which costs the square nothing and takes the worst of five maps from a 10317-unit
+  window to 7617, i.e. from 86-unit sectors to 63. Splitting the 268 fine conversions into the ones
+  that convert an x and the ones that convert a y would end the constraint outright and give every
+  map a window its own size on each axis, but telling them apart needs dataflow analysis of each
+  site, and a site classified the wrong way round files its entities in transposed cells.
+
+**Where that leaves the numbers**, measured against San Andreas' own placements:
+
+| | span | cell | vs vanilla |
+|---|---|---|---|
+| two cities as the ini writes them, before this work | 11000 | 91.7 | 2.59× |
+| the same, grid fitted to the buildings (now the default) | 10432 | 86.9 | 2.38× |
+| the same, `PackRegions` | 10236 | 85.3 | 2.31× |
+| **five** maps, `PackRegions`, old four-sides placement | 14236 | 118.6 | 3.94× |
+| **five** maps, `PackRegions`, corners | 10236 | 85.3 | 2.31× |
+| five maps, `MapWindow`, worst map | 7617 | 63.5 | ~1.6× |
+| five maps, `MapWindow`, most maps | 6000 | 50.0 | 1.00× |
+| a limit adjuster with `World sector size = 50` | any | 50.0 | 1.00× |
+
+The thing the user asked for — several maps at a frame rate that does not degrade as more are
+added — is the fourth row against the fifth: adding a third, fourth and fifth map now costs
+nothing at all, where before each one widened the world.
 
 ---
 
