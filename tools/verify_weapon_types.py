@@ -170,8 +170,12 @@ print('   0x53E331 colour pushed: %s  %s'
          and colour[5:11] == b'\x6a\x00\x6a\x00\x6a\x00' else 'BAD'))
 print('   drawn for weapon types %s in camera modes %s'
       % (', '.join('0x%X' % t for t in fill_types), ', '.join('0x%X' % m for m in fill_modes)))
+print('   the second test asks for weapon type %d (%s), which is %s'
+      % (fill_types[1], NAMES[fill_types[1]] if fill_types[1] < len(NAMES) else '?',
+         'a projectile definition no ped can hold - the plugin gives this test to a new gun'
+         if fill_types[1] == 19 else 'NOT the unreachable 19; the plugin will leave it alone'))
 for n, (name, donor_name) in enumerate(live):
     donor = NAMES.index(donor_name)
     if donor in fill_types:
-        print('   %-14s donor %-14s is one of them   <- the stand-in must supply this'
+        print('   %-14s donor %-14s is one of them   <- this is the gun that claims it'
               % (name, donor_name))
