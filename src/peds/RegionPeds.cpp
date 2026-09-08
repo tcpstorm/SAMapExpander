@@ -363,7 +363,14 @@ int ChooseModel(RegionState& rs, int node) {
         int id = g.ids[(start + i) % g.ids.size()];
         if (id < 0) continue;
         if (firstWanted < 0) firstWanted = id;
-        if (CStreaming::HasModelLoaded(id)) return id;
+        if (CStreaming::HasModelLoaded(id)) {
+            Log::Debug("[%s] peds: %s in %s takes model %d from group %d (%s)",
+                       rs.region->name.c_str(), IsDaytime() ? "daytime" : "night",
+                       zone >= 0 && zone < (int)rs.zones.size() ? rs.zones[zone].name.c_str()
+                                                               : "nowhere in particular",
+                       id, groupIndex, g.name.c_str());
+            return id;
+        }
     }
     // Nobody from this district is in memory. Ask for one and come back later. GAME_REQUIRED is
     // what San Andreas itself asks ped models with, so the streamer treats them the same way and
@@ -441,6 +448,27 @@ int NextNode(const RegionState& rs, int node) {
     if (n.linkCount <= 0) return node;
     return rs.links[n.firstLink + (rand() % n.linkCount)];
 }
+
+// The nearest node to a point, or -1 if there is none within `radius`.
+int NearestNode(const RegionState& rs, const CVector& at, float radius) {
+    std::vector<int> nearby;
+    NodesNear(rs, at, radius, nearby);
+    int best = -1;
+    float bestd = 0.0f;
+    for (int n : nearby) {
+        CVector p = NodeWorld(rs, n);
+        float d = (p.x - at.x) * (p.x - at.x) + (p.y - at.y) * (p.y - at.y) +
+                  (p.z - at.z) * (p.z - at.z);
+        if (best < 0 || d < bestd) { best = n; bestd = d; }
+    }
+    return best;
+}
+
+// How far a ped may drift from the node it is walking to before it is taken to have lost its
+// place. A ped knocked over by a car, pushed into a doorway or frightened up an alley comes back
+// to a walk when the fright is over, and without this it would set off for wherever it had been
+// heading - possibly a street away, possibly through a wall.
+constexpr float kReanchorDistance = 30.0f;
 
 // Is this point somewhere a person could be put without appearing out of nothing in front of the
 // player? Close by, only out of shot; further away, anywhere.
@@ -544,6 +572,13 @@ void ManageWalkers(RegionState& rs, const CVector& player) {
         // an event that cleared it - so send them on to a neighbouring node.
         if (gCanWalk && ped->IsAlive() && ped->m_pIntelligence &&
             !ped->m_pIntelligence->m_TaskMgr.m_aPrimaryTasks[kTaskPrimaryDefault]) {
+            CVector node = NodeWorld(rs, w.node);
+            float nx = node.x - p.x, ny = node.y - p.y;
+            if (nx * nx + ny * ny > kReanchorDistance * kReanchorDistance) {
+                int here = NearestNode(rs, p, kReanchorDistance);
+                if (here < 0) { rs.walkers[write++] = w; continue; }   // off the graph; let them be
+                w.node = here;
+            }
             w.node = NextNode(rs, w.node);
             GiveWalkTask(ped, NodeWorld(rs, w.node));
         }
