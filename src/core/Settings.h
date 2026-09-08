@@ -97,6 +97,9 @@ struct WorldSettings {
     float regionPedDensity;                // multiplier on how many of them, 1.0 being San Andreas' own
     float regionPedRadius;                 // world units around the player region peds live in
     bool regionPolice;                     // answer a wanted level in a region with cops on foot
+    bool regionTraffic;                    // drive cars on a region's own carriageways, in our own memory
+    float regionTrafficDensity;            // multiplier on how many, 1.0 being what San Andreas asks for
+    float regionTrafficRadius;             // world units around the player traffic lives in
     bool regionPaths;                      // put a region's own carriageways into CPathFind, i.e. traffic
     bool widenPathNodes;                   // repoint the path coordinate scale so a node reaches a region
     float pathNodeScale;                   // int16 units per world unit; <= 0 = derive from the world

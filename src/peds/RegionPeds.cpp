@@ -62,6 +62,7 @@
 #include <vector>
 #include "RegionPeds.h"
 #include "RegionPolice.h"
+#include "RegionTraffic.h"
 #include "Settings.h"
 #include "Log.h"
 
@@ -615,6 +616,7 @@ void __cdecl UpdateHook(bool generatePeds) {
         // handle kept across one could name somebody else's ped entirely.
         for (RegionState& rs : Regions()) rs.walkers.clear();
         RegionPolice::Forget();
+        RegionTraffic::Forget();
         return;
     }
     CVector at = player->GetPosition();
@@ -630,6 +632,7 @@ void __cdecl UpdateHook(bool generatePeds) {
         // The police ride on this graph too, and on nothing else, so they are driven from here
         // rather than from a hook of their own: one region under the player, one tick.
         RegionPolice::Tick(at);
+        RegionTraffic::Tick(at);
         break;
     }
 }

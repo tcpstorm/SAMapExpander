@@ -25,6 +25,7 @@
 #include "RegionPickups.h"
 #include "RegionPeds.h"
 #include "RegionPolice.h"
+#include "RegionTraffic.h"
 #include "PickupSlots.h"
 
 using namespace plugin;
@@ -63,6 +64,7 @@ public:
             // Police before pedestrians: the pedestrian tick is what drives them, so it must not
             // start before they know whether they can task a ped at all.
             RegionPolice::Install();
+            RegionTraffic::Install();
             RegionPeds::Install();
         }
         if (Settings::world.fixPickupPositions || Settings::world.fixCarGeneratorPositions) PickupFix::Install();

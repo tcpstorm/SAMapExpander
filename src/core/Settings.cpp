@@ -317,6 +317,9 @@ namespace Settings {
         world.regionPedDensity = 1.0f;
         world.regionPedRadius = 55.0f;
         world.regionPolice = true;
+        world.regionTraffic = true;
+        world.regionTrafficDensity = 1.0f;
+        world.regionTrafficRadius = 90.0f;
         world.regionPaths = false;         // see MapExpander.ini: this is the untested half
         world.widenPathNodes = true;
         world.pathNodeScale = 0.0f;        // derive from the world the regions actually make
@@ -368,6 +371,9 @@ namespace Settings {
             world.regionPedDensity = w->GetFloat("RegionPedDensity", 1.0f);
             world.regionPedRadius = w->GetFloat("RegionPedRadius", 55.0f);
             world.regionPolice = w->GetBool("RegionPolice", true);
+            world.regionTraffic = w->GetBool("RegionTraffic", true);
+            world.regionTrafficDensity = w->GetFloat("RegionTrafficDensity", 1.0f);
+            world.regionTrafficRadius = w->GetFloat("RegionTrafficRadius", 90.0f);
             world.regionPaths = w->GetBool("RegionPaths", false);
             world.widenPathNodes = w->GetBool("WidenPathNodes", true);
             world.pathNodeScale = w->GetFloat("PathNodeScale", 0.0f);
