@@ -127,6 +127,12 @@ constexpr uintptr_t kLoadCallSites[] = {
 // area is left alone rather than walked. San Andreas' largest area holds a few thousand.
 constexpr int kSaneNodeCount = 200000;
 
+// Whether anything actually consumes the widened scale yet. The site patching, the derivation and
+// the load-time rescale below are finished and measured; what is not written is the merge that
+// puts a region's own carriageways into CPathFind's area arrays, and without it the widening is
+// all cost and no benefit. Flip this with that work, not before.
+constexpr bool kRegionPathMergeExists = false;
+
 // Vanilla: 8 int16 units per world unit, so 32767/8 = +/-4095.875 in steps of 0.125.
 constexpr float kVanillaUnitsPerMetre = 8.0f;
 constexpr float kInt16Reach = 32767.0f;
@@ -280,6 +286,16 @@ void Install() {
     if (!anyRoads) {
         Log::Write("paths: no region supplies a CarNodes file, so there are no roads to widen the "
                    "node scale for; it is left vanilla");
+        return;
+    }
+    // The merge that puts a region's carriageways into CPathFind is not written yet. Until it is,
+    // turning RegionPaths on would enable the scale and nothing else - which is the one state
+    // worth making unreachable, because it changes how San Andreas reads its own paths and returns
+    // nothing for it. When the merge lands this constant goes with it.
+    if (!kRegionPathMergeExists) {
+        Log::Write("paths: RegionPaths is on, but the merge that would put a region's roads into "
+                   "CPathFind is not implemented yet. Widening the node scale on its own would "
+                   "change San Andreas' own paths and give nothing back, so nothing is patched");
         return;
     }
     if (Settings::RunningUnderSaMp()) {
