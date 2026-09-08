@@ -281,7 +281,8 @@ RegionState* RegionAt(float x, float y) {
 // The closest point of `kind` in `rs`, in San Andreas world coordinates, with its height resolved.
 // False when the region has none of that kind.
 bool ClosestOfKind(const RegionState& rs, int kind, const RawVector& where,
-                   RawVector& outPosition, float& outHeading, const RestartPoint** which) {
+                   RawVector& outPosition, float& outHeading, const RestartPoint** which,
+                   bool quiet) {
     const std::vector<RestartPoint>& list = rs.points[kind];
     if (list.empty()) return false;
 
@@ -311,7 +312,7 @@ bool ClosestOfKind(const RegionState& rs, int kind, const RawVector& where,
         float g = CWorld::FindGroundZFor3DCoord(outPosition.x, outPosition.y,
                                                 r.originZ + kProbeHeight, &found, nullptr);
         outPosition.z = found ? g : r.originZ + kNoGroundHeight;
-        if (!found)
+        if (!found && !quiet)
             Log::Write("[%s] restarts: the %s point at (%.1f, %.1f) asks for the ground and the "
                        "region's collision has none there; using z %.1f", r.name.c_str(),
                        kKindName[kind], best->x, best->y, outPosition.z);
@@ -341,11 +342,11 @@ bool Answer(int kind, const RawVector& where, RawVector* outPosition, float* out
 
     const RestartPoint* point = nullptr;
     int used = kind;
-    if (!ClosestOfKind(*rs, kind, where, *outPosition, *outHeading, &point)) {
+    if (!ClosestOfKind(*rs, kind, where, *outPosition, *outHeading, &point, quiet)) {
         // No point of this kind. The other kind is the wrong building in the right city, which
         // beats the right building three thousand units away across the sea.
         used = kind == kHospital ? kPolice : kHospital;
-        if (!ClosestOfKind(*rs, used, where, *outPosition, *outHeading, &point)) {
+        if (!ClosestOfKind(*rs, used, where, *outPosition, *outHeading, &point, quiet)) {
             if (!quiet && !rs->saidEmpty[kind]) {
                 rs->saidEmpty[kind] = true;
                 Log::Write("[%s] restarts: no %s point and none of the other kind either; San "
