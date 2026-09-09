@@ -61,6 +61,7 @@
 #include <unordered_map>
 #include <vector>
 #include "RegionPeds.h"
+#include "PathDraw.h"
 #include "Ground.h"
 #include "ModelLimits.h"
 #include "StreamedModels.h"
@@ -864,6 +865,55 @@ void Install() {
                "a time within %.0f units%s",
                (unsigned)Regions().size(), LivePedBudget(), Settings::world.regionPedRadius,
                gCanWalk ? "" : " - standing, not walking");
+}
+
+// ------------------------------------------------------------------ the debug overlay
+//
+// The pavement graph, drawn from this module's own NodeWorld() - see RegionPeds.h. It is on its
+// own key because it is a separate answer: pednodes.dat and carnodes.dat are two files, read by
+// two parsers, offset by the same origin. If the pavement lands on the pavements and the
+// carriageways do not land on the roads, the fault is in the carriageway derivation and not in
+// where the city was put; if neither lands anywhere sensible, the region's origin is wrong and
+// every other question is downstream of that.
+constexpr unsigned kPedLink = 0xC060FF90u;   // violet
+constexpr unsigned kPedNode = 0xFFC0FFC0u;
+constexpr unsigned kWalker  = 0xFFFFFF80u;
+
+void DrawGraph(const CVector& eye, float radius) {
+    const float r2 = radius * radius;
+    for (const RegionState& rs : Regions()) {
+        if (!PlayerOver(rs, eye, radius)) continue;
+        std::vector<int> nearby;
+        NodesNear(rs, eye, radius, nearby);
+        for (int i : nearby) {
+            if (!PathDraw::Budget()) return;
+            const CVector a = NodeWorld(rs, i);
+            const Node& n = rs.nodes[i];
+            PathDraw::Cross(a, 0.4f, kPedNode);
+            for (int k = 0; k < n.linkCount; k++) {
+                if (!PathDraw::Budget()) return;
+                const int j = rs.links[n.firstLink + k];
+                const CVector b = NodeWorld(rs, j);
+                const float bx = b.x - eye.x, by = b.y - eye.y;
+                const bool bothIn = (bx * bx + by * by) <= r2;
+                if (bothIn && j < i) continue;   // drawn once, from the lower index
+                PathDraw::Line(a, b, kPedLink);
+            }
+        }
+        // The node each walker is heading for. A ped walking away from its own line is the same
+        // class of fault as a car steering away from its link, and it is worth being able to see
+        // both at once.
+        for (const Walker& w : rs.walkers) {
+            if (!PathDraw::Budget()) return;
+            if (w.node < 0 || w.node >= (int)rs.nodes.size()) continue;
+            CPed* ped = CPools::GetPed(w.ref);
+            if (!ped) continue;
+            const CVector p = ped->GetPosition();
+            const float dx = p.x - eye.x, dy = p.y - eye.y;
+            if (dx * dx + dy * dy > r2) continue;
+            PathDraw::Line(p, NodeWorld(rs, w.node), kWalker);
+        }
+    }
 }
 
 }   // namespace RegionPeds
