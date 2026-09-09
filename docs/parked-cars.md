@@ -399,39 +399,66 @@ Every exit now goes through one of two calls and there is no third: hand it back
 Taking it away is preferred when the player cannot see it, because handing a dozen cars back at once
 puts a dozen entries on `NumRandomCars`, which `GenerateRandomCars` stops at 45.
 
-### 9. There are two "find the ground" routines and they answer different questions
+### 9. There are three "find the ground" routines and only one of them can say "there is none"
 
-This one decides whether an imported city has anybody in it, so it is worth stating flatly.
+This decides whether an imported city has anybody standing in it, so it is worth stating flatly.
 
-| | searches | can it recover from a wrong z? |
+| | searches | reports failure? |
 |---|---|---|
-| `CPedPlacement::FindZCoorForPed` (0x616920) | from `z + 0.5` down to `z − 100` — the two floats are at 0x858B8C and 0x858628 | **no.** It is a band around the height you already believe |
-| `CWorld::FindGroundZForCoord` (0x569660) | from **z = 1000** straight down — it plants `0x447A0000` at `[esp+0x34]` and calls `CWorld::ProcessVerticalLine` | **yes.** It never reads the z you hand it |
+| `CPedPlacement::FindZCoorForPed` (0x616920) | `z + 0.5` down to `z − 100` — the floats at 0x858B8C and 0x858628 | no, and it is a band around the height you already believe, so it cannot find a surface above you |
+| `CWorld::FindGroundZForCoord` (0x569660) | from **z = 1000** down (`0x447A0000` planted at `[esp+0x34]`) | **no — and this is the trap** |
+| `CWorld::FindGroundZFor3DCoord` (0x5696C0) | from the z you give it down to **−1000** (`0xC47A0000` pushed at 0x5696F7) | **yes.** It takes a `bool*` and writes 0 through it at 0x569711 |
 
-The pedestrians used the first on its own. Hand it a point twenty units under the road and it
-cannot find the road: it looks half a metre up and a hundred down, finds whatever is beneath, and
-leaves the ped buried. A buried ped still walks, still talks and still counts — which is why F8 read
-`16 walking` while the player could hear a crowd and see nobody.
+The middle one looks like exactly the right question — x and y only, no z to get wrong. Read its
+failure path at 0x5696A5:
 
-Measured, in an imported Vice City with the player standing on an ordinary street: the nearest ped
-and car nodes were **about twenty units below their feet**, twice, at two unrelated places. The
-region's own files are not the problem — sampling every ped node and every car node against the IPL
-props standing within fifteen units of them puts the median disagreement at **1.3 units**, with half
-of all samples inside two. The graph and the map agree with each other; something at load time does
-not agree with either, and until that is found the spawners must not trust a stored height.
+```
+test al, al                  ; did ProcessVerticalLine hit anything?
+jne  0x5696B3                ; yes - return the hit
+fld  dword ptr [0x858BA4]    ; no  - return the float at 0x858BA4
+ret
+```
 
-So none of them do any more:
+and the float at **0x858BA4 is 20.0**. When there is no collision under a point it returns twenty,
+and twenty is a perfectly ordinary height: Vice City's streets sit around 12 to 20 in the region's
+own coordinates. **A failed probe is indistinguishable from a good answer**, so a caller that trusts
+it puts a pedestrian a few units above the road and watches them fall. That is what the player saw,
+and it is why `src/region/Ground.cpp` exists rather than a one-line call. `FallRecovery.cpp` already
+knew this and used the honest variant; the population code did not, and the two had grown separate
+ground-finding code — the user asked whether they should share one, and they were right.
 
-- **Pedestrians** ask `CWorld::FindGroundZForCoord` first and use its answer to seed
-  `FindZCoorForPed`, which then places the ped properly against that surface. Where the graph is
-  right the two agree within the slack and nothing changes; with `Debug = 1` the first ten
-  corrections are logged with both heights, so the next run measures the fault rather than hiding it.
-- **Traffic and parked cars** hand `CCarCtrl::CreateCarForScript` the **−100 sentinel** instead of a
-  height. The comparison is at 0x432117 on the car path (`fcomp` against the −100.0 at 0x859014,
-  taken for `z <= -100`), and the game then calls `CWorld::FindGroundZForCoord` itself and adds the
-  model's own centre-to-base distance. This is San Andreas' own mechanism for "put it on the ground
-  here", already used by its 500 car generators, and it is now used for every car of ours rather
-  than only for the 3 bays in 320 whose script line happened to say −100.
+**What the graph itself is worth.** Sampling every ped node and every car node in Vice City against
+the IPL props standing within fifteen units of it: median disagreement **1.3 units**, quartiles 0.2
+and 3.4, tail about 3.5. The graph and the map agree. An earlier reading of "twenty units below the
+player's feet" was the player being somewhere higher than the street, not a datum fault — the
+in-game correction lines from a real session say 3.3 and 3.4 units, which is the tail and no more.
+`Ground::Under` therefore lifts the start of its search 12 units — roughly three times the worst
+disagreement, and still well under one storey, so a node beneath a bridge stays beneath the bridge.
+
+All three spawners now use it, and **all three refuse to place anything when it says there is no
+ground**, which is the part that matters: a bay or a node over a hole should be skipped, not filled
+at a fabricated height. Each reports the refusals in its per-second line.
+
+### 10. A spawn band that nearly touches its own cull band empties itself
+
+The traffic reported, every second for a whole session, `3 placed … 0 driving … 3 taken away`. Cars
+were being made and removed at the same rate, and "taken away" is our own distance cull. The
+arithmetic, which nobody had done:
+
+- `NodesNear` finds nodes within `RegionTrafficRadius`, **90** by default.
+- `LanePoint` then steps sideways off the node by `(lane + 0.5) × 5.4` — up to **18.9** more in the
+  outer lane of a four-lane road.
+- So a car could be created **109** units out, and the cull sat at `90 × 1.4` = **126**.
+
+Seventeen units of room, at a cruise speed of 18. A car crossed it in about a second and was culled
+before it had driven anywhere. San Andreas' own numbers are the shape to copy — it creates between
+about 42 and 50 and removes past 65, a gap of a *third* of its spawn radius rather than a sixth. Two
+changes make ours the same shape: the lane offset now counts against the spawn radius, so nothing is
+created past 90, and the cull is at `× 1.75` = 157, leaving 67 units to drive in.
+
+**The general rule, and it applies to the pedestrians too:** the distance a thing is *created* at is
+not the radius you searched with, and the cull has to be outside whatever the creation can actually
+reach. Any spawner here should be able to state both numbers.
 
 ### And the handle is not the whole record
 
