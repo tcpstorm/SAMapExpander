@@ -8,9 +8,13 @@ was rejected, the reason is given.
 
 ---
 
-## Traffic does not spawn in an imported city
+## San Andreas' own traffic system cannot reach an imported city
 
-Nothing drives. Pedestrians and police on foot now do — see below — but no vehicle ever appears.
+The game will not populate these streets itself. Pedestrians, police and vehicles all run out there
+now, but the plugin places and drives every one of them — see
+[traffic-and-population.md](traffic-and-population.md) for what that route gives and what it costs.
+What remains out of reach is San Andreas' *native* traffic: traffic lights, lane geometry through
+junctions, path-based pursuit, roadblocks and the higher-star police responses.
 
 **Why.** San Andreas stores path node positions as `int16 × 0.125`, so a node can only describe a
 point within **±4095.875**. Vice City sits near SA x 6000 and Liberty City near y 6000; neither fits,
@@ -156,9 +160,13 @@ streaming ids 25511..25574 which are exactly 64 wide with the animation block im
 
 ---
 
-## What a region gets instead: pedestrians and police on foot
+## What a region gets instead: pedestrians, police and traffic
 
-Since San Andreas cannot be made to populate these streets, the plugin does it — `src/peds/`.
+Since San Andreas cannot be made to populate these streets, the plugin does it — `src/peds/`. This
+section covers the people; the vehicles and the engine behaviour they depend on are in
+[traffic-and-population.md](traffic-and-population.md), which is also where the six non-obvious
+things about `CCarCtrl` are written down, including the one that would have stopped San Andreas'
+own traffic everywhere.
 
 The source game's own pedestrian graph is written out by the importer to `pednodes.dat` (Vice City
 keeps it in the `path` sections of its IPLs at world coordinates; GTA III attaches a group to a road
@@ -174,9 +182,13 @@ Police ride on the same graph, because all four of San Andreas' routes to a poli
 The wanted system itself needs nothing: the stars, the decay, `CWanted`'s pursuit bookkeeping and
 `CTaskComplexKillPedOnFoot` are all free of any map or path dependency.
 
-**What is still missing out here, all of it for the same reason:** patrol cars, the police
-helicopter, roadblocks, and the SWAT, FBI and army responses at four stars and above. Every one is a
-vehicle placed on a car path node. Also the police radio's *location* dialogue — 
+**What is still missing out here:** patrol cars, the police helicopter, roadblocks, and the SWAT, FBI
+and army responses at four stars and above. San Andreas' own route to every one of them places a
+vehicle on a car path node, which is why none appears by itself. Patrol cars and vehicle pursuit are
+nevertheless **reachable without any of that** — missions 3, 5, 6 and 18 steer at the player with no
+path involved, provided `bIsLawEnforcer` is left clear so `UpdateCarAI`'s police branch does not
+overwrite the mission. They are not built; see [traffic-and-population.md](traffic-and-population.md).
+The rest genuinely do need the path graph. Also the police radio's *location* dialogue — 
 `CAEPoliceScannerAudioEntity::AddAudioEvent` matches the zone against a hard-coded 194-entry table of
 San Andreas' own zones and says nothing when it does not find one; that is a zone dependency rather
 than a path one, and fixable, but it is not fixed.
