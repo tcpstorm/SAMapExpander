@@ -462,6 +462,40 @@ percentile **3.4**, and a maximum of 21.5 across 237 samples — one outlier, no
 now prints every surface under the player's feet with `Ground::Describe`, so the question "what is
 he actually standing on" is one keypress instead of an inference.
 
+### 9c. Read back where a thing actually went, every time
+
+A car of ours turned up **6455 units** from the player, with a fall of 0.0 — sitting exactly where
+it had been put, six and a half thousand units away. That is the distance between an imported city
+and San Andreas.
+
+What that one number explains, all at once:
+
+- **No traffic in an imported city.** The cars were not in it.
+- **"The wrong vehicles are spawning for the zone" in Los Santos.** They were *our* cars, wearing
+  donor-paired placeholder models, standing in San Andreas' streets. A day was spent on streaming
+  starvation as the explanation for that.
+- **"Cars arrive damaged."** A car dropped into a live street it was not spawned along gets hit.
+- **Why turning the population off cured all of it**, and why the streaming residency fix — a real
+  fault, and still worth having — did not.
+
+The origin *is* applied, and the log proves it: `SpawnSome` rejects any lane point further than the
+traffic radius from the player and reported **`0 past the radius`** in the same second that a car
+was found 6455 away. The point handed to `CreateCarForScript` was within 90 units. Something between
+that call and the next tick moves the car, and the honest answer is that it has now been guessed
+wrong twice, so the code no longer guesses:
+
+**Both vehicle spawners read the position back immediately after creation and compare it with the
+one they asked for.** More than 12 units of difference — generous, since `CreateCarForScript`
+settles a car onto the road and clears space around it — and the car is removed at once with a log
+line naming both coordinates. Whatever moves it, it can no longer be left standing in somebody
+else's city.
+
+**The lesson is about the counter, not the car.** `0 driving, 2 taken away` sat in front of two
+people for hours and was read as a tuning problem, because "taken away" was a count and a count has
+no units. It became a bug the moment the tally was asked to record *how far away* — 6455 against a
+158-unit cull answers the question by itself. **A counter that records a decision should record the
+quantity the decision was made on.**
+
 ### 10. A spawn band that nearly touches its own cull band empties itself
 
 The traffic reported, every second for a whole session, `3 placed … 0 driving … 3 taken away`. Cars

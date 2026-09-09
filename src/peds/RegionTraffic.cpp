@@ -96,6 +96,29 @@ constexpr float kArrivedDistance = 8.0f;
 // most likely - and is given back to the game rather than dragged to a node it can no longer reach.
 constexpr float kStrayDistance = 45.0f;
 
+// How far a car may be from the point it was asked for and still count as having gone there.
+// Generous - CreateCarForScript settles it onto the road and clears space around it, so a few
+// units of movement is that routine doing its job. Anything past this is not settling.
+constexpr float kMaxCreationSlip = 12.0f;
+
+// Where a tick's spawn attempts went. "0 car(s) driving its carriageways" is a count, and a count
+// cannot say whether the budget was full, no model was in memory, the pool was full, no node was
+// in range, every node was in shot, or the car went somewhere else entirely. Each of those is a
+// different bug and they were guessed at four times over. Summed and reported once a second under
+// Debug, which is how the last one was finally caught.
+struct Tally {
+    int ticks, notReady, atBudget, waiting, poolFull, noModel, noNodes;
+    int attempts, deadEnd, onSaGround, tooNear, tooFar, inShot, crowded, noGround, madeNothing, placed;
+    int lost, gaveBack, tookAway, noPlayerGround, wentElsewhere;
+    float tookAwayFurthest, tookAwayDeepestFall;
+    unsigned nextReport;
+};
+Tally& Counts() { static Tally t{}; return t; }
+
+// Where the player was this tick, for log lines deep in the creation path that would otherwise
+// have to be handed it through calls that do not otherwise need it.
+CVector& LastPlayer() { static CVector v; return v; }
+
 // MISSION_GOTOCOORDS_STRAIGHT is the ONLY mission that drives a car towards an arbitrary
 // coordinate without touching the path graph. Its handler at 0x4373FB calls
 // CCarCtrl::SteerAICarWithPhysicsHeadingForTarget, which is clean of CPathFind three call levels
@@ -485,6 +508,34 @@ CVehicle* CreateCar(RegionState& rs, int from, int to, int lane, int model) {
     // placement by hand instead would mean reproducing four calls this already gets right.
     CVehicle* car = CCarCtrl::CreateCarForScript(model, at, false);
     if (!car) return nullptr;
+    // Did it go where we asked?
+    //
+    // This check exists because a car of ours turned up 6455 units from the player - the distance
+    // between an imported city and San Andreas - sitting exactly where it had been put, and the
+    // only reason anybody noticed was that the cull tally had been asked to record a distance. A
+    // car dropped into a live Los Santos street wearing a donor-paired placeholder model is
+    // indistinguishable from "the wrong vehicles are spawning for the zone", and it gets hit by
+    // San Andreas' own traffic, which is indistinguishable from "cars arrive damaged". Both of
+    // those were chased for a day as streaming faults.
+    //
+    // So the position is read back and compared with the one asked for, every time, and a car that
+    // is not where it was put is removed at once and says so loudly. Whatever moves it - and this
+    // is deliberately agnostic about that, because the answer has been guessed wrong twice - it
+    // can no longer be left standing in San Andreas.
+    CVector landed = car->GetPosition();
+    float slipX = landed.x - at.x, slipY = landed.y - at.y;
+    float slip = sqrtf(slipX * slipX + slipY * slipY);
+    if (slip > kMaxCreationSlip) {
+        Log::Write("traffic: asked for a car at (%.1f, %.1f, %.1f) and got one at (%.1f, %.1f, "
+                   "%.1f) - %.0f units away, %.0f from the player. Refusing it: a car of ours "
+                   "standing where it was not put is a car standing in somebody else's city",
+                   at.x, at.y, at.z, landed.x, landed.y, landed.z, slip,
+                   sqrtf((landed.x - LastPlayer().x) * (landed.x - LastPlayer().x) +
+                         (landed.y - LastPlayer().y) * (landed.y - LastPlayer().y)));
+        VehicleSpawn::Remove(car);
+        Counts().wentElsewhere++;
+        return nullptr;
+    }
     // Through the game's own setter, which moves the car between the counters CCarCtrl budgets
     // against. The constructor has already counted it once as a mission car.
     VehicleSpawn::MakePermanent(car);
@@ -548,19 +599,6 @@ bool ShouldYield(const RegionState& rs, const Driver& me, const CVector& myPos) 
 }
 
 // ------------------------------------------------------------------ the frame
-
-// Where a tick's spawn attempts went. "0 car(s) driving its carriageways" is a count, and a count
-// cannot say whether the budget was full, no model was in memory, the pool was full, no node was
-// in range, every node was in shot, or CreateCarForScript refused. Each of those is a different
-// bug and they were guessed at three times over. Summed and reported once a second under Debug.
-struct Tally {
-    int ticks, notReady, atBudget, waiting, poolFull, noModel, noNodes;
-    int attempts, deadEnd, onSaGround, tooNear, tooFar, inShot, crowded, noGround, madeNothing, placed;
-    int lost, gaveBack, tookAway, noPlayerGround;
-    float tookAwayFurthest, tookAwayDeepestFall;
-    unsigned nextReport;
-};
-Tally& Counts() { static Tally t{}; return t; }
 
 // Every way a car stops being ours goes through one of these two, and there is no third.
 //
@@ -680,12 +718,13 @@ void ReportTally(const RegionState* here) {
                "-> %d dead end, %d on San Andreas' own ground, %d too near, %d past the radius, "
                "%d in shot, %d crowded, %d no ground under the lane, %d placed; %d driving, "
                "%d vanished, %d handed back, %d taken away (furthest %.0f of %.0f, deepest fall "
-               "%.1f), %d tick(s) with no ground under the player",
+               "%.1f), %d refused for landing somewhere else, %d tick(s) with no ground under "
+               "the player",
                t.ticks, t.notReady, t.atBudget, t.waiting, t.poolFull, t.noModel, t.noNodes,
                t.attempts, t.deadEnd, t.onSaGround, t.tooNear, t.tooFar, t.inShot, t.crowded,
                t.noGround, t.placed, here ? (int)here->drivers.size() : 0, t.lost, t.gaveBack,
                t.tookAway, t.tookAwayFurthest, Settings::world.regionTrafficRadius * kCullMargin,
-               t.tookAwayDeepestFall, t.noPlayerGround);
+               t.tookAwayDeepestFall, t.wentElsewhere, t.noPlayerGround);
     Tally fresh{};
     fresh.nextReport = t.nextReport;
     t = fresh;
@@ -750,6 +789,7 @@ namespace RegionTraffic {
 
 void Tick(const CVector& playerPosition, bool playerHasGround) {
     if (!Settings::world.regionTraffic) return;
+    LastPlayer() = playerPosition;
     // Every region every frame, and only then the one the player is standing over. The loop used
     // to stop at the first region it found the player over, which meant a region they had LEFT was
     // never visited again if another one came before it in the file - and F7 puts the player
