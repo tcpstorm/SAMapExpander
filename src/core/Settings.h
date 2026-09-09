@@ -108,6 +108,7 @@ struct WorldSettings {
     int atomicModelInfoLimit;              // CModelInfo::ms_atomicModelInfoStore capacity; < 0 = ask ModelLimits
     int colModelPoolLimit;                 // CPools::ms_pColModelPool capacity; < 0 = vanilla + what the regions need
     int txdPoolLimit;                      // CTxdStore's dictionary pool; < 0 = vanilla + the regions' dictionary names
+    int archiveSlotLimit;                  // CStreaming::ms_files entries; < 0 = the ceiling (32); 8 leaves it alone
     int buildingPoolLimit, dummyPoolLimit; // CPools' entity pools; < 0 = vanilla + the regions' inst lines
     int ptrNodePoolLimit;                  // CPools' sector pointer-node pool; < 0 = vanilla + what the regions need
     bool extendWorldSectors;               // double what the static world grids cover, so a region beyond +/-3000 renders

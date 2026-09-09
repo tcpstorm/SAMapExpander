@@ -29,6 +29,7 @@
 #include <string>
 #include <vector>
 #include "CityLoader.h"
+#include "ArchiveSlots.h"
 #include "ModelLimits.h"
 #include "RegionWeapons.h"
 #include "Settings.h"
@@ -45,10 +46,9 @@ const AddImageToListFn CallAddImageToList = reinterpret_cast<AddImageToListFn>(0
 const LoadFileFn CallLoadObjectTypes = reinterpret_cast<LoadFileFn>(0x5B8400);
 const LoadFileFn CallLoadScene = reinterpret_cast<LoadFileFn>(0x5B8700);
 
-// CStreaming::ms_files: 8 x tStreamingFileDesc(0x30), the archive name at offset 0.
-constexpr uintptr_t kStreamingFiles = 0x8E48D8;
-constexpr unsigned kStreamingFileStride = 0x30;
-constexpr unsigned kMaxArchives = 8;
+// CStreaming::ms_files: tStreamingFileDesc(0x30) with the archive name at offset 0. Vanilla San
+// Andreas has eight of them; ArchiveSlots moves the table to 32, which is CdStream's own ceiling.
+// Both the count and the address are asked for rather than assumed, so this is right either way.
 // That name is 40 bytes, with the "not player.img" flag right behind it at 0x28, and
 // CStreaming::AddImageToList copies into it without leaving room for a terminator. A longer path
 // comes back out truncated, CFileMgr::OpenFile fails on it and CStreaming::LoadCdDirectory binds
@@ -985,12 +985,17 @@ std::string FormatInstFile(const std::vector<Inst>& insts, size_t first, size_t 
 
 // ---------------------------------------------------------------- stages
 
-// PedImg is normally empty, and that is not an oversight: San Andreas has room for EIGHT archives
-// in all - CStreaming::ms_files is 8 x 0x30 at 0x8E48D8 - and it has spent five of them before this
-// runs (gta3, gta_int, carrec, script, cutscene) with player.img still to come in CGame::Init2. Two
-// imported cities take it to seven. There is no eighth for a ped archive, and a third city could
-// not register a map archive either. So tools/convert_peds.py puts its models into the region's own
-// archive and PedImg exists only for a region that has a slot to spare.
+// PedImg is normally empty, and that used to be a hard constraint rather than a preference: San
+// Andreas has room for EIGHT archives in all - CStreaming::ms_files is 8 x 0x30 at 0x8E48D8 - and
+// it has spent five of them before this runs (gta3, gta_int, carrec, script, cutscene) with
+// player.img still to come in CGame::Init2. Two imported cities took it to seven, there was no
+// eighth for a ped archive, and a third city could not have registered a map archive either. So
+// tools/convert_peds.py puts its models into the region's own archive.
+//
+// ArchiveSlots now moves the table to 32 entries, so there are 26 free rather than two, and PedImg
+// is simply an option again. The converter still defaults to one archive a region because one
+// archive is one directory scan and one open file handle, not because there is nowhere to put a
+// second.
 //
 // Where it is used, the ped archive goes in BEFORE the map archive, and the order is load-bearing
 // rather than tidy. The map import used to pack every .dff the donor shipped, pedestrians included,
@@ -1009,10 +1014,11 @@ void RegisterOneArchiveList(RegionState& rs, const std::vector<std::string>& pat
         }
         // CClothes::Init registers player.img later, in CGame::Init2, so one slot has to be
         // left for it - it would otherwise get archive 0 back and stream clothes from gta3.img.
-        if (used + 1 >= kMaxArchives) {
+        const unsigned slots = (unsigned)ArchiveSlots::Count();
+        if (used + 1 >= slots) {
             Log::Write("[%s] %s: %s NOT registered - CStreaming::ms_files is full (%u of %u "
                        "archives used, one reserved for player.img)",
-                       rs.region->name.c_str(), what, path.c_str(), used, kMaxArchives);
+                       rs.region->name.c_str(), what, path.c_str(), used, slots);
             continue;
         }
         std::string shortPath = GameRelativePath(path);
@@ -1027,14 +1033,12 @@ void RegisterOneArchiveList(RegionState& rs, const std::vector<std::string>& pat
         unsigned slot = CallAddImageToList(shortPath.c_str(), true);
         used++;
         Log::Write("[%s] %s: %s registered as archive %u (%u/%u slots used)",
-                   rs.region->name.c_str(), what, shortPath.c_str(), slot, used, kMaxArchives);
+                   rs.region->name.c_str(), what, shortPath.c_str(), slot, used, slots);
     }
 }
 
 void RegisterArchives() {
-    unsigned used = 0;
-    for (unsigned i = 0; i < kMaxArchives; i++)
-        if (*reinterpret_cast<char*>(kStreamingFiles + i * kStreamingFileStride)) used++;
+    unsigned used = (unsigned)ArchiveSlots::Used();
 
     for (RegionState& rs : Regions()) {
         RegisterOneArchiveList(rs, rs.region->pedImgFiles, "pedimg", used);

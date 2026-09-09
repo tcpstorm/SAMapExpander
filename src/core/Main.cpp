@@ -22,6 +22,7 @@
 #include "Zones.h"
 #include "Interiors.h"
 #include "ModelLimits.h"
+#include "ArchiveSlots.h"
 #include "RegionWeapons.h"
 #include "RegionPickups.h"
 #include "PickupSlots.h"
@@ -38,6 +39,9 @@ public:
         ModelLimits::Install();   // must move the streaming arrays before the game initialises them
         Gxt::Install();
         if (!Settings::regions.empty()) {
+            // Before CityLoader, and before CStreaming::InitImageList registers gta3.img: a region
+            // past the second has no archive slot at all without this.
+            ArchiveSlots::Install();
             RadarOverlay::Install();
             Zones::Install();
             if (Settings::world.extendPauseMap) MenuMapFix::Install();
