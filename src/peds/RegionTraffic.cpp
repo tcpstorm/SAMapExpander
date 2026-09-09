@@ -466,8 +466,15 @@ CVehicle* CreateCar(RegionState& rs, int from, int to, int lane, int model) {
     // because SetDestination below overwrites the mission and clears all three node addresses a
     // moment later. It is written down because it looks like a loose end and is not one: doing the
     // placement by hand instead would mean reproducing four calls this already gets right.
-    CVehicle* car = CCarCtrl::CreateCarForScript(model, at, false);
+    CVehicle* car = VehicleSpawn::CreateForScript(model, at);
     if (!car) return nullptr;
+    if (Settings::world.debug) {
+        CVector got = car->GetPosition();
+        Log::Write("[%s] traffic: asked for model %d at (%.1f, %.1f), CreateCarForScript put it at "
+                   "(%.1f, %.1f, %.1f), createdBy %u, area %u", rs.region->name.c_str(), model,
+                   at.x, at.y, got.x, got.y, got.z,
+                   (unsigned)*((unsigned char*)car + 0x4A4), (unsigned)car->m_nAreaCode);
+    }
     // Through the game's own setter, which moves the car between the counters CCarCtrl budgets
     // against. The constructor has already counted it once as a mission car.
     VehicleSpawn::MakePermanent(car);
@@ -588,6 +595,11 @@ void ManageDrivers(RegionState& rs, const CVector& player) {
         CVector p = car->GetPosition();
         float dx = p.x - player.x, dy = p.y - player.y;
         if (dx * dx + dy * dy > cull * cull && !TheCamera.IsSphereVisible(p, 4.0f)) {
+            if (Settings::world.debug)
+                Log::Write("[%s] traffic: taking away model %d at (%.1f, %.1f, %.1f), %.0f units "
+                           "from the player at (%.1f, %.1f, %.1f), cull %.0f",
+                           rs.region->name.c_str(), d.model, p.x, p.y, p.z,
+                           sqrtf(dx * dx + dy * dy), player.x, player.y, player.z, cull);
             VehicleSpawn::Remove(car);
             Counts().tookAway++;
             continue;

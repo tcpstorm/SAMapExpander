@@ -333,7 +333,7 @@ CVector BaySpawnPoint(const RegionState& rs, const Bay& b) {
 
 bool CreateParkedCar(RegionState& rs, Bay& b, int model) {
     CVector at = BaySpawnPoint(rs, b);
-    CVehicle* car = CCarCtrl::CreateCarForScript(model, at, false);
+    CVehicle* car = VehicleSpawn::CreateForScript(model, at);
     if (!car) return false;
     // Through the game's own setter, which moves the car between the counters San Andreas budgets
     // against; the constructor has already counted it once as a mission car. PERMANENT is the one

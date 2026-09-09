@@ -563,8 +563,14 @@ CVector SettleOnGround(const CVector& at) {
         }
         out.z = ground;
     }
-    float z = CPedPlacement::FindZCoorForPed(&out);
-    if (z > -200.0f && z < 2000.0f) out.z = z;
+    // FindZCoorForPed returns a bool - whether it found a floor - and writes the height it found
+    // into the vector it was given. It does NOT return the height. Reading its result as a float
+    // gave every pedestrian in the city z = 1.0, a metre above sea level and a dozen under the
+    // road, where they fell, and the game removed them within the second: "23 placed, 23 vanished"
+    // every report, and nobody on the pavement.
+    CVector probe = out;
+    if (CPedPlacement::FindZCoorForPed(&probe) && probe.z > -200.0f && probe.z < 2000.0f)
+        out.z = probe.z;
     return out;
 }
 
@@ -576,6 +582,13 @@ CPed* CreateWalker(RegionState& rs, int node, int modelId, bool walk) {
     CVector at = SettleOnGround(NodeWorld(rs, node));
     CPed* ped = CPopulation::AddPed((ePedType)pedType, (unsigned)modelId, at, false);
     if (!ped) return nullptr;
+    if (Settings::world.debug) {
+        CVector got = ped->GetPosition();
+        Log::Write("[%s] peds: model %d asked for at (%.1f, %.1f, %.1f), AddPed put them at "
+                   "(%.1f, %.1f, %.1f), area %u, ref %d", rs.region->name.c_str(), modelId,
+                   at.x, at.y, at.z, got.x, got.y, got.z, (unsigned)ped->m_nAreaCode,
+                   CPools::GetPedRef(ped));
+    }
     // Created by the game, not by a script: this is what makes CPopulation::ManagePopulation
     // responsible for taking them away again, so they are culled on exactly the same terms as San
     // Andreas' own and no separate lifetime is invented here.
@@ -619,7 +632,16 @@ void ManageWalkers(RegionState& rs, const CVector& player) {
         // The game removed them, or the pool slot was re-used under the handle. Which of the two
         // it is cannot be told from here, but how OFTEN it happens is the whole question when a
         // crowd is being made and unmade sixty times a second, so it is counted.
-        if (!ped) { Counts().lost++; continue; }
+        if (!ped) {
+            Counts().lost++;
+            if (Settings::world.debug) {
+                CVector node = NodeWorld(rs, w.node);
+                Log::Write("[%s] peds: ref %d is gone; last sent towards (%.1f, %.1f, %.1f), player "
+                           "at (%.1f, %.1f, %.1f)", rs.region->name.c_str(), w.ref,
+                           node.x, node.y, node.z, player.x, player.y, player.z);
+            }
+            continue;
+        }
         CVector p = ped->GetPosition();
         float dx = p.x - player.x, dy = p.y - player.y;
         if (dx * dx + dy * dy > cull * cull && !TheCamera.IsSphereVisible(p, 1.5f)) {

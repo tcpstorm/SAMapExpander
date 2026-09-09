@@ -11,6 +11,15 @@ namespace VehicleSpawn {
 // mod owns them and nothing of ours should create a vehicle at all.
 bool Ready();
 
+// CCarCtrl::CreateCarForScript, called with the position as three floats on the stack, which is
+// what the game reads. plugin-sdk declares the position as a CVector passed by value, and this
+// toolchain passes such a class by hidden pointer: the game then reads the pointer as x, the
+// cleanup flag as y and whatever sits above them as z, and the car is created at (0, 0, x). That
+// is a car six thousand units from where it was asked for, culled the next frame, and is why a
+// city could have "2 placed" every second and nothing on its roads. Read VehicleSpawn.cpp before
+// calling the plugin-sdk wrapper anywhere.
+CVehicle* CreateForScript(int model, const CVector& at);
+
 // Is this model actually in memory? There is no CStreaming::HasModelLoaded to call in 1.0 US.
 bool ModelIsLoaded(int model);
 

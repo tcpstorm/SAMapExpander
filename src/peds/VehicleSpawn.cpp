@@ -116,6 +116,16 @@ bool Ready() {
 
 bool ModelIsLoaded(int model) { return ModelLimits::ModelIsLoaded(model); }
 
+// cdecl: modelId, then the three floats of the position, then the mission-cleanup flag - five
+// dwords - which is how 0x431F80 reads its arguments (x, y, z come off the stack as separate
+// floats at 0x432129..0x432133 and 0x432113). Not the plugin-sdk wrapper, whose CVector-by-value
+// parameter this compiler passes as a pointer; see the note in VehicleSpawn.h.
+CVehicle* CreateForScript(int model, const CVector& at) {
+    if (!Ready()) return nullptr;
+    typedef CVehicle*(__cdecl* Fn)(int, float, float, float, unsigned char);
+    return reinterpret_cast<Fn>(kCreateCarForScript)(model, at.x, at.y, at.z, 0);
+}
+
 bool PoolHasRoom(int reserve) {
     auto* pool = CPools::ms_pVehiclePool;
     return pool && (int)pool->GetNoOfFreeSpaces() > reserve;
