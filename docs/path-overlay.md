@@ -33,6 +33,10 @@ F6–F9 are untouched. The overlay culls to **150 units around the camera**, not
 in a helicopter or use the debug camera and you get a district at once. The log prints all six
 bindings at start-up under `path overlay (debug lines, ...)`.
 
+The two layers that ask the *collision* a question — Ctrl+F3 and Ctrl+F2 — cull harder, because
+each answer is a vertical line cast through the world: ground probes stop at 40 nodes within 45
+units, and bays at 40 within 80 units. Both are off by default for that reason.
+
 ## What the colours mean
 
 **Carriageway links are coloured by their own length**, because the length of a link is the quantity

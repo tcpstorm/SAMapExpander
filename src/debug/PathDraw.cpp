@@ -21,6 +21,12 @@
 //   2. It is one draw call per line. That is why there is a budget below rather than a loop over
 //      all 8408 of Vice City's links.
 //
+// It also refills that shared buffer from index 0 on every call, which is the reason for drawing
+// AFTER RenderEffects has returned rather than in the middle of the frame: by then every system
+// that was accumulating into it - the water most of all, which flushes its own at 0x6F0064 - has
+// finished with it. Drawing from a seam inside somebody else's batch would throw their geometry
+// away and blame it on them.
+//
 // The alternative was a hand-rolled RwIm3D batch, one draw call for the lot. It was not taken:
 // CLines does its own near-plane clipping, and a line that passes behind the camera is exactly the
 // line whose two ends are a car and its target - the one drawing that most has to be right.

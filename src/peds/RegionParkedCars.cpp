@@ -687,31 +687,43 @@ constexpr unsigned kBayIdle    = 0x8080806Fu;   // emptied by the player, or wai
 constexpr unsigned kBayDrop    = 0xFFC000FFu;   // claimed height -> probed ground
 constexpr unsigned kBayNoFloor = 0xFF0000FFu;   // nothing under it: no car will ever be placed
 
+// Every bay drawn costs a vertical line cast through the world, because the honest answer to
+// "where would the car go" is BaySpawnPoint's and no other. So this culls harder than the graphs
+// do and stops outright at a fixed count: a hundred raycasts a frame is not a debug view, it is a
+// stall. Vice City has 148 bays in the whole city, so 80 units reaches five or ten of them.
+constexpr float kBayRadius = 80.0f;
+constexpr int kMaxBayProbes = 40;
+
 void DrawBays(const CVector& eye, float radius) {
-    const float r2 = radius * radius;
+    const float r = radius < kBayRadius ? radius : kBayRadius;
+    const float r2 = r * r;
+    int probes = 0;
     for (const RegionState& rs : Regions()) {
         for (const Bay& b : rs.bays) {
-            if (!PathDraw::Budget()) return;
+            if (!PathDraw::Budget() || probes >= kMaxBayProbes) return;
             const CVector at = BayWorld(rs, b);
             const float dx = at.x - eye.x, dy = at.y - eye.y;
             if (dx * dx + dy * dy > r2) continue;
+            probes++;
 
             // Where a car would actually be made, which is not the height on the line: a bay
             // carrying the -100 sentinel has no claimed height at all.
-            CVector floor;
-            const bool hasFloor = BaySpawnPoint(rs, b, floor);
-            if (!hasFloor) {
-                const CVector top(at.x, at.y, rs.region->originZ + 2.0f);
-                PathDraw::Line(top, CVector(at.x, at.y, rs.region->originZ - 6.0f), kBayNoFloor);
+            CVector standsAt;
+            if (!BaySpawnPoint(rs, b, standsAt)) {
+                // The probe found nothing. Draw the spike from the height the probe STARTED at -
+                // the same fallback BaySpawnPoint uses - so the picture says where it looked.
+                const float from = b.z <= kGroundZ ? rs.region->originZ : b.z + rs.region->originZ;
+                PathDraw::Line(CVector(at.x, at.y, from + 2.0f),
+                               CVector(at.x, at.y, from - 6.0f), kBayNoFloor);
                 continue;
             }
 
             const unsigned c = b.ref >= 0 ? kBayFilled : (BayIsArmed(b) ? kBayArmed : kBayIdle);
-            PathDraw::Arrow(floor, b.heading, 3.5f, c);
+            PathDraw::Arrow(standsAt, b.heading, 3.5f, c);
             // The disagreement between the file and the collision, drawn as itself. A sentinel bay
             // has no claimed height, so there is nothing to compare and nothing is drawn.
-            if (b.z > kGroundZ && fabsf(at.z - floor.z) > 0.25f)
-                PathDraw::Line(at, floor, kBayDrop);
+            if (b.z > kGroundZ && fabsf(at.z - standsAt.z) > 0.25f)
+                PathDraw::Line(at, standsAt, kBayDrop);
         }
     }
 }
