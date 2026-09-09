@@ -171,7 +171,9 @@ void PollKeys() {
         else      { l.carGraph = !l.carGraph; Say("carriageway graph", l.carGraph); }
     }
     if (Edge(VK_F3, wasF3)) {
-        if (ctrl) { l.ground = !l.ground; Say("ground probes", l.ground); }
+        // The probes hang off the carriageway nodes, so they are drawn by the F2 layer and say so:
+        // "ground probes on" with F2 off would otherwise be a toggle that lights nothing.
+        if (ctrl) { l.ground = !l.ground; Say("ground probes (needs F2)", l.ground); }
         else      { l.pedGraph = !l.pedGraph; Say("pedestrian graph", l.pedGraph); }
     }
     if (Edge(VK_F4, wasF4)) {
@@ -284,8 +286,9 @@ void Install() {
                "steering (read from the vehicle at +0x3EC), the line between the two, and the link "
                "the module believes it is on");
     Log::Write("  Ctrl+F2  parked-car bays, with the heading each was parked at");
-    Log::Write("  Ctrl+F3  ground probes: from each nearby carriageway node down to the surface "
-               "Ground::Under finds there - green when the node is on it, magenta when it is not");
+    Log::Write("  Ctrl+F3  ground probes, drawn on the F2 layer and needing it: from each nearby "
+               "carriageway node down to the surface Ground::Under finds there - green when the "
+               "node is on it, magenta when it is not, a spike down when there is nothing at all");
     Log::Write("  Ctrl+F4  x-ray on/off. On (the default) draws through the world; off lets the "
                "road hide a line, which is how you find a graph buried under the tarmac");
 }
