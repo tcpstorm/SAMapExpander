@@ -43,6 +43,23 @@ void LogCounts(const char* when, int area) {
                Count(0x1304, area), Count(0x1424, area), *(unsigned*)(kThePaths + 0x804 + (uintptr_t)area * 4));
 }
 
+// A path file begins with five uint32 counts - nodes, vehicle nodes, ped nodes, car path links,
+// address links - and LoadPathFindData mallocs and reads the arrays straight from them. Every one
+// is comfortably under this for all 64 of San Andreas' own files (the largest is about 4600), so
+// a count past it is not a path file. When one arrives - area 55, driving into North Vice Point,
+// came in as 22 / 1065244 / 402915327 - the counts are zeroed in the buffer before the game reads
+// them, which makes the area load empty rather than sending malloc a 30MB request and leaving
+// every CPathFind walk to run a million junk nodes off the end of the block. It is a defence
+// against a corrupt streaming read of the file, not a fix for whatever corrupts it; the arriving
+// line still records what came in so the cause can be chased.
+constexpr unsigned kCredibleNodesEach = 20000;
+constexpr unsigned kCredibleLinks = 40000;
+
+bool CountsCredible(const unsigned h[5]) {
+    return h[0] <= kCredibleNodesEach && h[1] <= kCredibleNodesEach && h[2] <= kCredibleNodesEach &&
+           h[3] <= kCredibleLinks && h[4] <= kCredibleLinks;
+}
+
 bool __cdecl Hooked_ConvertBufferToObject(char* buffer, int id) {
     int area = id - ModelLimits::DatBase();
     bool isPath = area >= 0 && area < kAreas;
@@ -54,7 +71,17 @@ bool __cdecl Hooked_ConvertBufferToObject(char* buffer, int id) {
         Log::Write("paths: area %d arriving as id %d, buffer %08X, header %u %u %u %u %u (bytes %02X %02X %02X %02X)",
                    area, id, (unsigned)(uintptr_t)buffer, h[0], h[1], h[2], h[3], h[4],
                    sig[0], sig[1], sig[2], sig[3]);
-        LogCounts("before", area);
+        if (!CountsCredible(h)) {
+            memset(buffer, 0, sizeof(h));
+            if (gSkippedAreas < 20) {
+                gSkippedAreas++;
+                Log::Write("paths: area %d arrived with an impossible header and is loaded EMPTY - "
+                           "its %u nodes / %u vehicle / %u ped / %u links are not a path file. The "
+                           "streaming read for id %d delivered corrupt data; this stops the crash "
+                           "in CPathFind that followed rather than explaining it.",
+                           area, h[0], h[1], h[2], h[3], id);
+            }
+        }
     }
     bool r = ConvertHook().ccall<bool>(buffer, id);
     if (isPath) LogCounts("after", area);
