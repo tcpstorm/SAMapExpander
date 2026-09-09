@@ -294,6 +294,12 @@ struct RegionState {
     // line, never want the placeholder collision box, and never take part in LOD pairing, all of
     // which walk rs.ids.
     std::map<int, int> pedIds;
+    // Ids and names already used by this region's own ped lines. NameAlreadyTaken only sees model
+    // infos that exist, and a ped IDE is not handed to the game until the whole file is rewritten,
+    // so two lines in one file could otherwise both pass it and the second would overwrite the
+    // first's ms_modelInfoPtrs slot, leaking a ped store entry and leaving one model unreachable.
+    std::set<int> pedSourceIds;
+    std::set<std::string> pedNames;
     std::map<int, std::string> names;              // SA model id -> name as the IDE declares it
     std::map<std::string, std::string> originals;  // lowercase declared name -> name in the source game
     int added = 0;
@@ -305,6 +311,7 @@ struct RegionState {
     int pedsNoStore = 0;
     int pedsShortLine = 0;      // fewer than the 14 columns LoadPedObject's sscanf reads
     int pedsNameTaken = 0;      // a model of that name already exists; loading it would shadow one
+    int pedsDuplicate = 0;      // a second line of this region's with the same source id or name
     int pedsBadPedType = 0;     // a PED_TYPE CPedType::FindPedType answers 32 to
     int pedsBadAnimGroup = 0;   // an animation group San Andreas does not declare
     std::string pedsRefusedNames;
@@ -663,6 +670,10 @@ std::string TranslateIde(RegionState& rs, const std::string& source, bool pedFil
             std::string name = col.size() > 1 ? col[1] : std::string("?");
             const char* refusal = nullptr;
             if ((int)col.size() < kPedIdeColumns) { rs.pedsShortLine++; refusal = "short line"; }
+            else if (rs.pedSourceIds.count((int)oldId) || rs.pedNames.count(Lower(col[1]))) {
+                rs.pedsDuplicate++;
+                refusal = "a ped line of this region already has that id or name";
+            }
             else if (NameAlreadyTaken(col[1])) { rs.pedsNameTaken++; refusal = "name already used"; }
             else if (!PedTypeKnown(col[3])) { rs.pedsBadPedType++; refusal = "no such ped type"; }
             else if (!AnimGroupDeclared(col[5])) { rs.pedsBadAnimGroup++; refusal = "no such animation group"; }
@@ -673,15 +684,11 @@ std::string TranslateIde(RegionState& rs, const std::string& source, bool pedFil
                 continue;
             }
             if (budget.ped <= 0) { rs.pedsNoStore++; continue; }
-            int newId;
-            auto seen = rs.pedIds.find((int)oldId);
-            if (seen != rs.pedIds.end()) {
-                newId = seen->second;
-            } else {
-                newId = AllocateModelId();
-                if (newId < 0) { rs.pedsNoId++; continue; }
-                rs.pedIds[(int)oldId] = newId;
-            }
+            int newId = AllocateModelId();
+            if (newId < 0) { rs.pedsNoId++; continue; }
+            rs.pedIds[(int)oldId] = newId;
+            rs.pedSourceIds.insert((int)oldId);
+            rs.pedNames.insert(Lower(col[1]));
             rs.names[newId] = col[1];
             budget.ped--;
             out += std::to_string(newId) + line.substr(idEnd) + "\n";
@@ -1123,14 +1130,15 @@ void LoadModelDefinitions() {
             rs.pedsAdded--;
         }
 
-        Log::Write("[%s] peds: %d model(s) registered, %d refused here (%d short line, %d name "
-                   "already used, %d unknown ped type, %d unknown animation group), %d dropped "
-                   "(ped model store full), %d dropped (no free id), %d rejected by the game's own "
-                   "IDE parser",
+        Log::Write("[%s] peds: %d model(s) registered, %d refused here (%d short line, %d duplicate, "
+                   "%d name already used, %d unknown ped type, %d unknown animation group), %d "
+                   "dropped (ped model store full), %d dropped (no free id), %d rejected by the "
+                   "game's own IDE parser",
                    rs.region->name.c_str(), rs.pedsAdded,
-                   rs.pedsShortLine + rs.pedsNameTaken + rs.pedsBadPedType + rs.pedsBadAnimGroup,
-                   rs.pedsShortLine, rs.pedsNameTaken, rs.pedsBadPedType, rs.pedsBadAnimGroup,
-                   rs.pedsNoStore, rs.pedsNoId, refusedByGame);
+                   rs.pedsShortLine + rs.pedsDuplicate + rs.pedsNameTaken + rs.pedsBadPedType +
+                       rs.pedsBadAnimGroup,
+                   rs.pedsShortLine, rs.pedsDuplicate, rs.pedsNameTaken, rs.pedsBadPedType,
+                   rs.pedsBadAnimGroup, rs.pedsNoStore, rs.pedsNoId, refusedByGame);
         if (!rs.pedsRefusedNames.empty())
             Log::Write("[%s] peds: refused - %s", rs.region->name.c_str(), rs.pedsRefusedNames.c_str());
         if (rs.pedsNoStore)
