@@ -416,6 +416,7 @@ namespace Settings {
         world.widenPathNodes = true;
         world.pathNodeScale = 0.0f;        // derive from the world the regions actually make
         world.fallRecovery = true;
+        world.regionRestarts = true;
 
         IniFile ini;
         if (!ini.Load(PLUGIN_PATH("MapExpander.ini"))) {
@@ -481,6 +482,7 @@ namespace Settings {
             world.widenPathNodes = w->GetBool("WidenPathNodes", true);
             world.pathNodeScale = w->GetFloat("PathNodeScale", 0.0f);
             world.fallRecovery = w->GetBool("FallRecovery", true);
+            world.regionRestarts = w->GetBool("RegionRestartPoints", true);
             for (const std::string& s : SplitPaths(w->GetString("DebugSkipModels", ""))) world.skipRenderModels.push_back(atoi(s.c_str()));
             if (world.compressedPositionScale <= 0.0f) world.compressedPositionScale = 4.0f;
             world.gxtFiles = SplitPaths(w->GetString("Gxt", ""));
@@ -558,6 +560,7 @@ namespace Settings {
             if (s.Has("PedGroups")) r.pedGroupFile = ResolveGamePath(s.GetString("PedGroups", ""));
             if (s.Has("CarNodes")) r.carNodeFile = ResolveGamePath(s.GetString("CarNodes", ""));
             if (s.Has("ParkedCars")) r.parkedCarFile = ResolveGamePath(s.GetString("ParkedCars", ""));
+            if (s.Has("Restarts")) r.restartFile = ResolveGamePath(s.GetString("Restarts", ""));
             r.zoneInfoLabel = s.GetString("ZoneInfoLabel", "SAN_AND");
             r.regionName = s.GetString("RegionName", "");
 
