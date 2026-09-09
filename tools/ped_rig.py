@@ -2,18 +2,25 @@
 donor's maps onto San Andreas'.
 
 Everything in this file was measured against the retail files - San Andreas 1.0 US (HOODLUM), a
-retail Vice City and a retail GTA III - by tools/ped_survey.py.  Nothing here is taken from
-documentation.  The numbers that matter:
+retail Vice City and a retail GTA III - and the measurements are re-run by
+`tools/convert_peds.py --check` and `tools/check_peds.py`.  Nothing here is taken from documentation.
+The numbers that matter:
 
   | | GTA III | Vice City | San Andreas |
   |---|---|---|---|
   | ped .dff in the archive | 78 | 107 | 265 |
-  | RenderWare | 3.2.0.0 | 3.3.0.0 (105), 3.4.0.0 (2) | 3.6.0.0 |
+  | RenderWare | 3.2.0.0 | 3.3.0.0 (104), 3.4.0.3 (3) | 3.6.0.3 |
   | frames | 17 | 25 | 33 |
   | geometries | **16** | 1 | 1 |
   | skinned (skin plugin 0x116) | **no** | yes | yes |
   | animation hierarchy (0x11E) | **no** | 24 nodes | 32 nodes |
-  | distinct skeletons across the set | 1 | 3, differing only in two node ids | 1 |
+  | distinct skeletons across the set | 1 | 2, differing only in the two toe ids | 1 |
+
+(Vice City's 107 archive entries are 105 distinct model names: it holds `pga` and `pgb` twice, which
+`docs/asset-namespacing.md` already records as two of the five duplicate `.dff` names in its
+directory.  Only `fireman`, one of the three stamped 3.4.0.3, differs in its skeleton; the other two
+carry a later version stamp but are still written the 3.3 way, which is why `convert_peds.read_skin`
+decides the layout by which one accounts for every byte rather than by the version.)
 
 So the two donors are at opposite ends of the problem, and neither is a per-model problem:
 
@@ -71,8 +78,8 @@ import struct
 
 # ---------------------------------------------------------------- San Andreas' ped skeleton
 #
-# Read out of San Andreas' own wmyst.dff and checked against all 265 ped .dff files in gta3.img:
-# every one of them has exactly this frame list, this parenting and this node order.  There is no
+# Read out of San Andreas' own bfori.dff and checked against all 265 ped .dff files in gta3.img:
+# every one of them has exactly this parenting, these bone ids and this node order.  There is no
 # second shape to handle.
 #
 # (bone id, frame name, parent bone id).  Bone 0 is "Root", the frame the hierarchy hangs on; its
@@ -250,8 +257,8 @@ def mat_orthonormality(m):
 def mat_orthonormalise(m):
     """The same frame with its rotation replaced by the nearest true rotation.
 
-    GTA III bakes scale into its ped frames - up to 0.68 off orthonormal on `b_wom1`, which is a
-    limb stretched by better than a third - and a frame matrix that is not a rotation cannot be
+    GTA III bakes scale into its ped frames - up to 0.571 off orthonormal on `worker1`, which is a
+    limb stretched by more than half - and a frame matrix that is not a rotation cannot be
     inverted by transposing it, which is what both this file and RenderWare do.
 
     Taking the rotation out of the frame does not lose the stretch, because the parts' vertices are
