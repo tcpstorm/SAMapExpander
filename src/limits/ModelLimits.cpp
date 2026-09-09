@@ -16,6 +16,12 @@
 // Nothing is written unless every single site still holds the value the table expects, so another
 // mod that moved one of these arrays first leaves the game vanilla instead of half-patched. Under
 // SA-MP the whole thing is skipped: the server decides the id space there.
+//
+// Two model info stores are moved here that have nothing to do with the id space and everything to
+// do with what a region's IDE lines become: the time store, which vanilla SA fills exactly, and the
+// ped store, which it fills to 276 of 278. Both are CStore<T, N> at a fixed address with an adder
+// that never checks its own count, so a bigger array is the whole fix; each has its own byte-checked
+// site table so that a mismatch in one costs only what that store carries.
 #include <plugin.h>
 #include <cstdint>
 #include <cstdlib>
@@ -55,6 +61,49 @@ constexpr int kVanillaTimeCapacity = 169;
 constexpr int kTimeHeadroom = 1024;
 constexpr uintptr_t kTimeModelInfoCtor = 0x4C5640;   // CTimeModelInfo::CTimeModelInfo, __thiscall
 
+// CStore<CPedModelInfo, 278>: what every `peds` line becomes, and the reason a ped is not just an
+// object with a skeleton as far as this file is concerned. CModelInfo::AddPedModel (0x4C67A0)
+//
+//     mov eax, [0xB478F8]      ; the count
+//     imul esi, eax, 0x44      ; sizeof(CPedModelInfo)
+//     add esi, 0xB478FC        ; the objects
+//     inc eax / mov [0xB478F8], eax
+//     ... mov [ecx*4 + 0xA9B0C8], esi
+//
+// multiplies and increments without ever comparing the count to 278 - the same shape as the time
+// store and the weapon store - so a bigger array is all it takes. San Andreas' own data/peds.ide
+// declares 276 of the 278, which leaves room for two imported peds and no more.
+//
+// The store lives at a fixed address rather than in the id space, so it is not in kSites and is
+// moved by its own byte-verified table below; that also keeps a mismatch here from rolling back the
+// id limit, which is the larger and more useful half.
+constexpr uintptr_t kPedStoreCount = 0xB478F8;
+constexpr uintptr_t kPedStoreObjects = 0xB478FC;
+constexpr unsigned kPedElem = 0x44;
+constexpr int kVanillaPedCapacity = 278;
+constexpr int kPedHeadroom = 512;   // Vice City's 105 and Liberty City's 78, with room for a third
+constexpr uintptr_t kPedModelInfoCtor = 0x4C57A0;   // __thiscall: base ctor, vtable 0x85BDC0, +0x34 = 0
+
+struct StoreSite {
+    uintptr_t address;
+    uint32_t oldValue;
+    uint8_t operandOffset;
+};
+
+// Every instruction in the first .text that names the ped store, from tools/xref.py. The two left
+// alone - the CRT's vector constructor at 0x84BCF0 and its atexit destructor at 0x8562B0 - build
+// and tear down the original static block, which simply goes unused.
+const StoreSite kPedStoreSites[] = {
+    { 0x4C6517, kPedStoreCount,   1 },   // Models::ShutDown      mov eax, [count]
+    { 0x4C6522, kPedStoreObjects, 1 },   //                       mov edi, objects
+    { 0x4C652E, kPedStoreCount,   1 },   //                       mov eax, [count]
+    { 0x4C6608, kPedStoreCount,   2 },   //                       mov [count], ebp
+    { 0x4C67A0, kPedStoreCount,   1 },   // Models::AddPedModel   mov eax, [count]
+    { 0x4C67AB, kPedStoreObjects, 2 },   //                       add esi, objects
+    { 0x4C67B2, kPedStoreCount,   1 },   //                       mov [count], eax
+    { 0x4C6857, kPedStoreCount,   2 },   // Models::Initialise    mov [count], edi
+};
+
 // Vanilla bases, in the order they follow the DFF range.
 constexpr int kTxdBase = 20000, kColBase = 25000, kIplBase = 25255, kDatBase = 25511;
 constexpr int kIfpBase = 25575, kRrrBase = 25755, kScmBase = 26230;
@@ -65,6 +114,8 @@ uint8_t* gInfo = nullptr;
 uint8_t* gPtrs = nullptr;
 uint8_t* gStore = nullptr;
 uint8_t* gTimeStore = nullptr;
+uint8_t* gPedStore = nullptr;
+int gPedCapacity = kVanillaPedCapacity;
 
 int Shift() { return gModelCount - kVanillaModelCount; }
 
@@ -122,6 +173,49 @@ bool AllSitesVanilla() {
         }
     }
     return true;
+}
+
+// The ped model info store, moved the same way the weapon store is (RegionWeapons::RelocateStore):
+// its own bytes checked, its own failure. Nothing here is required for the id limit, so a mismatch
+// only costs a region its pedestrians - PedCapacity() then answers the vanilla 278, of which San
+// Andreas' own peds.ide takes 276, and CityLoader drops the rest of a region's `peds` lines with
+// the same "store full" line any other store gives.
+void RelocatePedStore() {
+    for (const StoreSite& s : kPedStoreSites) {
+        uint32_t have = patch::GetUInt(s.address + s.operandOffset);
+        if (have != s.oldValue) {
+            Log::Write("ERROR: the ped model store was not moved: 0x%X holds 0x%X, expected 0x%X "
+                       "(another mod patched it); a region's pedestrian models are left out",
+                       (unsigned)s.address, have, s.oldValue);
+            return;
+        }
+    }
+
+    const int capacity = kVanillaPedCapacity + kPedHeadroom;
+    gPedStore = (uint8_t*)calloc(1, 4 + (size_t)capacity * kPedElem);
+    if (!gPedStore) {
+        Log::Write("ERROR: the ped model store was not moved: out of memory");
+        return;
+    }
+
+    // The vanilla store's objects are built by a static initialiser that has not run yet - this
+    // plugin loads first - so ours are built the way the game builds them. CPedModelInfo's
+    // constructor calls CBaseModelInfo's, writes its own vtable (0x85BDC0) and clears the pointer
+    // at +0x34 that its destructor frees; it touches nothing outside the object.
+    typedef void(__thiscall* PedModelInfoCtor)(void*);
+    const PedModelInfoCtor construct = reinterpret_cast<PedModelInfoCtor>(kPedModelInfoCtor);
+    for (int i = 0; i < capacity; i++) construct(gPedStore + 4 + (size_t)i * kPedElem);
+
+    const uint32_t newCount = (uint32_t)(uintptr_t)gPedStore;
+    const uint32_t newObjects = newCount + 4;
+    for (const StoreSite& s : kPedStoreSites)
+        patch::SetUInt(s.address + s.operandOffset,
+                       s.oldValue == kPedStoreCount ? newCount : newObjects);
+
+    gPedCapacity = capacity;
+    Log::Write("ped model store moved to the heap: %d entries of %u bytes at %p (vanilla %d, of "
+               "which San Andreas' own data/peds.ide takes 276)",
+               capacity, kPedElem, (void*)(gPedStore + 4), kVanillaPedCapacity);
 }
 
 bool Allocate() {
@@ -190,6 +284,8 @@ uintptr_t ModelInfoPtrs() { return gActive ? (uintptr_t)gPtrs : kPtrArray; }
 uintptr_t AtomicStore() { return gActive ? (uintptr_t)gStore : kAtomicStore; }
 uintptr_t TimeStore() { return gActive ? (uintptr_t)gTimeStore : kTimeStore; }
 int TimeCapacity() { return gActive ? kVanillaTimeCapacity + kTimeHeadroom : kVanillaTimeCapacity; }
+uintptr_t PedStore() { return gPedStore ? (uintptr_t)gPedStore : kPedStoreCount; }
+int PedCapacity() { return gPedCapacity; }
 int AtomicCapacity() { return gActive ? kVanillaAtomicCapacity + Shift() + kAtomicHeadroom : kVanillaAtomicCapacity; }
 
 void Install() {
@@ -241,6 +337,10 @@ void Install() {
         return;
     }
     patch::SetUInt(kArrayBasePtr, (uintptr_t)gInfo);
+
+    // After the id limit is settled, not before: a rolled-back id limit must leave the ped store
+    // where it was too, so the game is either wholly patched or wholly vanilla.
+    RelocatePedStore();
 
     gActive = true;
     Log::Write("model id limit %d -> %d: txd %d, col %d, ipl %d, dat %d, ifp %d, rrr %d, scm %d, "
