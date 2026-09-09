@@ -54,6 +54,8 @@
 #include <unordered_map>
 #include <vector>
 #include "RegionTraffic.h"
+#include "PathDraw.h"
+#include "Ground.h"
 #include "VehicleSpawn.h"
 #include "Settings.h"
 #include "Log.h"
@@ -72,15 +74,104 @@ constexpr int kMaxLanes = 4;
 // out and removes them past 65 off screen; this sits inside the same band so the two behave alike
 // either side of the border rather than one of them lingering.
 constexpr float kMinSpawnDistance = 40.0f;
-constexpr float kCullMargin = 1.4f;
+// How much further than the spawn radius a car may get before it is taken away.
+//
+// This was 1.4, and 1.4 was not enough, because the spawn radius is not the distance a car is
+// actually created at. NodesNear finds nodes within RegionTrafficRadius - 90 by default - and then
+// LanePoint steps sideways off the node by (lane + 0.5) * 5.4, which is another 18.9 units in the
+// outer lane of a four-lane road. So cars were being made as far out as 109 and taken away again
+// at 126: a seventeen-unit gap, which an eighteen-unit cruise speed crosses in about a second.
+// That is what "3 placed, 3 taken away, 0 driving" was, every second, for the whole session.
+//
+// San Andreas' own numbers are the shape to copy: it creates between about 42 and 50 and removes
+// past 65, so its gap is a third of its spawn radius rather than a sixth. Two changes make ours
+// the same shape - the lane offset now counts against the spawn radius (see SpawnSome) so nothing
+// is created past 90, and the cull sits at 1.75 of it, 157, which is 67 units of room to drive in.
+constexpr float kCullMargin = 1.75f;
 constexpr int kSpawnsPerTick = 1;
 constexpr unsigned kSpawnIntervalMs = 400;
-// How near the destination counts as arrived, and therefore when the next leg is handed out. Wider
-// than a lane so a car that clipped a kerb still counts as having got there.
-constexpr float kArrivedDistance = 8.0f;
+// How near the destination counts as arrived, and therefore when the next leg is handed out.
+//
+// THIS MUST NOT BE A CONSTANT, and eight was the wrong constant. The donor cities do not agree
+// about how finely they cut their roads up, measured over both graphs:
+//
+//                  5%     25%    median   75%    95%   links shorter than 8
+//   Vice City      1.9    6.2    10.6     18.4   36.9        36.5%
+//   Liberty City   3.9   10.0    12.6     25.0   28.3        19.2%
+//
+// So a flat eight units is 0.76 of a typical Vice City link and 0.63 of a Liberty City one, and
+// more than a third of Vice City's links are shorter than it outright. A car was therefore called
+// "arrived" at a node it had not reached, handed the next leg, and left aiming one or two nodes
+// ahead of itself - which tracks the SHAPE of the route while running wide of the road it is on.
+// That is what the player reported, and it is why they also reported Liberty City's cars looking
+// more accurate: twice as much early advancing in Vice City as in Liberty City.
+//
+// The threshold is now a fraction of the leg actually being driven, floored so a car cannot chase
+// a node it can never be precise enough to reach, and capped at the old eight so a long straight
+// still hands over early enough to turn. A fixed number that happened to suit one city is how this
+// arrived.
+constexpr float kArrivedDistance = 8.0f;      // the cap, and what it used to be unconditionally
+constexpr float kArrivedFraction = 0.35f;     // of the leg being driven
+constexpr float kArrivedFloor = 2.5f;         // about half a car length
+
+// And the other half of the same problem: a leg worth driving.
+//
+// Five per cent of Vice City's links are under 1.9 units - shorter than the car. Handing one of
+// those out as a destination means arriving on the frame it is set, every frame, so the car
+// advances through a chain of them without ever steering at anything. When a leg is too short to
+// aim at, the next node is taken instead, up to a few hops, until the target is far enough away to
+// be worth steering for. No node is skipped in the sense that matters: they are all still on the
+// path between, and a straight line across twelve units of road stays inside a lane.
+constexpr float kMinLegLength = 12.0f;
+constexpr int kMaxLegHops = 6;
 // A car this far from the road it is supposed to be on has lost its way - shunted by the player,
 // most likely - and is given back to the game rather than dragged to a node it can no longer reach.
 constexpr float kStrayDistance = 45.0f;
+
+// How far a car may be from the point it was asked for and still count as having gone there.
+// Generous - CreateCarForScript settles it onto the road and clears space around it, so a few
+// units of movement is that routine doing its job. Anything past this is not settling.
+constexpr float kMaxCreationSlip = 12.0f;
+
+// Where a tick's spawn attempts went. "0 car(s) driving its carriageways" is a count, and a count
+// cannot say whether the budget was full, no model was in memory, the pool was full, no node was
+// in range, every node was in shot, or the car went somewhere else entirely. Each of those is a
+// different bug and they were guessed at four times over. Summed and reported once a second under
+// Debug, which is how the last one was finally caught.
+struct Tally {
+    int ticks, notReady, atBudget, waiting, poolFull, noModel, noNodes;
+    int attempts, deadEnd, onSaGround, tooNear, tooFar, inShot, crowded, noGround, madeNothing, placed;
+    int lost, gaveBack, tookAway, noPlayerGround, wentElsewhere, advanced;
+    float tookAwayFurthest, tookAwayDeepestFall;
+    unsigned nextReport;
+};
+Tally& Counts() { static Tally t{}; return t; }
+
+// Where the player was this tick, for log lines deep in the creation path that would otherwise
+// have to be handed it through calls that do not otherwise need it.
+CVector& LastPlayer() { static CVector v; return v; }
+
+// CAutoPilot::m_vecDestinationCoors, as the GAME reads it.
+//
+// plugin-sdk puts m_autoPilot at CVehicle+0x390 and m_vecDestinationCoors at CAutoPilot+0x5C, so
+// +0x3EC - and the mission handler agrees: at 0x437420 and 0x437419 it loads [esi+0x3EC] and
+// [esi+0x3F0] and pushes them into CCarCtrl::SteerAICarWithPhysicsHeadingForTarget. The
+// diagnostic below reads the raw offset rather than the plugin-sdk field on purpose. Twice today a
+// number was believed because the code printed what it MEANT to write; the only way to know what a
+// car is steering for is to read it from where the steering reads it.
+constexpr uintptr_t kAutoPilotDestination = 0x3EC;
+
+// A few cars a second, no more - this is a positional fact per line, which is worth more than a
+// rate, but not worth a thousand lines a second.
+constexpr unsigned kDriverReportIntervalMs = 350;
+unsigned gNextDriverReport = 0;
+
+bool ReportOneDriver() {
+    if (!Settings::world.debug) return false;
+    if (CTimer::m_snTimeInMilliseconds < gNextDriverReport) return false;
+    gNextDriverReport = CTimer::m_snTimeInMilliseconds + kDriverReportIntervalMs;
+    return true;
+}
 
 // MISSION_GOTOCOORDS_STRAIGHT is the ONLY mission that drives a car towards an arbitrary
 // coordinate without touching the path graph. Its handler at 0x4373FB calls
@@ -144,7 +235,24 @@ struct Driver {
     int ref;            // CPools vehicle handle: slot plus re-use counter
     int model;          // what it was created as; half of the proof that it is still ours
     int from, to;
+    // The node AFTER `to`, chosen once when the destination is set and kept.
+    //
+    // It used to be re-rolled: SetDestination called NextNode to decide which way the car would
+    // leave `to`, used that to work out which side of the road its destination sat on - and then
+    // ManageDrivers called NextNode AGAIN on arrival and got a different answer. So the lane offset
+    // a car spent the whole leg driving towards was computed for a continuation it then did not
+    // take. Deciding once and remembering is the whole fix.
+    int next;
     int lane;
+    // Where the car is actually steering: the lane point, not the node.
+    //
+    // This is here because the arrival test used to measure the distance to the NODE while the car
+    // drove at a point (lane + 0.5) * 5.4 units to one side of it. On a single-lane road that is
+    // 2.7 units, so once the arrival radius came down to a sensible fraction of the leg the car
+    // could reach its destination exactly and still never be "within 2.5 of the node" - it had
+    // arrived at a point it was never being measured against. Judge arrival against the thing the
+    // car is driving at.
+    CVector target;
 };
 
 struct RegionState {
@@ -419,10 +527,13 @@ int ChooseLoadedCar() {
 // STRAIGHT is the variant that steers for the destination rather than following a route, which is
 // exactly what a car with no route needs; the node addresses are set to the game's own empty value
 // so that anything which does look at them sees "none" rather than a stale area index.
-void SetDestination(CVehicle* car, const RegionState& rs, const Driver& d) {
-    CVector target = LanePoint(rs, d.to, NextNode(rs, d.from, d.to), d.lane);
+void SetDestination(CVehicle* car, const RegionState& rs, Driver& d) {
+    // Choose the continuation ONCE and keep both it and the point it implies. Everything after
+    // this - the arrival test, the stray test, the next leg - reads them rather than re-rolling.
+    d.next = NextNode(rs, d.from, d.to);
+    d.target = LanePoint(rs, d.to, d.next, d.lane);
     CAutoPilot& pilot = car->m_autoPilot;
-    pilot.m_vecDestinationCoors = target;
+    pilot.m_vecDestinationCoors = d.target;
     pilot.m_nCarMission = (eCarMission)kMissionGotoCoordsStraight;
     pilot.m_nPathFindNodesCount = 0;
     pilot.m_currentAddress.Clear();
@@ -445,20 +556,23 @@ void SetDestination(CVehicle* car, const RegionState& rs, const Driver& d) {
 // called rather than patched - but checked the same way anything else here is checked, because
 // calling the wrong address is worse than not calling it. VehicleSpawn::Ready() is that check,
 // shared with the parked cars, which call the same two.
-// The height a car is created at is NOT the height the graph claims.
+// The height a car is created at is NOT the height the graph claims - and it is not the -100
+// sentinel either, which is what this tried first and why it is worth writing down.
 //
 // CCarCtrl::CreateCarForScript compares the z it is given against the float at 0x859014, which is
-// -100.0 exactly (the test is at 0x432117 on the car path), and where they match it goes and asks
-// CWorld::FindGroundZForCoord itself. That routine ignores z and casts from 1000 straight down, so
-// it answers "what is the ground at this x and y" and cannot be wrong about a datum it never
-// reads. The parked cars have always used this; the traffic handed over the node's own z instead,
-// which puts a car wherever a twenty-year-old file says the road was rather than where the road
-// actually is. A car under the road is a car nobody sees.
-constexpr float kGroundZ = -100.0f;
-
+// -100.0 exactly (the test is at 0x432117 on the car path), and where they match it works the
+// height out itself. That looks like the right thing to lean on until you see WHICH routine it
+// calls: CWorld::FindGroundZForCoord, which returns the float at 0x858BA4 - **twenty** - when it
+// finds nothing, and twenty is an ordinary street height in an imported city. Handing over the
+// sentinel just moves the lie one level down.
+//
+// So the ground is found here, honestly, through Ground::Under, and a lane point with no floor
+// under it is not used at all. See the top of src/region/Ground.cpp.
 CVehicle* CreateCar(RegionState& rs, int from, int to, int lane, int model) {
     CVector at = LanePoint(rs, from, to, lane);
-    at.z = kGroundZ;
+    float ground = 0.0f;
+    if (!Ground::Under(at.x, at.y, at.z, ground)) { Counts().noGround++; return nullptr; }
+    at.z = ground;
     // CreateCarForScript does the whole placement properly - ground height, clearing space, adding
     // to the world - and one thing that is wrong for us: at 0x43206C it calls
     // CCarCtrl::JoinCarWithRoadSystem, the PATH-BASED join, which will attach the car to whichever
@@ -466,14 +580,35 @@ CVehicle* CreateCar(RegionState& rs, int from, int to, int lane, int model) {
     // because SetDestination below overwrites the mission and clears all three node addresses a
     // moment later. It is written down because it looks like a loose end and is not one: doing the
     // placement by hand instead would mean reproducing four calls this already gets right.
-    CVehicle* car = VehicleSpawn::CreateForScript(model, at);
+    CVehicle* car = VehicleSpawn::Create(model, at, false);
     if (!car) return nullptr;
-    if (Settings::world.debug) {
-        CVector got = car->GetPosition();
-        Log::Write("[%s] traffic: asked for model %d at (%.1f, %.1f), CreateCarForScript put it at "
-                   "(%.1f, %.1f, %.1f), createdBy %u, area %u", rs.region->name.c_str(), model,
-                   at.x, at.y, got.x, got.y, got.z,
-                   (unsigned)*((unsigned char*)car + 0x4A4), (unsigned)car->m_nAreaCode);
+    // Did it go where we asked?
+    //
+    // This check exists because a car of ours turned up 6455 units from the player - the distance
+    // between an imported city and San Andreas - sitting exactly where it had been put, and the
+    // only reason anybody noticed was that the cull tally had been asked to record a distance. A
+    // car dropped into a live Los Santos street wearing a donor-paired placeholder model is
+    // indistinguishable from "the wrong vehicles are spawning for the zone", and it gets hit by
+    // San Andreas' own traffic, which is indistinguishable from "cars arrive damaged". Both of
+    // those were chased for a day as streaming faults.
+    //
+    // So the position is read back and compared with the one asked for, every time, and a car that
+    // is not where it was put is removed at once and says so loudly. Whatever moves it - and this
+    // is deliberately agnostic about that, because the answer has been guessed wrong twice - it
+    // can no longer be left standing in San Andreas.
+    CVector landed = car->GetPosition();
+    float slipX = landed.x - at.x, slipY = landed.y - at.y;
+    float slip = sqrtf(slipX * slipX + slipY * slipY);
+    if (slip > kMaxCreationSlip) {
+        Log::Write("traffic: asked for a car at (%.1f, %.1f, %.1f) and got one at (%.1f, %.1f, "
+                   "%.1f) - %.0f units away, %.0f from the player. Refusing it: a car of ours "
+                   "standing where it was not put is a car standing in somebody else's city",
+                   at.x, at.y, at.z, landed.x, landed.y, landed.z, slip,
+                   sqrtf((landed.x - LastPlayer().x) * (landed.x - LastPlayer().x) +
+                         (landed.y - LastPlayer().y) * (landed.y - LastPlayer().y)));
+        VehicleSpawn::Remove(car);
+        Counts().wentElsewhere++;
+        return nullptr;
     }
     // Through the game's own setter, which moves the car between the counters CCarCtrl budgets
     // against. The constructor has already counted it once as a mission car.
@@ -485,7 +620,7 @@ CVehicle* CreateCar(RegionState& rs, int from, int to, int lane, int model) {
     CVector b = NodeWorld(rs, to);
     car->SetHeading(atan2f(-(b.x - at.x), b.y - at.y));
     CPopulation::AddPedInCar(car, true, -1, 0, true, false);
-    rs.drivers.push_back(Driver{ CPools::GetVehicleRef(car), model, from, to, lane });
+    rs.drivers.push_back(Driver{ CPools::GetVehicleRef(car), model, from, to, -1, lane, CVector() });
     SetDestination(car, rs, rs.drivers.back());
     return car;
 }
@@ -539,18 +674,6 @@ bool ShouldYield(const RegionState& rs, const Driver& me, const CVector& myPos) 
 
 // ------------------------------------------------------------------ the frame
 
-// Where a tick's spawn attempts went. "0 car(s) driving its carriageways" is a count, and a count
-// cannot say whether the budget was full, no model was in memory, the pool was full, no node was
-// in range, every node was in shot, or CreateCarForScript refused. Each of those is a different
-// bug and they were guessed at three times over. Summed and reported once a second under Debug.
-struct Tally {
-    int ticks, notReady, atBudget, waiting, poolFull, noModel, noNodes;
-    int attempts, deadEnd, onSaGround, tooNear, inShot, crowded, madeNothing, placed;
-    int lost, gaveBack, tookAway;
-    unsigned nextReport;
-};
-Tally& Counts() { static Tally t{}; return t; }
-
 // Every way a car stops being ours goes through one of these two, and there is no third.
 //
 // GIVING ONE BACK is VehicleSpawn::HandBackToTheGame, and forgetting a car without calling it is
@@ -578,6 +701,17 @@ void LetGo(const Driver& d, const CVector& player) {
         VehicleSpawn::HandBackToTheGame(car);
 }
 
+// How near this particular leg's end counts as arriving at it. See kArrivedDistance for why this
+// is a function of the leg rather than a number.
+float ArriveRadius(const RegionState& rs, const Driver& d) {
+    CVector a = NodeWorld(rs, d.from), b = NodeWorld(rs, d.to);
+    float dx = b.x - a.x, dy = b.y - a.y;
+    float leg = sqrtf(dx * dx + dy * dy) * kArrivedFraction;
+    if (leg < kArrivedFloor) leg = kArrivedFloor;
+    if (leg > kArrivedDistance) leg = kArrivedDistance;
+    return leg;
+}
+
 // TAKING ONE AWAY is VehicleSpawn::Remove, and only for a car far enough off that nobody is
 // looking. That one is still ours at the moment it goes, so nothing has to be handed back.
 void ManageDrivers(RegionState& rs, const CVector& player) {
@@ -594,14 +728,17 @@ void ManageDrivers(RegionState& rs, const CVector& player) {
         if (!car) { Counts().lost++; continue; }
         CVector p = car->GetPosition();
         float dx = p.x - player.x, dy = p.y - player.y;
-        if (dx * dx + dy * dy > cull * cull && !TheCamera.IsSphereVisible(p, 4.0f)) {
-            if (Settings::world.debug)
-                Log::Write("[%s] traffic: taking away model %d at (%.1f, %.1f, %.1f), %.0f units "
-                           "from the player at (%.1f, %.1f, %.1f), cull %.0f",
-                           rs.region->name.c_str(), d.model, p.x, p.y, p.z,
-                           sqrtf(dx * dx + dy * dy), player.x, player.y, player.z, cull);
+        float away = sqrtf(dx * dx + dy * dy);
+        if (away > cull && !TheCamera.IsSphereVisible(p, 4.0f)) {
             VehicleSpawn::Remove(car);
             Counts().tookAway++;
+            // How far it had got, and how far it had fallen. A car that drove out of range and one
+            // that was thrown out of range by physics both read as "taken away", and the two are
+            // different bugs: 160 units from a 157-unit cull is a car that drove; 400 is a car
+            // that was ejected, and a big drop in z says it was ejected out of the ground.
+            if (away > Counts().tookAwayFurthest) Counts().tookAwayFurthest = away;
+            float fell = NodeWorld(rs, d.from).z - p.z;
+            if (fell > Counts().tookAwayDeepestFall) Counts().tookAwayDeepestFall = fell;
             continue;
         }
         // Once the player is driving it, it is the player's car and none of this module's
@@ -613,8 +750,8 @@ void ManageDrivers(RegionState& rs, const CVector& player) {
             continue;
         }
 
-        CVector goal = NodeWorld(rs, d.to);
-        float gx = goal.x - p.x, gy = goal.y - p.y;
+        // Against the point the car is steering at, not against the node beside it. See Driver.
+        float gx = d.target.x - p.x, gy = d.target.y - p.y;
         float toGoal = gx * gx + gy * gy;
         if (toGoal > kStrayDistance * kStrayDistance) {
             // Shunted off its road, most likely by the player. Rather than drag it back across a
@@ -624,10 +761,26 @@ void ManageDrivers(RegionState& rs, const CVector& player) {
             Counts().gaveBack++;
             continue;
         }
-        if (toGoal < kArrivedDistance * kArrivedDistance) {
-            int next = NextNode(rs, d.from, d.to);
-            d.from = d.to;
-            d.to = next;
+        float arrive = ArriveRadius(rs, d);
+        if (toGoal < arrive * arrive) {
+            Counts().advanced++;
+            // Walk on until the next leg is worth steering at, rather than handing over whatever
+            // node happens to be next - which in Vice City is under two units away one time in
+            // twenty. `anchor` is where the car actually is, so the test is against the distance
+            // it will have to drive, not against the length of one link in a chain of short ones.
+            int from = d.to;
+            int to = d.next;              // decided when this leg was handed out, not re-rolled
+            for (int hop = 0; hop < kMaxLegHops; hop++) {
+                CVector step = NodeWorld(rs, to);
+                float lx = step.x - p.x, ly = step.y - p.y;
+                if (lx * lx + ly * ly >= kMinLegLength * kMinLegLength) break;
+                int after = NextNode(rs, from, to);
+                if (after == to || after == from) break;   // a dead end, or straight back
+                from = to;
+                to = after;
+            }
+            d.from = from;
+            d.to = to;
             if (d.lane >= rs.nodes[d.to].lanes) d.lane = rs.nodes[d.to].lanes - 1;
             SetDestination(car, rs, d);
         }
@@ -650,6 +803,32 @@ void ManageDrivers(RegionState& rs, const CVector& player) {
         float clear = reinterpret_cast<float(__cdecl*)(void*)>(kFindMaxSpeedInTraffic)(car);
         if (clear >= 0.0f && clear < (float)speed) speed = (char)clear;
         pilot.m_nCruiseSpeed = speed;
+
+        // One car, a few times a second: where it is, what the GAME thinks it is steering for, and
+        // what this module thinks the node it is steering for is. If the last two disagree, the
+        // route is being computed in one space and driven in another, and the size of the
+        // disagreement names which - an origin is thousands, a lane offset is single figures, a
+        // scale is proportional to the distance from the region's own zero. If they agree, the
+        // route is right and the fault is in how it is followed.
+        if (ReportOneDriver()) {
+            const float* dest = (const float*)((const char*)car + kAutoPilotDestination);
+            CVector node = NodeWorld(rs, d.to);
+            CVector lane = d.target;
+            Log::Write("traffic: car at (%.1f, %.1f, %.1f) is steering for (%.1f, %.1f) [read from "
+                       "the vehicle at +0x3EC]; it is aiming at node %d, which this module puts at "
+                       "(%.1f, %.1f, %.1f) and whose lane point is (%.1f, %.1f). car->dest %.1f, "
+                       "car->node %.1f, dest->node %.1f. mission %d, straight-line %d, lane %d of "
+                       "%d, link %d->%d",
+                       p.x, p.y, p.z, dest[0], dest[1], d.to, node.x, node.y, node.z,
+                       lane.x, lane.y,
+                       sqrtf((dest[0] - p.x) * (dest[0] - p.x) + (dest[1] - p.y) * (dest[1] - p.y)),
+                       sqrtf((node.x - p.x) * (node.x - p.x) + (node.y - p.y) * (node.y - p.y)),
+                       sqrtf((dest[0] - node.x) * (dest[0] - node.x) +
+                             (dest[1] - node.y) * (dest[1] - node.y)),
+                       (int)pilot.m_nCarMission,
+                       (int)*((const unsigned char*)car + kAutoPilotStraightLineDistance),
+                       d.lane, (int)rs.nodes[d.to].lanes, d.from, d.to);
+        }
         rs.drivers[write++] = d;
     }
     rs.drivers.resize(write);
@@ -663,12 +842,16 @@ void ReportTally(const RegionState* here) {
     if (!t.ticks) return;
     Log::Write("traffic/sec: %d tick(s) -> %d not ready, %d at budget, %d waiting for the spawn "
                "interval, %d pool full, %d no model in memory, %d no node in range; %d attempt(s) "
-               "-> %d dead end, %d on San Andreas' own ground, %d too near, %d in shot, %d "
-               "crowded, %d CreateCarForScript said no, %d placed; %d driving, %d vanished, %d "
-               "handed back, %d taken away",
+               "-> %d dead end, %d on San Andreas' own ground, %d too near, %d past the radius, "
+               "%d in shot, %d crowded, %d no ground under the lane, %d placed; %d driving, "
+               "%d vanished, %d handed back, %d taken away (furthest %.0f of %.0f, deepest fall "
+               "%.1f), %d refused for landing somewhere else, %d tick(s) with no ground under "
+               "the player; %d node(s) advanced",
                t.ticks, t.notReady, t.atBudget, t.waiting, t.poolFull, t.noModel, t.noNodes,
-               t.attempts, t.deadEnd, t.onSaGround, t.tooNear, t.inShot, t.crowded, t.madeNothing,
-               t.placed, here ? (int)here->drivers.size() : 0, t.lost, t.gaveBack, t.tookAway);
+               t.attempts, t.deadEnd, t.onSaGround, t.tooNear, t.tooFar, t.inShot, t.crowded,
+               t.noGround, t.placed, here ? (int)here->drivers.size() : 0, t.lost, t.gaveBack,
+               t.tookAway, t.tookAwayFurthest, Settings::world.regionTrafficRadius * kCullMargin,
+               t.tookAwayDeepestFall, t.wentElsewhere, t.noPlayerGround, t.advanced);
     Tally fresh{};
     fresh.nextReport = t.nextReport;
     t = fresh;
@@ -705,6 +888,10 @@ void SpawnSome(RegionState& rs, const CVector& player, int wanted) {
         float dx = at.x - player.x, dy = at.y - player.y;
         float dist = sqrtf(dx * dx + dy * dy);
         if (dist < kMinSpawnDistance) { t.tooNear++; continue; }
+        // And not past the radius either. The node was within it; the lane offset can put the car
+        // outside it, and a car created outside the band it is culled against has a very short
+        // life - see kCullMargin.
+        if (dist > Settings::world.regionTrafficRadius) { t.tooFar++; continue; }
         // Never where the player is looking: a car appearing in shot is the one thing that reads
         // as a spawn rather than as traffic.
         if (TheCamera.IsSphereVisible(at, 4.0f)) { t.inShot++; continue; }
@@ -718,8 +905,11 @@ void SpawnSome(RegionState& rs, const CVector& player, int wanted) {
             if (ox * ox + oy * oy < 100.0f) { crowded = true; break; }
         }
         if (crowded) { t.crowded++; continue; }
+        // CreateCar counts its own failures - there are two of them now, and inferring which from
+        // a bool got them added together: a run reported "32 no ground under the lane" and "32
+        // refused for landing somewhere else" which were the same 32 events, and the first label
+        // was simply wrong. A counter must be incremented where the decision is made.
         if (CreateCar(rs, from, to, lane, model)) { placed++; t.placed++; }
-        else t.madeNothing++;
     }
 }
 
@@ -727,8 +917,9 @@ void SpawnSome(RegionState& rs, const CVector& player, int wanted) {
 
 namespace RegionTraffic {
 
-void Tick(const CVector& playerPosition) {
+void Tick(const CVector& playerPosition, bool playerHasGround) {
     if (!Settings::world.regionTraffic) return;
+    LastPlayer() = playerPosition;
     // Every region every frame, and only then the one the player is standing over. The loop used
     // to stop at the first region it found the player over, which meant a region they had LEFT was
     // never visited again if another one came before it in the file - and F7 puts the player
@@ -749,7 +940,11 @@ void Tick(const CVector& playerPosition) {
     }
     if (!here) { ReportTally(nullptr); return; }
     ManageDrivers(*here, playerPosition);
-    SpawnSome(*here, playerPosition, CarBudget());
+    // Cars still get tidied away when the player is under the world; they just do not get made.
+    // Following the player down there is what a spawner that only knows about distance does, and
+    // it is not what anybody wants to see - see Ground::BeneathEverything.
+    if (playerHasGround) SpawnSome(*here, playerPosition, CarBudget());
+    else Counts().noPlayerGround++;
     ReportTally(here);
 }
 
@@ -760,6 +955,46 @@ int Count() {
 }
 
 int Budget() { return CarBudget(); }
+
+// Stand on a road and this says how far the carriageway graph thinks the nearest road is - and how
+// far you are from the region's own zero.
+//
+// One reading proves nothing. Two do: take one near the region origin and one at the far edge of
+// the city. If the nearest node is a few units away in both, the graph is on the roads and the
+// cars are driving badly for some other reason. If it is a few units near the origin and tens of
+// units at the edge, the graph is a SCALED copy of the city rather than a displaced one - which is
+// a fault no amount of instrumenting the driving can find, because the module computes both the
+// route and the destination from the same graph and is perfectly consistent with itself while
+// being wrong about the world.
+void DescribeNearestNode(const CVector& at, char* out, unsigned size) {
+    for (const RegionState& rs : Regions()) {
+        if (!PlayerOver(rs, at, Settings::world.regionTrafficRadius)) continue;
+        int best = -1;
+        float bestD = 0.0f;
+        std::vector<int> nearby;
+        NodesNear(rs, at, 200.0f, nearby);
+        for (int n : nearby) {
+            CVector p = NodeWorld(rs, n);
+            float d = (p.x - at.x) * (p.x - at.x) + (p.y - at.y) * (p.y - at.y);
+            if (best < 0 || d < bestD) { best = n; bestD = d; }
+        }
+        float localX = at.x - rs.region->originX, localY = at.y - rs.region->originY;
+        float radius = sqrtf(localX * localX + localY * localY);
+        if (best < 0) {
+            snprintf(out, size, "[%s] no carriageway node within 200 units; %.0f units from the "
+                     "region's own zero", rs.region->name.c_str(), radius);
+            return;
+        }
+        CVector p = NodeWorld(rs, best);
+        snprintf(out, size, "[%s] nearest carriageway node %d is %.1f units away, at local "
+                 "(%.1f, %.1f, %.1f); you are %.0f units from the region's own zero",
+                 rs.region->name.c_str(), best, sqrtf(bestD),
+                 p.x - rs.region->originX, p.y - rs.region->originY, p.z - rs.region->originZ,
+                 radius);
+        return;
+    }
+    snprintf(out, size, "not over any region's carriageways");
+}
 
 int LoadedModelCount(int* outOf) {
     const int count = (int)(sizeof(kPlaceholderCars) / sizeof(int));
@@ -814,6 +1049,154 @@ void Install() {
                "many that is right now), at most %d",
                (unsigned)Regions().size(), Settings::world.regionTrafficRadius,
                Settings::world.regionTrafficDensity, kMaxCars);
+}
+
+// ------------------------------------------------------------------ the debug overlay
+//
+// Drawn from NodeWorld() and LanePoint() and from nothing else, which is the whole point: see the
+// note in RegionTraffic.h. Called once a frame from PathDraw's hook on RenderEffects, and only
+// while [World] Debug=1 and the layer is switched on.
+
+// A link's length said out loud in colour, because the length of a link is the quantity every
+// arrival test is measured against and the one currently under suspicion. kArrivedFloor is the
+// smallest distance that ever counts as "arrived", so a link shorter than it is a link the car
+// finishes the instant it is aimed down it; kMinLegLength is the shortest leg the advance walk
+// will settle for. A street drawn red or orange is a street where a car will spend every frame
+// arriving rather than driving.
+constexpr unsigned kLinkTooShort = 0xFF3020FFu;   // red    - shorter than kArrivedFloor
+constexpr unsigned kLinkShort    = 0xFF9020FFu;   // orange - shorter than kArrivedDistance
+constexpr unsigned kLinkTight    = 0xFFE040FFu;   // yellow - shorter than kMinLegLength
+constexpr unsigned kLinkNormal   = 0x40E060FFu;   // green
+constexpr unsigned kNodeMark     = 0xFFFFFFC0u;   // the node itself
+constexpr unsigned kLaneStub     = 0x40C0FFB0u;   // node -> the lane point a car is aimed at
+constexpr unsigned kLaneStubOut  = 0x2070C090u;   // the same for the outermost lane
+
+constexpr unsigned kGroundOn     = 0x40FF80FFu;   // node sits on the surface probed under it
+constexpr unsigned kGroundOff    = 0xFF40FFFFu;   // it does not
+constexpr unsigned kGroundNone   = 0xFF0000FFu;   // there is no surface under it at all
+
+constexpr unsigned kCarMark      = 0xFFFFFFFFu;   // where the car is
+constexpr unsigned kAimLine      = 0xFFFF00FFu;   // car -> where the GAME says it is steering
+constexpr unsigned kLegFrom      = 0x006080FFu;   // the link it believes it is on, at the far end
+constexpr unsigned kLegTo        = 0x00E0FFFFu;   // ...and at the end it is driving towards
+constexpr unsigned kArriveBox    = 0xFF8000FFu;   // how near counts as having got there
+constexpr unsigned kLaneOffset   = 0x8060FFFFu;   // node -> the lane point offset from it
+
+constexpr float kProbeRadius = 45.0f;   // ground probes are raycasts; keep them near the camera
+constexpr int   kMaxProbes = 40;
+constexpr float kDriverLift = 0.6f;     // lift a driver's own lines clear of the graph underneath
+
+unsigned LinkColour(float length) {
+    if (length < kArrivedFloor) return kLinkTooShort;
+    if (length < kArrivedDistance) return kLinkShort;
+    if (length < kMinLegLength) return kLinkTight;
+    return kLinkNormal;
+}
+
+void DrawGraph(const CVector& eye, float radius, bool groundProbes) {
+    const float r2 = radius * radius;
+    for (const RegionState& rs : Regions()) {
+        if (!PlayerOver(rs, eye, radius)) continue;
+        std::vector<int> nearby;
+        NodesNear(rs, eye, radius, nearby);
+        int probes = 0;
+        for (int i : nearby) {
+            if (!PathDraw::Budget()) return;
+            const CVector a = NodeWorld(rs, i);
+            const Node& n = rs.nodes[i];
+            PathDraw::Cross(a, 0.6f, kNodeMark);
+
+            for (int k = 0; k < n.linkCount; k++) {
+                if (!PathDraw::Budget()) return;
+                const int j = rs.links[n.firstLink + k];
+                const CVector b = NodeWorld(rs, j);
+                // Each link once. When both ends are in range the lower index owns it; when only
+                // this end is, this end owns it - so a road leaving the culled circle still shows,
+                // which is what tells "the graph stops here" from "the drawing stops here".
+                const float bx = b.x - eye.x, by = b.y - eye.y;
+                const bool bothIn = (bx * bx + by * by) <= r2;
+                if (!bothIn || j > i) {
+                    const float dx = b.x - a.x, dy = b.y - a.y;
+                    PathDraw::Line(a, b, LinkColour(sqrtf(dx * dx + dy * dy)));
+                }
+                // The lane point this node would give a car that arrives here and carries on to
+                // j - i.e. an actual destination the driver can be handed, drawn as a stub from
+                // the node it is offset from. Which side of the road these land on, and how far
+                // out, is the entire lane question, and it is answered here by the same call
+                // SetDestination makes.
+                PathDraw::Line(a, LanePoint(rs, i, j, 0), kLaneStub);
+                if (n.lanes > 1)
+                    PathDraw::Line(a, LanePoint(rs, i, j, n.lanes - 1), kLaneStubOut);
+            }
+
+            if (!groundProbes || probes >= kMaxProbes) continue;
+            const float px = a.x - eye.x, py = a.y - eye.y;
+            if (px * px + py * py > kProbeRadius * kProbeRadius) continue;
+            probes++;
+            // The same question the spawner asks before it puts a car on this node, drawn where it
+            // was asked. A node floating above its road, or buried under it, has been guessed at
+            // twice in this project from log lines alone; this is the picture of it.
+            float ground = 0.0f;
+            if (Ground::Under(a.x, a.y, a.z, ground)) {
+                const unsigned c = fabsf(ground - a.z) <= 1.0f ? kGroundOn : kGroundOff;
+                PathDraw::Line(a, CVector(a.x, a.y, ground), c);
+                PathDraw::Line(CVector(a.x - 1.5f, a.y, ground), CVector(a.x + 1.5f, a.y, ground), c);
+                PathDraw::Line(CVector(a.x, a.y - 1.5f, ground), CVector(a.x, a.y + 1.5f, ground), c);
+            } else {
+                // No surface within Ground's search at all. A car will never be put here.
+                PathDraw::Line(a, CVector(a.x, a.y, a.z - 6.0f), kGroundNone);
+            }
+        }
+    }
+}
+
+void DrawDrivers(const CVector& eye, float radius) {
+    const float r2 = radius * radius;
+    for (const RegionState& rs : Regions()) {
+        for (const Driver& d : rs.drivers) {
+            if (!PathDraw::Budget()) return;
+            // Resolve, not CPools::GetVehicle - the same rule the tick follows, so the overlay can
+            // never draw a car that is no longer ours.
+            CVehicle* car = VehicleSpawn::Resolve(d.ref, d.model);
+            if (!car) continue;
+            const CVector p = car->GetPosition();
+            const float dx = p.x - eye.x, dy = p.y - eye.y;
+            if (dx * dx + dy * dy > r2) continue;
+
+            // Where the GAME says it is steering: the autopilot destination, read from the same
+            // bytes the once-a-second traffic log line reads. Not what this module last asked for
+            // - what the vehicle currently holds - so the two can disagree on screen.
+            const float* dest = (const float*)((const char*)car + kAutoPilotDestination);
+            const CVector target(dest[0], dest[1], dest[2]);
+
+            const CVector from = NodeWorld(rs, d.from), to = NodeWorld(rs, d.to);
+            // The leg it believes it is on, lifted clear of the graph line underneath so the two
+            // are distinguishable where they coincide. Dark at the end behind it, bright at the
+            // end it is driving towards.
+            PathDraw::Line(CVector(from.x, from.y, from.z + kDriverLift),
+                           CVector(to.x, to.y, to.z + kDriverLift), kLegFrom, kLegTo);
+            // The lane offset, drawn as itself: node -> the point the module aims at from it.
+            PathDraw::Line(to, LanePoint(rs, d.to, NextNode(rs, d.from, d.to), d.lane), kLaneOffset);
+
+            // How near the node counts as arriving. ManageDrivers measures this to the NODE, not
+            // to the lane point, so the box is drawn round the node. When the box reaches the next
+            // node along, the car finishes this leg the moment it starts it.
+            const float ar = ArriveRadius(rs, d);
+            const CVector c0(to.x - ar, to.y - ar, to.z), c1(to.x + ar, to.y - ar, to.z);
+            const CVector c2(to.x + ar, to.y + ar, to.z), c3(to.x - ar, to.y + ar, to.z);
+            PathDraw::Line(c0, c1, kArriveBox);
+            PathDraw::Line(c1, c2, kArriveBox);
+            PathDraw::Line(c2, c3, kArriveBox);
+            PathDraw::Line(c3, c0, kArriveBox);
+
+            // The car, and the line to what it is steering for. This is the one that settles it:
+            // if this line lies along the leg above, the route and the targeting are right and the
+            // fault is in how the car is driven.
+            PathDraw::Cross(p, 1.5f, kCarMark);
+            PathDraw::Line(p, target, kAimLine);
+            PathDraw::Cross(target, 1.0f, kAimLine);
+        }
+    }
 }
 
 }   // namespace RegionTraffic

@@ -9,7 +9,7 @@ namespace RegionParkedCars {
     // traffic this is called whatever region the player is over, and when they are over none at
     // all, because a car of ours has to be tidied away when they drive out of the city as well as
     // when they walk out of the street.
-    void Tick(const CVector& playerPosition);
+    void Tick(const CVector& playerPosition, bool playerHasGround);
 
     // Let go of every bay and every car - between games, when the vehicle pool and its handle
     // re-use counters are about to be reset under us. The memory of which bays the player has
@@ -23,4 +23,10 @@ namespace RegionParkedCars {
     // radius right now - which is what tells an empty street apart from a street with no bays.
     int Budget();
     int ArmedNear(const CVector& playerPosition);
+
+    // ---- the debug overlay (drawn by src/debug/PathDraw.cpp). Drawn from this module's own
+    // BayWorld() and BaySpawnPoint(), so what is on screen is where a car would actually go -
+    // including the drop from the height the file claims to the height the ground probe finds.
+    // `eye` is the camera; culled to `radius`.
+    void DrawBays(const CVector& eye, float radius);
 }

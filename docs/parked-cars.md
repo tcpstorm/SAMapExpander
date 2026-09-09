@@ -399,39 +399,314 @@ Every exit now goes through one of two calls and there is no third: hand it back
 Taking it away is preferred when the player cannot see it, because handing a dozen cars back at once
 puts a dozen entries on `NumRandomCars`, which `GenerateRandomCars` stops at 45.
 
-### 9. There are two "find the ground" routines and they answer different questions
+### 9. There are three "find the ground" routines and only one of them can say "there is none"
 
-This one decides whether an imported city has anybody in it, so it is worth stating flatly.
+This decides whether an imported city has anybody standing in it, so it is worth stating flatly.
 
-| | searches | can it recover from a wrong z? |
+| | searches | reports failure? |
 |---|---|---|
-| `CPedPlacement::FindZCoorForPed` (0x616920) | from `z + 0.5` down to `z − 100` — the two floats are at 0x858B8C and 0x858628 | **no.** It is a band around the height you already believe |
-| `CWorld::FindGroundZForCoord` (0x569660) | from **z = 1000** straight down — it plants `0x447A0000` at `[esp+0x34]` and calls `CWorld::ProcessVerticalLine` | **yes.** It never reads the z you hand it |
+| `CPedPlacement::FindZCoorForPed` (0x616920) | `z + 0.5` down to `z − 100` — the floats at 0x858B8C and 0x858628 | no, and it is a band around the height you already believe, so it cannot find a surface above you |
+| `CWorld::FindGroundZForCoord` (0x569660) | from **z = 1000** down (`0x447A0000` planted at `[esp+0x34]`) | **no — and this is the trap** |
+| `CWorld::FindGroundZFor3DCoord` (0x5696C0) | from the z you give it down to **−1000** (`0xC47A0000` pushed at 0x5696F7) | **yes.** It takes a `bool*` and writes 0 through it at 0x569711 |
 
-The pedestrians used the first on its own. Hand it a point twenty units under the road and it
-cannot find the road: it looks half a metre up and a hundred down, finds whatever is beneath, and
-leaves the ped buried. A buried ped still walks, still talks and still counts — which is why F8 read
-`16 walking` while the player could hear a crowd and see nobody.
+The middle one looks like exactly the right question — x and y only, no z to get wrong. Read its
+failure path at 0x5696A5:
 
-Measured, in an imported Vice City with the player standing on an ordinary street: the nearest ped
-and car nodes were **about twenty units below their feet**, twice, at two unrelated places. The
-region's own files are not the problem — sampling every ped node and every car node against the IPL
-props standing within fifteen units of them puts the median disagreement at **1.3 units**, with half
-of all samples inside two. The graph and the map agree with each other; something at load time does
-not agree with either, and until that is found the spawners must not trust a stored height.
+```
+test al, al                  ; did ProcessVerticalLine hit anything?
+jne  0x5696B3                ; yes - return the hit
+fld  dword ptr [0x858BA4]    ; no  - return the float at 0x858BA4
+ret
+```
 
-So none of them do any more:
+and the float at **0x858BA4 is 20.0**. When there is no collision under a point it returns twenty,
+and twenty is a perfectly ordinary height: Vice City's streets sit around 12 to 20 in the region's
+own coordinates. **A failed probe is indistinguishable from a good answer**, so a caller that trusts
+it puts a pedestrian a few units above the road and watches them fall. That is what the player saw,
+and it is why `src/region/Ground.cpp` exists rather than a one-line call. `FallRecovery.cpp` already
+knew this and used the honest variant; the population code did not, and the two had grown separate
+ground-finding code — the user asked whether they should share one, and they were right.
 
-- **Pedestrians** ask `CWorld::FindGroundZForCoord` first and use its answer to seed
-  `FindZCoorForPed`, which then places the ped properly against that surface. Where the graph is
-  right the two agree within the slack and nothing changes; with `Debug = 1` the first ten
-  corrections are logged with both heights, so the next run measures the fault rather than hiding it.
-- **Traffic and parked cars** hand `CCarCtrl::CreateCarForScript` the **−100 sentinel** instead of a
-  height. The comparison is at 0x432117 on the car path (`fcomp` against the −100.0 at 0x859014,
-  taken for `z <= -100`), and the game then calls `CWorld::FindGroundZForCoord` itself and adds the
-  model's own centre-to-base distance. This is San Andreas' own mechanism for "put it on the ground
-  here", already used by its 500 car generators, and it is now used for every car of ours rather
-  than only for the 3 bays in 320 whose script line happened to say −100.
+**What the graph itself is worth.** Sampling every ped node and every car node in Vice City against
+the IPL props standing within fifteen units of it: median disagreement **1.3 units**, quartiles 0.2
+and 3.4, tail about 3.5. The graph and the map agree. An earlier reading of "twenty units below the
+player's feet" was the player being somewhere higher than the street, not a datum fault — the
+in-game correction lines from a real session say 3.3 and 3.4 units, which is the tail and no more.
+`Ground::Under` therefore lifts the start of its search 12 units — roughly three times the worst
+disagreement, and still well under one storey, so a node beneath a bridge stays beneath the bridge.
+
+All three spawners now use it, and **all three refuse to place anything when it says there is no
+ground**, which is the part that matters: a bay or a node over a hole should be skipped, not filled
+at a fabricated height. Each reports the refusals in its per-second line.
+
+### 9b. A crowd follows the player, including where the player has no business being
+
+"Pedestrians are spawning under the map" turned out to be a player flying a jetpack under the map
+with the crowd correctly following him down. Nothing was misplaced; the rule was simply "near the
+player", and near the player was under the world.
+
+That is worth deciding rather than leaving to fall out. `Ground::BeneathEverything` asks for every
+surface at the player's own x/y from 400 units overhead and answers true only when **all** of them
+are above him — so a tunnel, a bridge and a building interior all still count as having ground,
+because there is a floor under his feet in each, and only genuinely being outside the world counts.
+While that is true nothing new is created; everything already out is still managed and tidied away
+as usual. Each spawner counts the ticks it skipped for this reason in its per-second line, so it
+never looks like one of the other faults.
+
+**The lesson worth keeping is about the diagnosis, not the code.** Two rounds of work went into a
+"the graph is twenty units under the street" theory built on two F8 readings of the player's height,
+and the theory was wrong because nobody asked what the player was standing on. The measurements that
+survived are the ones taken from files rather than from a single moment: every ped and car node
+against the IPL props within fifteen units of it is a median disagreement of **1.3** units, 75th
+percentile **3.4**, and a maximum of 21.5 across 237 samples — one outlier, not a second deck. F8
+now prints every surface under the player's feet with `Ground::Describe`, so the question "what is
+he actually standing on" is one keypress instead of an inference.
+
+### 9c. A `CVector` passed by value never arrives, and this is why nothing ever appeared
+
+**This is the bug. Everything else in this section is the search for it.**
+
+`CCarCtrl::CreateCarForScript` takes its position **by value**, and plugin-sdk's wrapper declares it
+that way:
+
+```cpp
+CVehicle* CreateCarForScript(int modelid, CVector posn, unsigned char MissionCleanUpFlag)
+```
+
+`gta_sa.exe` was built with MSVC, which pushes the twelve bytes of the vector onto the stack. clang
+building for i686 follows the GCC ABI, which passes any class with a user-declared copy constructor
+by **invisible reference** — and plugin-sdk's `CVector` declares one. So the call pushes a *pointer*
+where the game reads x, the mission-cleanup flag where it reads y, and whatever was next on the
+stack where it reads z.
+
+`src/debug/Teleport.cpp` documents exactly this for `CEntity::Teleport`, having been caught by it
+first, and `src/region/FallRecovery.cpp` avoids it the same way. **Nobody carried the lesson across
+to the vehicles**, so every car this project has ever created — traffic and parked alike, since the
+day each was written — was made somewhere other than where it was asked for.
+
+The read-back guard printed it three times running:
+
+```
+asked for a car at (6471.8, 940.6, 3.5) and got one at (0.0, 0.0, 6472.8)
+```
+
+and every part of that is the ABI, not a car that moved:
+
+| printed | what it really is |
+|---|---|
+| x `0.0` | a stack **address** reinterpreted as a float — a denormal, which prints as zero |
+| y `0.0` | the `false` we passed for `missionCleanup` |
+| z `6472.8` | our own **x**, which happened to be the next word on the stack, plus the 1 unit `CreateCarForScript` adds for the model's centre-to-base distance |
+
+`VehicleSpawn::Create` now puts a bare three-float struct on the wire — trivially copyable, and
+passed the way the game expects — and calls 0x431F80 directly, next to the byte check that was
+already guarding that address.
+
+**The audit that goes with it.** This was the *only* by-value class argument either spawner makes.
+`CPopulation::AddPed` takes `CVector const&` — which is why the pedestrians always worked.
+`TheCamera::IsSphereVisible` takes `CVector const&`. `CPedPlacement::FindZCoorForPed` takes a
+pointer. `CPlaceable::GetPosition` returns a **reference**, so reading a position back was never
+affected and every distance measured with it was real. **Check the signature, not the call site**:
+the call site looks identical either way.
+
+### 9d. Read back where a thing actually went, every time
+
+A car of ours turned up **6455 units** from the player, with a fall of 0.0 — sitting exactly where
+it had been put, six and a half thousand units away.
+
+What that one number explains, all at once:
+
+- **No traffic in an imported city.** The cars were not in it.
+- **"The wrong vehicles are spawning for the zone" in Los Santos.** They were *our* cars, wearing
+  donor-paired placeholder models, standing in San Andreas' streets. A day was spent on streaming
+  starvation as the explanation for that.
+- **"Cars arrive damaged."** A car dropped into a live street it was not spawned along gets hit.
+- **Why turning the population off cured all of it**, and why the streaming residency fix — a real
+  fault, and still worth having — did not.
+
+The origin *is* applied, and the log proves it: `SpawnSome` rejects any lane point further than the
+traffic radius from the player and reported **`0 past the radius`** in the same second that a car
+was found 6455 away. The point handed to `CreateCarForScript` was within 90 units. Something between
+that call and the next tick moves the car, and the honest answer is that it has now been guessed
+wrong twice, so the code no longer guesses:
+
+**Both vehicle spawners read the position back immediately after creation and compare it with the
+one they asked for.** More than 12 units of difference — generous, since `CreateCarForScript`
+settles a car onto the road and clears space around it — and the car is removed at once with a log
+line naming both coordinates. Whatever moves it, it can no longer be left standing in somebody
+else's city.
+
+**The lesson is about the counter, not the car.** `0 driving, 2 taken away` sat in front of two
+people for hours and was read as a tuning problem, because "taken away" was a count and a count has
+no units. It became a bug the moment the tally was asked to record *how far away* — 6455 against a
+158-unit cull answers the question by itself. **A counter that records a decision should record the
+quantity the decision was made on.**
+
+### 9e. Settled, so that nobody re-opens it: there is one surface, not two
+
+`ground under the player: 1 surface(s) from 300.8 down: 3.65 (the player's own z is 0.85)`.
+
+**One surface.** Two rounds of work went into a theory that an imported city's streets sit about
+twenty units above the graph the spawners use, and there is no such second deck. The file evidence
+said so first — every ped and car node against the IPL props within fifteen units of it is a median
+disagreement of 1.3 units, 75th percentile 3.4, maximum 21.5 across 237 samples — and the in-game
+enumeration says so too. The readings that started the theory were the player being somewhere other
+than on the ground: once under the map in a jetpack, and once, in the same log line above, standing
+2.8 units *below* the only surface there is.
+
+### 9f. Two of the numbers we reasoned from were artefacts of how we measured
+
+Worth writing down as a rule, because it happened twice in one day and cost most of it.
+
+- **`CWorld::FindGroundZForCoord` returns 20.0 when it fails** (§9), so "the ground here is 20" and
+  "there is no ground here" were the same answer, and peds were placed in mid-air on the strength
+  of it.
+- **A `CVector` passed by value never reaches the game** (§9c), so every position we asked for was
+  a position the game never saw — while the log faithfully printed the one we meant.
+
+Both times the code was reasoned about from a number that was not measuring what it appeared to.
+The habit that follows: **before believing a tally, check the path each input came in by.** For this
+module that audit is now done and is worth keeping current —
+
+| input | how it arrives | sound? |
+|---|---|---|
+| a ped's or a vehicle's position | `CPlaceable::GetPosition()`, returns `CVector&` | yes — every distance measured with it is real |
+| a pool handle | `GetPedRef`/`GetPed` (0x54FF60/0x54FF90) and `GetVehicleRef`/`GetVehicle` (0x54FFC0/0x54FFF0) | yes — both are matched `(index << 8) | reuse byte` pairs, and the getter checks the byte |
+| "is it in shot" | `TheCamera::IsSphereVisible(CVector const&, float)` | yes — by reference |
+| a ped's placement | `CPopulation::AddPed(..., CVector const&, ...)` | yes — by reference, which is why the pedestrians always worked |
+| a vehicle's placement | `CCarCtrl::CreateCarForScript(int, CVector, uchar)` | **no** — by value; fixed in §9c |
+| the ground | `CWorld::FindGroundZForCoord` | **no** — fabricates 20.0; fixed in §9 |
+
+And one about the instrument itself: a run reported `32 no ground under the lane` and `32 refused
+for landing somewhere else` — the same 32 events, counted twice, because the caller inferred *which*
+failure had happened from a `bool` return that could mean either. **A counter must be incremented
+where the decision is made**, not where the result is read.
+
+### 9g. An arrival distance must be a fraction of the leg, not a number
+
+The cars drove, and followed the shape of the carriageways while running wide of them — and Liberty
+City's looked noticeably better than Vice City's. **A fault in the steering, the lane maths or the
+mission would hit both cities alike.** Something that differs by region does not, and that
+observation is what found this.
+
+Measured over both graphs in the region files:
+
+| | 5% | 25% | median | 75% | 95% | shorter than the 8-unit arrival distance |
+|---|---|---|---|---|---|---|
+| **Vice City** | 1.9 | 6.2 | **10.6** | 18.4 | 36.9 | **36.5%** |
+| **Liberty City** | 3.9 | 10.0 | **12.6** | 25.0 | 28.3 | **19.2%** |
+
+A flat eight units is 0.76 of a typical Vice City link and 0.63 of a Liberty City one, and **more
+than a third of Vice City's links are shorter than it outright**. So a car was called "arrived" at
+a node it had not reached, handed the next leg, and left aiming one or two nodes ahead of itself —
+twice as often in Vice City as in Liberty City. That is the reported asymmetry, in the reported
+direction, from the files alone.
+
+Two changes, and the second matters as much as the first:
+
+- **The threshold is a fraction of the leg being driven** — 0.35 of it, floored at 2.5 units (about
+  half a car) and capped at the old 8 so a long straight still hands over early enough to turn.
+- **A leg has to be worth steering at.** Five per cent of Vice City's links are under 1.9 units,
+  shorter than the car; handing one out means arriving on the frame it is set, for ever. The next
+  node is now taken instead, up to six hops, until the target is at least 12 units from where the
+  car actually is. No node is skipped in the sense that matters — they are all still on the path
+  between, and a straight line across twelve units of road stays inside a lane.
+
+**Why not thin the graph at import instead**, which was the alternative: because the short links are
+not noise. They are how a donor city describes a *curve*, and a graph thinned to a comfortable
+driving spacing would lose the shape of every bend — the cars would cut corners worse, not better.
+The density is right for describing roads and wrong for choosing destinations, so the fix belongs in
+the thing choosing destinations. It also ships today against data the user already has, rather than
+requiring both cities to be re-imported.
+
+**What it was not.** A scale error in Vice City's graph was the competing explanation and it is
+dead. The node-to-nearest-map-placement *floor* — the 5th percentile, which measures alignment
+rather than how densely furnished a street is — is flat across the whole city for both graphs:
+4.20, 2.25, 1.98, 2.01, 2.65, 2.46 for the carriageways out to 2200 units from the region's zero,
+and 4.30, 2.21, 2.36, 2.24, 2.33, 4.45 for the pedestrian one. Three F8 readings agree: 5.1 units
+off at 664 from the origin, 6.1 at 1706, and one reading of 14.7 that was **taken from the air
+beside a terminal roof** and is worthless. A 0.85% scale error would have put that last grounded
+sample 14–15 units out; it was 6.1.
+
+### 9g-ii. The cars are not driving on the pavements — checked, because the counts look wrong
+
+A good hypothesis, raised from watching the overlay: the cars seemed to be following pavement lines,
+and the node counts point the same way.
+
+| | ped nodes | car nodes |
+|---|---|---|
+| Liberty City | 5198 | 3233 |
+| **Vice City** | 3789 | **7967** |
+
+Liberty City has more pavement than road, which is what a city should have. **Vice City is
+inverted.** That is what a carriageway set which had absorbed its pedestrian paths would look like.
+
+**It is not what happened, and the check is conclusive.** Vice City keeps its whole network in one
+file, `data/maps/paths.ipl`, as 1957 groups of twelve slots each, every group headed by a two-field
+line whose first field is the path type. Tracing every imported node back to the source coordinate
+it came from:
+
+| | from source type 0 | from type 1 | from a coordinate both types share | unmatched |
+|---|---|---|---|---|
+| `carnodes.dat` (7967) | **7824** | 0 | 116 | 27 |
+| `pednodes.dat` (3789) | 0 | **3653** | 115 | 21 |
+
+Type 0 goes to the cars, type 1 to the pedestrians, and nothing crosses over. The ~116 in both
+columns are points where Vice City itself put a car node and a ped node at the *same coordinate* —
+a crossing or a kerb — so they are ambiguous to a test that matches by position, not to the
+importer, which reads the type. Liberty City has none at all.
+
+And the types are what they look like:
+
+| type | nodes | median distance to the nearest type-0 node | reading |
+|---|---|---|---|
+| 0 | 9514 | — | roads |
+| 1 | 4588 | **8.0** (10% at 2.3, 90% at 24.2) | pavements, flanking the roads by half a road width |
+| 2 | 630 | **75.9** | boats, out on the water — correctly imported into neither file |
+
+**So the inverted counts are real, and they are Vice City's own.** That city describes its *roads*
+more finely than its pavements; Liberty City does the reverse. Which is not a curiosity — it is the
+cause of §9g: it is exactly why 36.5% of Vice City's carriageway links are shorter than the old
+eight-unit arrival distance and only 19.2% of Liberty City's are.
+
+**And the observation was still right about the appearance.** A car that arrives early and aims one
+or two nodes ahead cuts the corner, and a corner cut off a Vice City road lands about where its
+pavement is — the ped paths sit a median of eight units from the road nodes, and the cars were
+running wide by about that. So the user was seeing cars on the pavement; they were simply not
+*following* the pavement. The proportional arrival distance is the fix for that and is not
+compensating for contaminated data: there is none.
+
+### 9h. A reading should carry its own validity
+
+Three F8 samples in one evening were taken from a jetpack, from under the map, and from the air by
+a terminal roof, and each was reasoned from as though the player had been standing in a street. One
+cost a whole false theory about the graph being scaled, which took three exchanges to unwind, and it
+was caught only because the z on the line looked wrong to a human reading it.
+
+F8 now ends its ground line with `on the ground`, `AIRBORNE, N units above the floor beneath - not
+a reading from a street`, or `UNDER THE WORLD`. A measurement that depends on where somebody was
+standing should say where they were standing.
+
+### 10. A spawn band that nearly touches its own cull band empties itself
+
+The traffic reported, every second for a whole session, `3 placed … 0 driving … 3 taken away`. Cars
+were being made and removed at the same rate, and "taken away" is our own distance cull. The
+arithmetic, which nobody had done:
+
+- `NodesNear` finds nodes within `RegionTrafficRadius`, **90** by default.
+- `LanePoint` then steps sideways off the node by `(lane + 0.5) × 5.4` — up to **18.9** more in the
+  outer lane of a four-lane road.
+- So a car could be created **109** units out, and the cull sat at `90 × 1.4` = **126**.
+
+Seventeen units of room, at a cruise speed of 18. A car crossed it in about a second and was culled
+before it had driven anywhere. San Andreas' own numbers are the shape to copy — it creates between
+about 42 and 50 and removes past 65, a gap of a *third* of its spawn radius rather than a sixth. Two
+changes make ours the same shape: the lane offset now counts against the spawn radius, so nothing is
+created past 90, and the cull is at `× 1.75` = 157, leaving 67 units to drive in.
+
+**The general rule, and it applies to the pedestrians too:** the distance a thing is *created* at is
+not the radius you searched with, and the cull has to be outside whatever the creation can actually
+reach. Any spawner here should be able to state both numbers.
 
 ### And the handle is not the whole record
 

@@ -61,6 +61,8 @@
 #include <unordered_map>
 #include <vector>
 #include "RegionPeds.h"
+#include "PathDraw.h"
+#include "Ground.h"
 #include "ModelLimits.h"
 #include "StreamedModels.h"
 #include "RegionPolice.h"
@@ -526,6 +528,20 @@ int SafePedType(int pedType) {
 // instead, keeping back the same eight slots the game's own RemovePedsIfThePoolGetsFull works to.
 constexpr int kPedPoolReserve = 8;
 
+// Where a tick's spawn attempts went, summed over a second.
+//
+// This exists because "16 walking and none of them visible" and "nothing spawns at all" are the
+// same line in the log - a count - and a count cannot say whether nobody was made, or everybody
+// was made and taken away again, or the same two people were made and unmade sixty times a second.
+// Three rounds of reasoning from counts got the wrong answer; this says which it is.
+struct Tally {
+    int ticks, attempts, tooNear, inShot, crowded, noModel, poolFull, madeNothing, placed;
+    int noGround, offDatum, noPlayerGround;
+    int lost, culled, kept;
+    unsigned nextReport;
+};
+Tally& Counts() { static Tally t{}; return t; }
+
 // The ground under a node, and WHICH question you ask matters.
 //
 // CPedPlacement::FindZCoorForPed (0x616920) is the ped-shaped one and it is what this used to
@@ -548,32 +564,26 @@ constexpr int kPedPoolReserve = 8;
 // city measured on the ground, with the player standing on an ordinary road and the nearest node
 // twenty units below their feet - this is the difference between a crowd and a rumour.
 constexpr float kDatumSlack = 2.0f;
-int gDatumReports = 0;
 
-CVector SettleOnGround(const CVector& at) {
-    CVector out = at;
-    float ground = CWorld::FindGroundZForCoord(out.x, out.y);
-    if (ground > -200.0f && ground < 2000.0f && fabsf(ground - out.z) > kDatumSlack) {
-        // Worth saying out loud the first few times: a graph that disagrees with the collision
-        // under it by more than a couple of units is a fact about the region's data, and the
-        // numbers are what somebody would need to fix the import rather than paper over it here.
-        if (Settings::world.debug && gDatumReports < 10) {
-            gDatumReports++;
-            Log::Write("peds: node at (%.1f, %.1f) says z %.1f, the collision there is at %.1f "
-                       "(%.1f units out); standing them on the collision",
-                       out.x, out.y, out.z, ground, ground - out.z);
-        }
-        out.z = ground;
-    }
-    // FindZCoorForPed returns a bool - whether it found a floor - and writes the height it found
-    // into the vector it was given. It does NOT return the height. Reading its result as a float
-    // gave every pedestrian in the city z = 1.0, a metre above sea level and a dozen under the
-    // road, where they fell, and the game removed them within the second: "23 placed, 23 vanished"
-    // every report, and nobody on the pavement.
-    CVector probe = out;
-    if (CPedPlacement::FindZCoorForPed(&probe) && probe.z > -200.0f && probe.z < 2000.0f)
-        out.z = probe.z;
-    return out;
+// False means there is no floor at this node and nobody may be put there.
+//
+// The first version of this called CWorld::FindGroundZForCoord, which looks like the right
+// question and is not: where there is no collision it returns the float at 0x858BA4, which is
+// **20.0**, and twenty is an ordinary street height in an imported city. Every failed probe
+// therefore came back as a plausible answer a few units above the road, and the peds stood in the
+// air and fell - which is what the player saw. Ground::Under asks
+// CWorld::FindGroundZFor3DCoord instead, which reports failure instead of inventing a height.
+// Read the top of src/region/Ground.cpp before changing this back.
+bool SettleOnGround(const CVector& at, CVector& out, float* datumError) {
+    out = at;
+    float ground = 0.0f;
+    if (!Ground::Under(out.x, out.y, out.z, ground)) return false;
+    if (datumError) *datumError = ground - out.z;
+    if (fabsf(ground - out.z) > kDatumSlack) out.z = ground;
+    // Now the ped-shaped placement, against a height that is known to be real.
+    float z = CPedPlacement::FindZCoorForPed(&out);
+    if (z > -200.0f && z < 2000.0f) out.z = z;
+    return true;
 }
 
 CPed* CreateWalker(RegionState& rs, int node, int modelId, bool walk) {
@@ -581,28 +591,23 @@ CPed* CreateWalker(RegionState& rs, int node, int modelId, bool walk) {
     if (!info) return nullptr;
     if (!RegionPeds::SafeToAddPed()) return nullptr;
     int pedType = SafePedType((int)reinterpret_cast<CPedModelInfo*>(info)->m_nPedType);
-    CVector at = SettleOnGround(NodeWorld(rs, node));
+    CVector at;
+    float datumError = 0.0f;
+    // No floor under this node means nobody stands on it. Refusing is the whole point: the old
+    // code could not tell "no ground" from "ground at twenty", so it put somebody in the air.
+    if (!SettleOnGround(NodeWorld(rs, node), at, &datumError)) { Counts().noGround++; return nullptr; }
+    if (fabsf(datumError) > kDatumSlack) Counts().offDatum++;
     CPed* ped = CPopulation::AddPed((ePedType)pedType, (unsigned)modelId, at, false);
     if (!ped) return nullptr;
-    if (Settings::world.debug) {
-        CVector got = ped->GetPosition();
-        Log::Write("[%s] peds: model %d asked for at (%.1f, %.1f, %.1f), AddPed put them at "
-                   "(%.1f, %.1f, %.1f), area %u, ref %d", rs.region->name.c_str(), modelId,
-                   at.x, at.y, at.z, got.x, got.y, got.z, (unsigned)ped->m_nAreaCode,
-                   CPools::GetPedRef(ped));
-    }
     // Created by the game, not by a script: this is what makes CPopulation::ManagePopulation
     // responsible for taking them away again, so they are culled on exactly the same terms as San
     // Andreas' own and no separate lifetime is invented here.
     ped->SetCharCreatedBy(kPedCreatedByGame);
-    // Give them the grace period San Andreas' own spawner gives its peds, or the game removes them
-    // on the very next frame. CPopulation::ManagePed (0x611FC0) deletes a game-created ped that is
-    // off screen and more than 25 units out - 54.5 for one it has flagged - the moment the clock
-    // passes m_nTimeTillWeNeedThisPed, and a new ped has that at zero. Every walker here is made
-    // off screen, by design, between 22 and 55 units away; so without this stamp the whole crowd
-    // was made and deleted again within a frame, 175 a second, and the sixteen that were ever
-    // alive at once were the ones made in the last few frames. On screen the game restamps it
-    // four seconds ahead itself, at 0x6121E4, so this only has to cover the walk into view.
+    // A new walker is made off screen, and CPopulation::ManagePed (0x611FC0) deletes a game-created
+    // ped that is off screen and past m_nTimeTillWeNeedThisPed the moment the clock passes it - which
+    // a fresh ped has at zero. Without this the crowd is made and unmade every frame; the game
+    // restamps it four seconds ahead itself once the ped is on screen, so this only has to cover the
+    // walk into view. RegionPolice does the same, for the same reason.
     ped->m_nTimeTillWeNeedThisPed = CTimer::m_snTimeInMilliseconds + kGraceMs;
     rs.walkers.push_back(Walker{ CPools::GetPedRef(ped), node });
     if (walk) GiveWalkTask(ped, NodeWorld(rs, NextNode(rs, node)));
@@ -619,19 +624,6 @@ int LivePedBudget() {
     return want;
 }
 
-// Where a tick's spawn attempts went, summed over a second.
-//
-// This exists because "16 walking and none of them visible" and "nothing spawns at all" are the
-// same line in the log - a count - and a count cannot say whether nobody was made, or everybody
-// was made and taken away again, or the same two people were made and taken away sixty times a
-// second. Three rounds of reasoning from counts got the wrong answer; this says which it is.
-struct Tally {
-    int ticks, attempts, tooNear, inShot, crowded, noModel, poolFull, madeNothing, placed;
-    int lost, culled, kept;
-    unsigned nextReport;
-};
-Tally& Counts() { static Tally t{}; return t; }
-
 // Forget the ones the game has taken away, keep the rest walking, and take back any that have
 // strayed further than this module looks after.
 void ManageWalkers(RegionState& rs, const CVector& player) {
@@ -643,16 +635,7 @@ void ManageWalkers(RegionState& rs, const CVector& player) {
         // The game removed them, or the pool slot was re-used under the handle. Which of the two
         // it is cannot be told from here, but how OFTEN it happens is the whole question when a
         // crowd is being made and unmade sixty times a second, so it is counted.
-        if (!ped) {
-            Counts().lost++;
-            if (Settings::world.debug) {
-                CVector node = NodeWorld(rs, w.node);
-                Log::Write("[%s] peds: ref %d is gone; last sent towards (%.1f, %.1f, %.1f), player "
-                           "at (%.1f, %.1f, %.1f)", rs.region->name.c_str(), w.ref,
-                           node.x, node.y, node.z, player.x, player.y, player.z);
-            }
-            continue;
-        }
+        if (!ped) { Counts().lost++; continue; }
         CVector p = ped->GetPosition();
         float dx = p.x - player.x, dy = p.y - player.y;
         if (dx * dx + dy * dy > cull * cull && !TheCamera.IsSphereVisible(p, 1.5f)) {
@@ -687,10 +670,13 @@ void ReportTally() {
     t.nextReport = CTimer::m_snTimeInMilliseconds + 1000;
     if (!t.ticks) return;
     Log::Write("peds/sec: %d tick(s), %d attempt(s) -> %d too near, %d in shot, %d on top of "
-               "somebody, %d no model in memory, %d pool full, %d AddPed said no, %d placed; "
-               "%d kept, %d vanished, %d taken back; %d model(s) still asked for",
+               "somebody, %d no model in memory, %d pool full, %d no ground under the node, "
+               "%d AddPed said no, %d placed (%d of them off the graph's own height); "
+               "%d kept, %d vanished, %d taken back; %d tick(s) with no ground under the player; "
+               "%d model(s) still asked for",
                t.ticks, t.attempts, t.tooNear, t.inShot, t.crowded, t.noModel, t.poolFull,
-               t.madeNothing, t.placed, t.kept, t.lost, t.culled, StreamedModels::Held());
+               t.noGround, t.madeNothing, t.placed, t.offDatum, t.kept, t.lost, t.culled,
+               t.noPlayerGround, StreamedModels::Held());
     Tally fresh{};
     fresh.nextReport = t.nextReport;
     t = fresh;
@@ -748,13 +734,20 @@ void __cdecl UpdateHook(bool generatePeds) {
     // the first region the player is standing over and does nothing at all when they are over
     // none - which is exactly when a car standing at a Vice City kerb needs taking away, because
     // the player has just driven out of Vice City.
-    RegionParkedCars::Tick(at);
+    // Is there a floor under the player at all? Asked once a frame and handed to everything that
+    // creates something, because a crowd that follows the player is right and a crowd that follows
+    // one flying a jetpack beneath the map is not - and the second is what the first does unless
+    // somebody decides otherwise. Standing in a tunnel, under a bridge or inside a building all
+    // still count as having ground; see Ground::BeneathEverything.
+    const bool playerHasGround = !Ground::BeneathEverything(at.x, at.y, at.z);
+
+    RegionParkedCars::Tick(at, playerHasGround);
     // The traffic is ticked from out here too, and for the same reason the parked cars are: it
     // owns vehicles that have to be handed back when the player leaves the city, and this loop
     // does nothing at all when they are over no region. It used to be called from inside the
     // loop, which meant a car of ours was only ever tidied away while the player was still
     // standing over a PEDESTRIAN graph - two graphs that do not cover the same ground.
-    RegionTraffic::Tick(at);
+    RegionTraffic::Tick(at, playerHasGround);
 
     RegionState* here = nullptr;
     for (RegionState& rs : Regions()) {
@@ -773,7 +766,8 @@ void __cdecl UpdateHook(bool generatePeds) {
         return;
     }
     ManageWalkers(*here, at);
-    if (generatePeds) SpawnSome(*here, at, LivePedBudget());
+    if (generatePeds && playerHasGround) SpawnSome(*here, at, LivePedBudget());
+    else if (generatePeds) Counts().noPlayerGround++;
     ReportTally();
     // The police ride on this graph too, and on nothing else, so they are driven from here rather
     // than from a hook of their own: one region under the player, one tick.
@@ -807,7 +801,7 @@ bool FindSpawnPoint(const CVector& at, float minDist, float maxDist, bool avoidC
         float dx = world.x - at.x, dy = world.y - at.y;
         if (dx * dx + dy * dy < minDist * minDist) continue;
         if (avoidCamera && TheCamera.IsSphereVisible(world, 1.5f)) continue;
-        out = SettleOnGround(world);
+        if (!SettleOnGround(world, out, nullptr)) continue;
         return true;
     }
     return false;
@@ -879,6 +873,55 @@ void Install() {
                "a time within %.0f units%s",
                (unsigned)Regions().size(), LivePedBudget(), Settings::world.regionPedRadius,
                gCanWalk ? "" : " - standing, not walking");
+}
+
+// ------------------------------------------------------------------ the debug overlay
+//
+// The pavement graph, drawn from this module's own NodeWorld() - see RegionPeds.h. It is on its
+// own key because it is a separate answer: pednodes.dat and carnodes.dat are two files, read by
+// two parsers, offset by the same origin. If the pavement lands on the pavements and the
+// carriageways do not land on the roads, the fault is in the carriageway derivation and not in
+// where the city was put; if neither lands anywhere sensible, the region's origin is wrong and
+// every other question is downstream of that.
+constexpr unsigned kPedLink = 0xC060FF90u;   // violet
+constexpr unsigned kPedNode = 0xFFC0FFC0u;
+constexpr unsigned kWalker  = 0xFFFFFF80u;
+
+void DrawGraph(const CVector& eye, float radius) {
+    const float r2 = radius * radius;
+    for (const RegionState& rs : Regions()) {
+        if (!PlayerOver(rs, eye, radius)) continue;
+        std::vector<int> nearby;
+        NodesNear(rs, eye, radius, nearby);
+        for (int i : nearby) {
+            if (!PathDraw::Budget()) return;
+            const CVector a = NodeWorld(rs, i);
+            const Node& n = rs.nodes[i];
+            PathDraw::Cross(a, 0.4f, kPedNode);
+            for (int k = 0; k < n.linkCount; k++) {
+                if (!PathDraw::Budget()) return;
+                const int j = rs.links[n.firstLink + k];
+                const CVector b = NodeWorld(rs, j);
+                const float bx = b.x - eye.x, by = b.y - eye.y;
+                const bool bothIn = (bx * bx + by * by) <= r2;
+                if (bothIn && j < i) continue;   // drawn once, from the lower index
+                PathDraw::Line(a, b, kPedLink);
+            }
+        }
+        // The node each walker is heading for. A ped walking away from its own line is the same
+        // class of fault as a car steering away from its link, and it is worth being able to see
+        // both at once.
+        for (const Walker& w : rs.walkers) {
+            if (!PathDraw::Budget()) return;
+            if (w.node < 0 || w.node >= (int)rs.nodes.size()) continue;
+            CPed* ped = CPools::GetPed(w.ref);
+            if (!ped) continue;
+            const CVector p = ped->GetPosition();
+            const float dx = p.x - eye.x, dy = p.y - eye.y;
+            if (dx * dx + dy * dy > r2) continue;
+            PathDraw::Line(p, NodeWorld(rs, w.node), kWalker);
+        }
+    }
 }
 
 }   // namespace RegionPeds

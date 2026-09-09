@@ -103,6 +103,40 @@ bool VerifyCall(uintptr_t address, const uint8_t* expected, size_t length, const
 
 namespace VehicleSpawn {
 
+// CCarCtrl::CreateCarForScript takes its position BY VALUE, and that is why nothing this project
+// ever created arrived where it was asked for.
+//
+// gta_sa.exe was built with MSVC, which pushes the twelve bytes of the vector onto the stack.
+// clang building for i686 follows the GCC ABI, which passes any class with a user-declared copy
+// constructor by invisible reference instead - and plugin-sdk's CVector declares one. So calling
+// plugin-sdk's wrapper, whose signature is
+//
+//     CVehicle* CreateCarForScript(int modelid, CVector posn, unsigned char MissionCleanUpFlag)
+//
+// pushes a POINTER where the game reads x, the mission-cleanup flag where it reads y, and whatever
+// happened to be on the stack next where it reads z. src/debug/Teleport.cpp documents exactly this
+// for CEntity::Teleport, having been caught by it first, and src/region/FallRecovery.cpp avoids it
+// the same way. Nobody carried the lesson across to the vehicles.
+//
+// What it looked like from the outside: the read-back guard in RegionTraffic printed
+//
+//     asked for a car at (6471.8, 940.6, 3.5) and got one at (0.0, 0.0, 6472.8)
+//
+// three times running, and every part of that is the ABI. The 0.0 x is a stack ADDRESS
+// reinterpreted as a float - a denormal, which prints as zero. The 0.0 y is the false we passed
+// for missionCleanup. The z is our own x, which happened to be the next word on the stack, plus
+// the one unit CreateCarForScript adds for the model's centre-to-base distance. Not a car that
+// moved: a car that was never told where to go.
+//
+// A bare three-float struct is trivially copyable and is passed the way the game expects, so that
+// is what goes on the wire. This is the ONLY by-value class argument either spawner makes -
+// CPopulation::AddPed takes CVector const&, TheCamera.IsSphereVisible takes CVector const&,
+// CPedPlacement::FindZCoorForPed takes a pointer, and CPlaceable::GetPosition returns a reference,
+// so reading a position back was never affected and the distances measured with it were real.
+struct RawVector { float x, y, z; };
+typedef CVehicle*(__cdecl* CreateCarForScriptFn)(int model, RawVector posn,
+                                                 unsigned char missionCleanup);
+
 bool Ready() {
     if (!gChecked) {
         gChecked = true;
@@ -114,17 +148,14 @@ bool Ready() {
     return gReady;
 }
 
-bool ModelIsLoaded(int model) { return ModelLimits::ModelIsLoaded(model); }
-
-// cdecl: modelId, then the three floats of the position, then the mission-cleanup flag - five
-// dwords - which is how 0x431F80 reads its arguments (x, y, z come off the stack as separate
-// floats at 0x432129..0x432133 and 0x432113). Not the plugin-sdk wrapper, whose CVector-by-value
-// parameter this compiler passes as a pointer; see the note in VehicleSpawn.h.
-CVehicle* CreateForScript(int model, const CVector& at) {
+CVehicle* Create(int model, const CVector& at, bool missionCleanup) {
     if (!Ready()) return nullptr;
-    typedef CVehicle*(__cdecl* Fn)(int, float, float, float, unsigned char);
-    return reinterpret_cast<Fn>(kCreateCarForScript)(model, at.x, at.y, at.z, 0);
+    RawVector wire = { at.x, at.y, at.z };
+    return reinterpret_cast<CreateCarForScriptFn>(kCreateCarForScript)(
+        model, wire, missionCleanup ? 1 : 0);
 }
+
+bool ModelIsLoaded(int model) { return ModelLimits::ModelIsLoaded(model); }
 
 bool PoolHasRoom(int reserve) {
     auto* pool = CPools::ms_pVehiclePool;

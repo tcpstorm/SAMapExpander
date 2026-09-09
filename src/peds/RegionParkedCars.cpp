@@ -76,6 +76,8 @@
 #include <string>
 #include <vector>
 #include "RegionParkedCars.h"
+#include "PathDraw.h"
+#include "Ground.h"
 #include "VehicleSpawn.h"
 #include "Settings.h"
 #include "Log.h"
@@ -125,6 +127,10 @@ constexpr int kVehiclePoolReserve = 14;
 // A car this far from the bay it was made in is no longer parked - shunted out by the player,
 // most likely - and its bay counts as emptied.
 constexpr float kDisturbedDistance = 6.0f;
+// How far a car may be from the bay it was asked for and still count as having gone there.
+// CreateCarForScript settles a car onto the road and clears space around it, so a few units is
+// that routine doing its job; anything past this is a car somewhere else entirely.
+constexpr float kMaxCreationSlip = 12.0f;
 // Below this much health a car is a wreck, and a wreck's bay is not refilled the moment the player
 // looks away. CVehicle starts at 1000.
 constexpr float kWreckedHealth = 300.0f;
@@ -318,23 +324,59 @@ CVector BayWorld(const RegionState& rs, const Bay& b) {
     return CVector(b.x + rs.region->originX, b.y + rs.region->originY, z);
 }
 
-// Where a car is actually MADE, which is not the same question as where the bay is.
+// Where a tick's attempts to fill a bay went. Same reason as the traffic's: "0 parked at its
+// kerbs" is a count, and a count cannot say whether every bay was out of range, or remembered as
+// emptied, or in shot, or had no model in memory, or there was no floor under it.
+struct Tally {
+    int ticks, notReady, waiting, atBudget, poolFull;
+    int outOfRange, notArmed, taken, inShot, noModel, noGround, madeNothing, placed;
+    int lost, released, wentElsewhere;
+    unsigned nextReport;
+};
+Tally& Counts() { static Tally t{}; return t; }
+
+// Where a car is actually MADE, which is not the same question as where the bay is. False means
+// there is no floor under this bay and no car goes in it.
 //
-// Every bay goes in on the sentinel, not on the height its line claims, because
-// CCarCtrl::CreateCarForScript compares z against the float at 0x859014 (-100.0, tested at
-// 0x432117) and where they match goes and asks CWorld::FindGroundZForCoord - which ignores z and
-// casts from 1000 straight down, so it cannot be wrong about a datum it never reads. 317 of the
-// 320 mined bays across both cities carry a real height rather than the sentinel, and a real
-// height is only as good as the agreement between the donor's script and the collision that
-// actually got imported. The ground that is there wins.
-CVector BaySpawnPoint(const RegionState& rs, const Bay& b) {
-    return CVector(b.x + rs.region->originX, b.y + rs.region->originY, kGroundZ);
+// NOT the -100 sentinel, which is what this tried first. CCarCtrl::CreateCarForScript does resolve
+// that sentinel for itself (0x432117, against the -100.0 at 0x859014) - but the routine it resolves
+// it with is CWorld::FindGroundZForCoord, which returns the float at 0x858BA4, **twenty**, when it
+// finds nothing at all. Twenty is an ordinary street height in an imported city, so a failed probe
+// arrives as a plausible one and the car is created in the air. Ground::Under asks the honest
+// question instead; see the top of src/region/Ground.cpp.
+bool BaySpawnPoint(const RegionState& rs, const Bay& b, CVector& out) {
+    out = CVector(b.x + rs.region->originX, b.y + rs.region->originY, 0.0f);
+    // A bay whose line carries the sentinel has no claimed height to search from, so the search
+    // starts from the height of the bay's own neighbourhood - the region's vertical origin, which
+    // is where its ground is measured from.
+    float claimed = b.z <= kGroundZ ? rs.region->originZ : b.z + rs.region->originZ;
+    float ground = 0.0f;
+    if (!Ground::Under(out.x, out.y, claimed, ground)) return false;
+    out.z = ground;
+    return true;
 }
 
 bool CreateParkedCar(RegionState& rs, Bay& b, int model) {
-    CVector at = BaySpawnPoint(rs, b);
-    CVehicle* car = VehicleSpawn::CreateForScript(model, at);
+    CVector at;
+    if (!BaySpawnPoint(rs, b, at)) { Counts().noGround++; return false; }
+    CVehicle* car = VehicleSpawn::Create(model, at, false);
     if (!car) return false;
+    // Did it go where we asked? The traffic found a car of ours 6455 units from the player - the
+    // distance between an imported city and San Andreas - and a car left standing in Los Santos
+    // wearing a donor-paired model reads as "the wrong vehicles are spawning for the zone". These
+    // two modules share a spawner, so they share the check: a car that is not where it was put is
+    // removed at once and says so.
+    CVector landed = car->GetPosition();
+    float slipX = landed.x - at.x, slipY = landed.y - at.y;
+    float slip = sqrtf(slipX * slipX + slipY * slipY);
+    if (slip > kMaxCreationSlip) {
+        Log::Write("parked cars: asked for a car at (%.1f, %.1f, %.1f) and got one at (%.1f, %.1f, "
+                   "%.1f), %.0f units away. Refusing it", at.x, at.y, at.z,
+                   landed.x, landed.y, landed.z, slip);
+        VehicleSpawn::Remove(car);
+        Counts().wentElsewhere++;
+        return false;
+    }
     // Through the game's own setter, which moves the car between the counters San Andreas budgets
     // against; the constructor has already counted it once as a mission car. PERMANENT is the one
     // counter nothing reads - see VehicleSpawn.cpp, and read it before changing this.
@@ -378,16 +420,6 @@ bool CreateParkedCar(RegionState& rs, Bay& b, int model) {
 // docs/save-compatibility.md: our state does not go in San Andreas' blocks, and until there is a
 // sidecar to put it in, a session's memory is what there is. A new game or a load starts every
 // bay full, which is what a new game should look like.
-// Where a tick's attempts to fill a bay went. Same reason as the traffic's: "0 parked at its
-// kerbs" is a count, and a count cannot say whether every bay was out of range, or remembered as
-// emptied, or in shot, or had no model in memory, or CreateCarForScript refused.
-struct Tally {
-    int ticks, notReady, waiting, atBudget, poolFull;
-    int outOfRange, notArmed, taken, inShot, noModel, madeNothing, placed;
-    int lost, released;
-    unsigned nextReport;
-};
-Tally& Counts() { static Tally t{}; return t; }
 
 void RememberEmptied(Bay& b) {
     b.taken = true;
@@ -504,10 +536,11 @@ void ReportTally() {
     if (!t.ticks) return;
     Log::Write("parked/sec: %d tick(s) -> %d not ready, %d waiting for the spawn interval, %d at "
                "budget, %d pool full; bays %d out of range, %d remembered as emptied, %d in shot, "
-               "%d no model in memory, %d CreateCarForScript said no, %d placed; %d vanished, "
-               "%d released to the player",
+               "%d no model in memory, %d no ground under the bay, %d CreateCarForScript said no, "
+               "%d placed; %d vanished, %d released to the player, %d refused for landing "
+               "somewhere else",
                t.ticks, t.notReady, t.waiting, t.atBudget, t.poolFull, t.outOfRange, t.notArmed,
-               t.inShot, t.noModel, t.madeNothing, t.placed, t.lost, t.released);
+               t.inShot, t.noModel, t.noGround, t.madeNothing, t.placed, t.lost, t.released, t.wentElsewhere);
     Tally fresh{};
     fresh.nextReport = t.nextReport;
     t = fresh;
@@ -541,9 +574,10 @@ void FillBays(RegionState& rs, const CVector& player) {
         }
         int model = ChooseModel(rs, b);
         if (model < 0) { t.noModel++; return; }   // nothing of ours in memory yet; try next tick
-        if (CreateParkedCar(rs, b, model)) { t.placed++; return; }   // one a tick, like the rest
-        t.madeNothing++;
-        return;
+        // CreateParkedCar counts its own failures, for the reason written in the traffic's
+        // SpawnSome: inferring which one from a bool added two different ones together.
+        if (CreateParkedCar(rs, b, model)) t.placed++;
+        return;   // one a tick, like everything else here
     }
 }
 
@@ -551,7 +585,7 @@ void FillBays(RegionState& rs, const CVector& player) {
 
 namespace RegionParkedCars {
 
-void Tick(const CVector& playerPosition) {
+void Tick(const CVector& playerPosition, bool playerHasGround) {
     if (!Settings::world.regionParkedCars) return;
     const float margin = Settings::world.regionParkedCarsRadius * kCullMargin;
     for (RegionState& rs : Regions()) {
@@ -561,7 +595,8 @@ void Tick(const CVector& playerPosition) {
         // street, and ManageBays is what does that - which is why this is not inside the "one
         // region under the player" loop the pedestrians and the traffic ride in.
         ManageBays(rs, playerPosition, over);
-        if (over) FillBays(rs, playerPosition);
+        // Bays are still emptied when the player is under the world; they are just not filled.
+        if (over && playerHasGround) FillBays(rs, playerPosition);
     }
     ReportTally();
 }
@@ -637,6 +672,60 @@ void Install() {
         Log::Write("parked cars: ... but they are driven from the region pedestrian tick, and that "
                    "is not running (%s), so no car will actually be placed",
                    Settings::world.regionPeds ? "no region has a PedNodes graph" : "RegionPeds=0");
+}
+
+// ------------------------------------------------------------------ the debug overlay
+//
+// A bay is a point and a heading, so it draws as an arrow: tail at the bay, tip the way the source
+// game's script pointed the car. Two heights are drawn, not one - the height the file claims and
+// the height Ground::Under actually finds - because the difference between them is where every
+// parked car in this project has ever gone wrong, and a bay whose line is a metre long is telling
+// you the .dat and the collision disagree by a metre.
+constexpr unsigned kBayArmed   = 0x40A0FFFFu;   // armed and empty: a car could stand here
+constexpr unsigned kBayFilled  = 0x40FF80FFu;   // one is standing here now
+constexpr unsigned kBayIdle    = 0x8080806Fu;   // emptied by the player, or waiting to re-arm
+constexpr unsigned kBayDrop    = 0xFFC000FFu;   // claimed height -> probed ground
+constexpr unsigned kBayNoFloor = 0xFF0000FFu;   // nothing under it: no car will ever be placed
+
+// Every bay drawn costs a vertical line cast through the world, because the honest answer to
+// "where would the car go" is BaySpawnPoint's and no other. So this culls harder than the graphs
+// do and stops outright at a fixed count: a hundred raycasts a frame is not a debug view, it is a
+// stall. Vice City has 148 bays in the whole city, so 80 units reaches five or ten of them.
+constexpr float kBayRadius = 80.0f;
+constexpr int kMaxBayProbes = 40;
+
+void DrawBays(const CVector& eye, float radius) {
+    const float r = radius < kBayRadius ? radius : kBayRadius;
+    const float r2 = r * r;
+    int probes = 0;
+    for (const RegionState& rs : Regions()) {
+        for (const Bay& b : rs.bays) {
+            if (!PathDraw::Budget() || probes >= kMaxBayProbes) return;
+            const CVector at = BayWorld(rs, b);
+            const float dx = at.x - eye.x, dy = at.y - eye.y;
+            if (dx * dx + dy * dy > r2) continue;
+            probes++;
+
+            // Where a car would actually be made, which is not the height on the line: a bay
+            // carrying the -100 sentinel has no claimed height at all.
+            CVector standsAt;
+            if (!BaySpawnPoint(rs, b, standsAt)) {
+                // The probe found nothing. Draw the spike from the height the probe STARTED at -
+                // the same fallback BaySpawnPoint uses - so the picture says where it looked.
+                const float from = b.z <= kGroundZ ? rs.region->originZ : b.z + rs.region->originZ;
+                PathDraw::Line(CVector(at.x, at.y, from + 2.0f),
+                               CVector(at.x, at.y, from - 6.0f), kBayNoFloor);
+                continue;
+            }
+
+            const unsigned c = b.ref >= 0 ? kBayFilled : (BayIsArmed(b) ? kBayArmed : kBayIdle);
+            PathDraw::Arrow(standsAt, b.heading, 3.5f, c);
+            // The disagreement between the file and the collision, drawn as itself. A sentinel bay
+            // has no claimed height, so there is nothing to compare and nothing is drawn.
+            if (b.z > kGroundZ && fabsf(at.z - standsAt.z) > 0.25f)
+                PathDraw::Line(at, standsAt, kBayDrop);
+        }
+    }
 }
 
 }   // namespace RegionParkedCars
