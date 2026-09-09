@@ -89,9 +89,40 @@ constexpr float kMinSpawnDistance = 40.0f;
 constexpr float kCullMargin = 1.75f;
 constexpr int kSpawnsPerTick = 1;
 constexpr unsigned kSpawnIntervalMs = 400;
-// How near the destination counts as arrived, and therefore when the next leg is handed out. Wider
-// than a lane so a car that clipped a kerb still counts as having got there.
-constexpr float kArrivedDistance = 8.0f;
+// How near the destination counts as arrived, and therefore when the next leg is handed out.
+//
+// THIS MUST NOT BE A CONSTANT, and eight was the wrong constant. The donor cities do not agree
+// about how finely they cut their roads up, measured over both graphs:
+//
+//                  5%     25%    median   75%    95%   links shorter than 8
+//   Vice City      1.9    6.2    10.6     18.4   36.9        36.5%
+//   Liberty City   3.9   10.0    12.6     25.0   28.3        19.2%
+//
+// So a flat eight units is 0.76 of a typical Vice City link and 0.63 of a Liberty City one, and
+// more than a third of Vice City's links are shorter than it outright. A car was therefore called
+// "arrived" at a node it had not reached, handed the next leg, and left aiming one or two nodes
+// ahead of itself - which tracks the SHAPE of the route while running wide of the road it is on.
+// That is what the player reported, and it is why they also reported Liberty City's cars looking
+// more accurate: twice as much early advancing in Vice City as in Liberty City.
+//
+// The threshold is now a fraction of the leg actually being driven, floored so a car cannot chase
+// a node it can never be precise enough to reach, and capped at the old eight so a long straight
+// still hands over early enough to turn. A fixed number that happened to suit one city is how this
+// arrived.
+constexpr float kArrivedDistance = 8.0f;      // the cap, and what it used to be unconditionally
+constexpr float kArrivedFraction = 0.35f;     // of the leg being driven
+constexpr float kArrivedFloor = 2.5f;         // about half a car length
+
+// And the other half of the same problem: a leg worth driving.
+//
+// Five per cent of Vice City's links are under 1.9 units - shorter than the car. Handing one of
+// those out as a destination means arriving on the frame it is set, every frame, so the car
+// advances through a chain of them without ever steering at anything. When a leg is too short to
+// aim at, the next node is taken instead, up to a few hops, until the target is far enough away to
+// be worth steering for. No node is skipped in the sense that matters: they are all still on the
+// path between, and a straight line across twelve units of road stays inside a lane.
+constexpr float kMinLegLength = 12.0f;
+constexpr int kMaxLegHops = 6;
 // A car this far from the road it is supposed to be on has lost its way - shunted by the player,
 // most likely - and is given back to the game rather than dragged to a node it can no longer reach.
 constexpr float kStrayDistance = 45.0f;
@@ -649,6 +680,17 @@ void LetGo(const Driver& d, const CVector& player) {
         VehicleSpawn::HandBackToTheGame(car);
 }
 
+// How near this particular leg's end counts as arriving at it. See kArrivedDistance for why this
+// is a function of the leg rather than a number.
+float ArriveRadius(const RegionState& rs, const Driver& d) {
+    CVector a = NodeWorld(rs, d.from), b = NodeWorld(rs, d.to);
+    float dx = b.x - a.x, dy = b.y - a.y;
+    float leg = sqrtf(dx * dx + dy * dy) * kArrivedFraction;
+    if (leg < kArrivedFloor) leg = kArrivedFloor;
+    if (leg > kArrivedDistance) leg = kArrivedDistance;
+    return leg;
+}
+
 // TAKING ONE AWAY is VehicleSpawn::Remove, and only for a car far enough off that nobody is
 // looking. That one is still ours at the moment it goes, so nothing has to be handed back.
 void ManageDrivers(RegionState& rs, const CVector& player) {
@@ -698,14 +740,25 @@ void ManageDrivers(RegionState& rs, const CVector& player) {
             Counts().gaveBack++;
             continue;
         }
-        if (toGoal < kArrivedDistance * kArrivedDistance) {
-            // Counted, not changed. The median link in Vice City is 10.6 units long and a quarter
-            // of them are shorter than 6.2 - both inside kArrivedDistance, which is 8 - so a car
-            // may be "arrived" at a node it has not reached and skip on to the next. If that is
-            // happening this number is far larger than one advance per car per link.
+        float arrive = ArriveRadius(rs, d);
+        if (toGoal < arrive * arrive) {
             Counts().advanced++;
+            // Walk on until the next leg is worth steering at, rather than handing over whatever
+            // node happens to be next - which in Vice City is under two units away one time in
+            // twenty. `anchor` is where the car actually is, so the test is against the distance
+            // it will have to drive, not against the length of one link in a chain of short ones.
+            int from = d.to;
             int next = NextNode(rs, d.from, d.to);
-            d.from = d.to;
+            for (int hop = 0; hop < kMaxLegHops; hop++) {
+                CVector target = NodeWorld(rs, next);
+                float lx = target.x - p.x, ly = target.y - p.y;
+                if (lx * lx + ly * ly >= kMinLegLength * kMinLegLength) break;
+                int after = NextNode(rs, from, next);
+                if (after == next || after == from) break;   // a dead end, or straight back
+                from = next;
+                next = after;
+            }
+            d.from = from;
             d.to = next;
             if (d.lane >= rs.nodes[d.to].lanes) d.lane = rs.nodes[d.to].lanes - 1;
             SetDestination(car, rs, d);

@@ -144,7 +144,30 @@ static void OnFrame() {
     // the only one and the fault is elsewhere. Press F8 standing where the peds come out wrong.
     char surfaces[256] = {};
     Ground::Describe(pos.x, pos.y, pos.z + 300.0f, surfaces, sizeof(surfaces));
-    Log::Write("    ground under the player: %s (the player's own z is %.2f)", surfaces, pos.z);
+    // Whether this reading is worth anything, said on the reading itself.
+    //
+    // Three F8 samples in one evening were taken from a jetpack, from under the map, and from the
+    // air beside a terminal roof, and each was reasoned from as though the player had been standing
+    // in a street. One of them cost a whole false theory about the graph being scaled. A
+    // measurement should carry its own validity rather than depend on somebody remembering where
+    // they were, so the line now says.
+    float floorZ = 0.0f;
+    const char* standing = "UNDER THE WORLD - no floor beneath the player, so nothing on this line "
+                           "describes anywhere a person could be";
+    char airborne[96] = {};
+    if (Ground::Standing(pos.x, pos.y, pos.z, floorZ)) {
+        float above = pos.z - floorZ;
+        if (above <= 2.5f) {
+            standing = "on the ground";
+        } else {
+            snprintf(airborne, sizeof(airborne),
+                     "AIRBORNE, %.1f units above the floor beneath - not a reading from a street",
+                     above);
+            standing = airborne;
+        }
+    }
+    Log::Write("    ground under the player: %s (the player's own z is %.2f) - %s",
+               surfaces, pos.z, standing);
     // Stand on a road and press F8, near the region's origin and again at the far edge of the
     // city. A graph that is a scaled copy of the map is a few units out near the origin and tens
     // of units out at the edge, and no amount of watching the cars can show it - they follow their

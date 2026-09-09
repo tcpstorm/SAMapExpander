@@ -30,6 +30,10 @@ int Surfaces(float x, float y, float fromZ, float* out, int max);
 // The same, formatted for a log line: "3 surface(s) from 210.0 down: 12.4, 3.9, -18.2".
 void Describe(float x, float y, float fromZ, char* out, unsigned size);
 
+// The surface this point is standing ON - the highest one at or just above its own height, rather
+// than the highest one anywhere. False when there is nothing beneath it at all.
+bool Standing(float x, float y, float z, float& outZ);
+
 // Is this point below EVERY surface at its own x and y - that is, under the world rather than
 // under something? True for a player who has fallen through the map, or is flying under it, and
 // false for one standing in a tunnel, under a bridge or inside a building, because those still
