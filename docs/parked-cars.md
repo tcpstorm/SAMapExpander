@@ -331,6 +331,44 @@ ordinary C++ static initialisers in one DLL whose relative order nothing fixes (
 walk runs backwards through the link order, which puts a static library's initialisers first).
 `ModelLimits::Install` now assigns both pointers itself and the log says which way round it fell.
 
+### 7b. `GAME_REQUIRED` is not "ask nicely" — it is "keep this for ever"
+
+`CStreaming::RequestModel(id, GAME_REQUIRED)` is what San Andreas asks its own zone peds with, and
+it reads like a polite request that the streamer may refuse or undo. It is neither.
+
+- `CStreaming::RemoveLeastUsedModel` (0x40CFD0) walks the loaded list and at **0x40D029** does
+  `test byte ptr [edi+6], bl` against the caller's don't-remove mask, skipping any entry whose
+  flags match. `GAME_REQUIRED` (0x02) is in that mask.
+- Worse than skipped: such a model is **not on that list at all**. Look at what
+  `CStreaming::SetModelIsDeletable` (0x409C10) does — it clears bit 0x02 at +6 and then, at
+  **0x409C41**, calls `CStreamingInfo::AddToList` to put the entry *back* on the least-recently-used
+  list. Clearing the flag is what makes a model evictable again, and nothing else does.
+- San Andreas clears its own. `CStreaming::RemoveCurrentZonesModels` (0x40B080) is the call it
+  makes when the popcycle zone changes, and it is why walking from one district to another does not
+  slowly fill the streamer with everybody you have ever walked past.
+
+The pedestrians never made that call, so every ped model any district ever wanted stayed resident
+for the session — Vice City alone names 67 groups over 43 districts. **The cost is not paid by the
+pedestrians.** It is paid by whatever the streamer evicts instead, and what San Andreas evicts and
+reloads most is vehicles: `CStreaming::LoadZoneVehicle` brings in the cars for the player's zone
+and `CStreaming::RemoveLoadedVehicle` takes the old ones out. Starve that rotation and
+`CCarCtrl::ChooseModel` → `CLoadedCarGroup::PickLeastUsedModel` hands the zone whatever survived.
+
+**That is a Feltzer in Jefferson, caused by a pedestrian in Vice City, with not one vehicle of ours
+ever created.** It was confirmed the blunt way: with `RegionPeds`, `RegionTraffic`,
+`RegionParkedCars` and `RegionPolice` all set to 0 — same build, same game folder, same other mods
+— Los Santos is clean.
+
+`src/peds/StreamedModels.cpp` is the rule now, and it is one sentence: **borrow, do not keep.** Ask
+with `GAME_REQUIRED` because that is what gets a model loaded promptly, then hand it straight back
+with `SetModelIsDeletable` the moment it has loaded. From that point it is protected exactly the way
+San Andreas' own are — by the peds standing in it, since `RemoveLeastUsedModel` checks
+`CBaseModelInfo::m_nRefCount` at +8 (0x40D064) and will not touch a model with an instance in the
+world. Anything still outstanding goes back when the player leaves every region.
+
+**Nothing else in this project may call `CStreaming::RequestModel` and walk away.** F8 reports how
+many models are outstanding, and the answer should be a small number that keeps returning to zero.
+
 ### 8. A car of ours that is forgotten rather than handed back reaches Los Santos
 
 `docs/traffic-and-population.md` §1 explains why our vehicles are `PERMANENT`, and the section
@@ -479,6 +517,21 @@ traffic and no parked cars in it at all.
   the player is not standing in any zone, all four popcycle floats are zero, and the old line said
   "up to 0 car(s)" in a game whose traffic was about to work perfectly well. F8 is where the live
   number is.
+- **Then read the three per-second lines**, which is what actually settles it. With `Debug = 1` the
+  pedestrians, the traffic and the parked cars each write one line a second saying where every
+  attempt went — `peds/sec:`, `traffic/sec:`, `parked/sec:`. A population count cannot tell
+  "nobody was made" from "everybody was made and taken away again"; these can, and three rounds of
+  reasoning from counts alone got the wrong answer before they existed. Read them in this order:
+  - **`0 attempt(s)`** — the tick never reached the spawn loop. The same line says which gate
+    stopped it: at budget, waiting for the spawn interval, pool full, no model in memory, no node
+    in range.
+  - **attempts but `0 placed`** — the loop ran and every candidate was rejected. The line breaks
+    that down: too near, in shot, on San Andreas' own ground, crowded, or the game refused to make
+    the vehicle. `CCarCtrl::CreateCarForScript` has no path that returns nothing for a car model,
+    so "said no" there means the model was not what it was taken for.
+  - **`placed` high and `vanished` just as high** — things are being made and lost every tick. That
+    is the worst of the three, because for the traffic it means cars are being left in the world
+    that nothing can remove: see §8.
 
 ### 7. San Andreas' own cars are healthy — the check that matters most
 
