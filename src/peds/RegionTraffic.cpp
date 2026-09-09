@@ -506,7 +506,7 @@ CVehicle* CreateCar(RegionState& rs, int from, int to, int lane, int model) {
     // because SetDestination below overwrites the mission and clears all three node addresses a
     // moment later. It is written down because it looks like a loose end and is not one: doing the
     // placement by hand instead would mean reproducing four calls this already gets right.
-    CVehicle* car = CCarCtrl::CreateCarForScript(model, at, false);
+    CVehicle* car = VehicleSpawn::Create(model, at, false);
     if (!car) return nullptr;
     // Did it go where we asked?
     //

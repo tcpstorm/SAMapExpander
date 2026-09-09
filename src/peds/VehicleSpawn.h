@@ -11,6 +11,12 @@ namespace VehicleSpawn {
 // mod owns them and nothing of ours should create a vehicle at all.
 bool Ready();
 
+// Make a vehicle at a point, the way the game's own script does - and NOT through plugin-sdk's
+// CCarCtrl::CreateCarForScript, which takes its CVector by value and therefore never delivers it.
+// VehicleSpawn.cpp has the whole story; it is the same trap Teleport.cpp documents, and it is the
+// reason an imported city had no traffic and no parked cars for as long as it has had either.
+CVehicle* Create(int model, const CVector& at, bool missionCleanup);
+
 // Is this model actually in memory? There is no CStreaming::HasModelLoaded to call in 1.0 US.
 bool ModelIsLoaded(int model);
 
