@@ -399,6 +399,40 @@ Every exit now goes through one of two calls and there is no third: hand it back
 Taking it away is preferred when the player cannot see it, because handing a dozen cars back at once
 puts a dozen entries on `NumRandomCars`, which `GenerateRandomCars` stops at 45.
 
+### 9. There are two "find the ground" routines and they answer different questions
+
+This one decides whether an imported city has anybody in it, so it is worth stating flatly.
+
+| | searches | can it recover from a wrong z? |
+|---|---|---|
+| `CPedPlacement::FindZCoorForPed` (0x616920) | from `z + 0.5` down to `z − 100` — the two floats are at 0x858B8C and 0x858628 | **no.** It is a band around the height you already believe |
+| `CWorld::FindGroundZForCoord` (0x569660) | from **z = 1000** straight down — it plants `0x447A0000` at `[esp+0x34]` and calls `CWorld::ProcessVerticalLine` | **yes.** It never reads the z you hand it |
+
+The pedestrians used the first on its own. Hand it a point twenty units under the road and it
+cannot find the road: it looks half a metre up and a hundred down, finds whatever is beneath, and
+leaves the ped buried. A buried ped still walks, still talks and still counts — which is why F8 read
+`16 walking` while the player could hear a crowd and see nobody.
+
+Measured, in an imported Vice City with the player standing on an ordinary street: the nearest ped
+and car nodes were **about twenty units below their feet**, twice, at two unrelated places. The
+region's own files are not the problem — sampling every ped node and every car node against the IPL
+props standing within fifteen units of them puts the median disagreement at **1.3 units**, with half
+of all samples inside two. The graph and the map agree with each other; something at load time does
+not agree with either, and until that is found the spawners must not trust a stored height.
+
+So none of them do any more:
+
+- **Pedestrians** ask `CWorld::FindGroundZForCoord` first and use its answer to seed
+  `FindZCoorForPed`, which then places the ped properly against that surface. Where the graph is
+  right the two agree within the slack and nothing changes; with `Debug = 1` the first ten
+  corrections are logged with both heights, so the next run measures the fault rather than hiding it.
+- **Traffic and parked cars** hand `CCarCtrl::CreateCarForScript` the **−100 sentinel** instead of a
+  height. The comparison is at 0x432117 on the car path (`fcomp` against the −100.0 at 0x859014,
+  taken for `z <= -100`), and the game then calls `CWorld::FindGroundZForCoord` itself and adds the
+  model's own centre-to-base distance. This is San Andreas' own mechanism for "put it on the ground
+  here", already used by its 500 car generators, and it is now used for every car of ours rather
+  than only for the 3 bays in 320 whose script line happened to say −100.
+
 ### And the handle is not the whole record
 
 A `CPools` handle is `(slot << 8) | the slot's re-use byte`, and `CPools::GetVehicle` (0x54FFF0)

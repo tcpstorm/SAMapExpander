@@ -524,12 +524,45 @@ int SafePedType(int pedType) {
 // instead, keeping back the same eight slots the game's own RemovePedsIfThePoolGetsFull works to.
 constexpr int kPedPoolReserve = 8;
 
-// The ground under a node. The donor wrote its node heights for its own collision, and this map's
-// collision is the donor's carried across, so they usually agree - but a node on a bridge deck the
-// converter placed a little differently would leave somebody hanging in the air or buried, and the
-// game has a function for exactly this question.
+// The ground under a node, and WHICH question you ask matters.
+//
+// CPedPlacement::FindZCoorForPed (0x616920) is the ped-shaped one and it is what this used to
+// call on its own. Read what it actually searches: it takes the z you hand it, adds the float at
+// 0x858B8C - which is 0.5 - for the top of the line, subtracts the float at 0x858628 - which is
+// 100 - for the bottom, and casts a vertical line between them. So it will find a surface a
+// hundred units BELOW the height you gave it and half a metre above, and nothing else. Hand it a
+// point that is under the road and it cannot find the road; it finds whatever is under that, or
+// nothing.
+//
+// CWorld::FindGroundZForCoord (0x569660) asks the other question. It ignores z entirely and casts
+// from 1000 straight down (the 0x447A0000 it plants at [esp+0x34] before calling
+// CWorld::ProcessVerticalLine), so it answers "what is the highest ground at this x and y" and
+// cannot be wrong about a datum it never reads. It is the same routine
+// CCarCtrl::CreateCarForScript uses when it is handed the -100 sentinel.
+//
+// So: ask the whole-column question first, and use its answer to seed the ped-shaped one, which
+// then places the ped properly relative to that surface. Where the graph is right the two agree
+// and nothing changes. Where the graph is 20 units under the street - which is what an imported
+// city measured on the ground, with the player standing on an ordinary road and the nearest node
+// twenty units below their feet - this is the difference between a crowd and a rumour.
+constexpr float kDatumSlack = 2.0f;
+int gDatumReports = 0;
+
 CVector SettleOnGround(const CVector& at) {
     CVector out = at;
+    float ground = CWorld::FindGroundZForCoord(out.x, out.y);
+    if (ground > -200.0f && ground < 2000.0f && fabsf(ground - out.z) > kDatumSlack) {
+        // Worth saying out loud the first few times: a graph that disagrees with the collision
+        // under it by more than a couple of units is a fact about the region's data, and the
+        // numbers are what somebody would need to fix the import rather than paper over it here.
+        if (Settings::world.debug && gDatumReports < 10) {
+            gDatumReports++;
+            Log::Write("peds: node at (%.1f, %.1f) says z %.1f, the collision there is at %.1f "
+                       "(%.1f units out); standing them on the collision",
+                       out.x, out.y, out.z, ground, ground - out.z);
+        }
+        out.z = ground;
+    }
     float z = CPedPlacement::FindZCoorForPed(&out);
     if (z > -200.0f && z < 2000.0f) out.z = z;
     return out;

@@ -445,8 +445,20 @@ void SetDestination(CVehicle* car, const RegionState& rs, const Driver& d) {
 // called rather than patched - but checked the same way anything else here is checked, because
 // calling the wrong address is worse than not calling it. VehicleSpawn::Ready() is that check,
 // shared with the parked cars, which call the same two.
+// The height a car is created at is NOT the height the graph claims.
+//
+// CCarCtrl::CreateCarForScript compares the z it is given against the float at 0x859014, which is
+// -100.0 exactly (the test is at 0x432117 on the car path), and where they match it goes and asks
+// CWorld::FindGroundZForCoord itself. That routine ignores z and casts from 1000 straight down, so
+// it answers "what is the ground at this x and y" and cannot be wrong about a datum it never
+// reads. The parked cars have always used this; the traffic handed over the node's own z instead,
+// which puts a car wherever a twenty-year-old file says the road was rather than where the road
+// actually is. A car under the road is a car nobody sees.
+constexpr float kGroundZ = -100.0f;
+
 CVehicle* CreateCar(RegionState& rs, int from, int to, int lane, int model) {
     CVector at = LanePoint(rs, from, to, lane);
+    at.z = kGroundZ;
     // CreateCarForScript does the whole placement properly - ground height, clearing space, adding
     // to the world - and one thing that is wrong for us: at 0x43206C it calls
     // CCarCtrl::JoinCarWithRoadSystem, the PATH-BASED join, which will attach the car to whichever

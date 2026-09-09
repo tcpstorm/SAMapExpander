@@ -318,8 +318,21 @@ CVector BayWorld(const RegionState& rs, const Bay& b) {
     return CVector(b.x + rs.region->originX, b.y + rs.region->originY, z);
 }
 
+// Where a car is actually MADE, which is not the same question as where the bay is.
+//
+// Every bay goes in on the sentinel, not on the height its line claims, because
+// CCarCtrl::CreateCarForScript compares z against the float at 0x859014 (-100.0, tested at
+// 0x432117) and where they match goes and asks CWorld::FindGroundZForCoord - which ignores z and
+// casts from 1000 straight down, so it cannot be wrong about a datum it never reads. 317 of the
+// 320 mined bays across both cities carry a real height rather than the sentinel, and a real
+// height is only as good as the agreement between the donor's script and the collision that
+// actually got imported. The ground that is there wins.
+CVector BaySpawnPoint(const RegionState& rs, const Bay& b) {
+    return CVector(b.x + rs.region->originX, b.y + rs.region->originY, kGroundZ);
+}
+
 bool CreateParkedCar(RegionState& rs, Bay& b, int model) {
-    CVector at = BayWorld(rs, b);
+    CVector at = BaySpawnPoint(rs, b);
     CVehicle* car = CCarCtrl::CreateCarForScript(model, at, false);
     if (!car) return false;
     // Through the game's own setter, which moves the car between the counters San Andreas budgets
