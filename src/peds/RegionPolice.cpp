@@ -47,6 +47,7 @@
 #include <vector>
 #include "RegionPolice.h"
 #include "ModelLimits.h"
+#include "StreamedModels.h"
 #include "RegionPeds.h"
 #include "Settings.h"
 #include "Log.h"
@@ -179,8 +180,9 @@ void Tick(const CVector& playerPosition) {
     if (!ModelLimits::ModelIsLoaded(model)) {
         // The cop model for wherever the region has been placed. Ask and come back: the streamer
         // has it in a moment and a chase that starts a second late is better than one that does
-        // not start.
-        CStreaming::RequestModel(model, GAME_REQUIRED);
+        // not start. Through StreamedModels, which gives it back once it has loaded rather than
+        // holding it out of the game's rotation for the session - see StreamedModels.cpp.
+        StreamedModels::Want(model);
         return;
     }
     CVector at;

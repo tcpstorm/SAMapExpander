@@ -18,6 +18,7 @@
 #include "RegionPolice.h"
 #include "RegionTraffic.h"
 #include "RegionParkedCars.h"
+#include "StreamedModels.h"
 #include "WeaponTypes.h"
 #include "RegionWeapons.h"
 #include "Interiors.h"
@@ -143,8 +144,9 @@ static void OnFrame() {
     int loaded = RegionTraffic::LoadedModelCount(&placeholders);
     Log::Write("    population budgets: traffic %d car(s) from the zone's popcycle row, %d of %d "
                "placeholder model(s) in memory; parked cars %d at once, %d bay(s) armed and in "
-               "range", RegionTraffic::Budget(), loaded, placeholders,
-               RegionParkedCars::Budget(), RegionParkedCars::ArmedNear(pos));
+               "range; %d model(s) still asked for and not yet handed back",
+               RegionTraffic::Budget(), loaded, placeholders,
+               RegionParkedCars::Budget(), RegionParkedCars::ArmedNear(pos), StreamedModels::Held());
 }
 
 static void __cdecl Hooked_TimerUpdate() {

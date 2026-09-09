@@ -62,6 +62,7 @@
 #include <vector>
 #include "RegionPeds.h"
 #include "ModelLimits.h"
+#include "StreamedModels.h"
 #include "RegionPolice.h"
 #include "RegionTraffic.h"
 #include "RegionParkedCars.h"
@@ -375,10 +376,12 @@ int ChooseModel(RegionState& rs, int node) {
             return id;
         }
     }
-    // Nobody from this district is in memory. Ask for one and come back later. GAME_REQUIRED is
-    // what San Andreas itself asks ped models with, so the streamer treats them the same way and
-    // is free to throw them out again when the player walks away.
-    if (firstWanted >= 0) CStreaming::RequestModel(firstWanted, GAME_REQUIRED);
+    // Nobody from this district is in memory. Ask for one and come back later - through
+    // StreamedModels, which hands it back to the streamer the moment it has loaded. Asking with
+    // GAME_REQUIRED and leaving it at that is what this used to do, and it kept every model any
+    // district ever wanted resident for the session: read the top of StreamedModels.cpp before
+    // changing this back.
+    StreamedModels::Want(firstWanted);
     return -1;
 }
 
@@ -476,19 +479,22 @@ constexpr float kReanchorDistance = 30.0f;
 // Is this point somewhere a person could be put without appearing out of nothing in front of the
 // player? Close by, only out of shot; further away, anywhere.
 bool GoodSpawnPoint(const RegionState& rs, const CVector& world, const CVector& player,
-                    bool avoidCamera) {
+                    bool avoidCamera, int* why = nullptr) {
     float dx = world.x - player.x, dy = world.y - player.y, dz = world.z - player.z;
     float dist = sqrtf(dx * dx + dy * dy + dz * dz);
-    if (dist < kMinSpawnDistance) return false;
+    if (dist < kMinSpawnDistance) { if (why) *why = 1; return false; }
     // Never where the player is looking. This is why a crowd fills in behind you rather than
     // appearing in front, which is what San Andreas does and what makes it not look like a mod.
-    if (avoidCamera && TheCamera.IsSphereVisible(world, 1.5f)) return false;
+    if (avoidCamera && TheCamera.IsSphereVisible(world, 1.5f)) { if (why) *why = 2; return false; }
     for (const Walker& w : rs.walkers) {
         CPed* other = CPools::GetPed(w.ref);
         if (!other) continue;
         CVector p = other->GetPosition();
         float ox = p.x - world.x, oy = p.y - world.y, oz = p.z - world.z;
-        if (ox * ox + oy * oy + oz * oz < kMinPedSeparation * kMinPedSeparation) return false;
+        if (ox * ox + oy * oy + oz * oz < kMinPedSeparation * kMinPedSeparation) {
+            if (why) *why = 3;
+            return false;
+        }
     }
     return true;
 }
@@ -556,6 +562,19 @@ int LivePedBudget() {
     return want;
 }
 
+// Where a tick's spawn attempts went, summed over a second.
+//
+// This exists because "16 walking and none of them visible" and "nothing spawns at all" are the
+// same line in the log - a count - and a count cannot say whether nobody was made, or everybody
+// was made and taken away again, or the same two people were made and taken away sixty times a
+// second. Three rounds of reasoning from counts got the wrong answer; this says which it is.
+struct Tally {
+    int ticks, attempts, tooNear, inShot, crowded, noModel, poolFull, madeNothing, placed;
+    int lost, culled, kept;
+    unsigned nextReport;
+};
+Tally& Counts() { static Tally t{}; return t; }
+
 // Forget the ones the game has taken away, keep the rest walking, and take back any that have
 // strayed further than this module looks after.
 void ManageWalkers(RegionState& rs, const CVector& player) {
@@ -564,13 +583,18 @@ void ManageWalkers(RegionState& rs, const CVector& player) {
     for (size_t i = 0; i < rs.walkers.size(); i++) {
         Walker& w = rs.walkers[i];
         CPed* ped = CPools::GetPed(w.ref);
-        if (!ped) continue;                       // the game removed them; the slot may be reused
+        // The game removed them, or the pool slot was re-used under the handle. Which of the two
+        // it is cannot be told from here, but how OFTEN it happens is the whole question when a
+        // crowd is being made and unmade sixty times a second, so it is counted.
+        if (!ped) { Counts().lost++; continue; }
         CVector p = ped->GetPosition();
         float dx = p.x - player.x, dy = p.y - player.y;
         if (dx * dx + dy * dy > cull * cull && !TheCamera.IsSphereVisible(p, 1.5f)) {
             CPopulation::RemovePed(ped);
+            Counts().culled++;
             continue;
         }
+        Counts().kept++;
         // A ped with nothing in the default slot has finished their leg - or has just come out of
         // an event that cleared it - so send them on to a neighbouring node.
         if (gCanWalk && ped->IsAlive() && ped->m_pIntelligence &&
@@ -590,19 +614,44 @@ void ManageWalkers(RegionState& rs, const CVector& player) {
     rs.walkers.resize(write);
 }
 
+void ReportTally() {
+    Tally& t = Counts();
+    if (!Settings::world.debug) return;
+    if (CTimer::m_snTimeInMilliseconds < t.nextReport) return;
+    t.nextReport = CTimer::m_snTimeInMilliseconds + 1000;
+    if (!t.ticks) return;
+    Log::Write("peds/sec: %d tick(s), %d attempt(s) -> %d too near, %d in shot, %d on top of "
+               "somebody, %d no model in memory, %d pool full, %d AddPed said no, %d placed; "
+               "%d kept, %d vanished, %d taken back; %d model(s) still asked for",
+               t.ticks, t.attempts, t.tooNear, t.inShot, t.crowded, t.noModel, t.poolFull,
+               t.madeNothing, t.placed, t.kept, t.lost, t.culled, StreamedModels::Held());
+    Tally fresh{};
+    fresh.nextReport = t.nextReport;
+    t = fresh;
+}
+
 void SpawnSome(RegionState& rs, const CVector& player, int wanted) {
+    Tally& t = Counts();
+    t.ticks++;
     std::vector<int> candidates;
     NodesNear(rs, player, Settings::world.regionPedRadius, candidates);
     if (candidates.empty()) return;
     int placed = 0;
     for (int attempt = 0; attempt < 24 && placed < kSpawnsPerFrame &&
                           (int)rs.walkers.size() < wanted; attempt++) {
+        t.attempts++;
         int node = candidates[rand() % candidates.size()];
         CVector world = NodeWorld(rs, node);
-        if (!GoodSpawnPoint(rs, world, player, true)) continue;
+        int why = 0;
+        if (!GoodSpawnPoint(rs, world, player, true, &why)) {
+            if (why == 1) t.tooNear++; else if (why == 2) t.inShot++; else t.crowded++;
+            continue;
+        }
+        if (!RegionPeds::SafeToAddPed()) { t.poolFull++; return; }
         int model = ChooseModel(rs, node);
-        if (model < 0) return;        // nothing of this district in memory yet; try next frame
-        if (CreateWalker(rs, node, model, true)) placed++;
+        if (model < 0) { t.noModel++; return; }   // nothing of this district in memory yet
+        if (CreateWalker(rs, node, model, true)) { placed++; t.placed++; }
+        else t.madeNothing++;
     }
 }
 
@@ -620,29 +669,49 @@ void __cdecl UpdateHook(bool generatePeds) {
         RegionPolice::Forget();
         RegionTraffic::Forget();
         RegionParkedCars::Forget();
+        StreamedModels::ReleaseAll();
         return;
     }
+    // Hand back anything the streamer has finished fetching for us, every frame. This is what
+    // stops a district's ped models being held out of San Andreas' own rotation for the rest of
+    // the session, which is what was starving its vehicle streaming hundreds of units away - the
+    // whole story is at the top of StreamedModels.cpp.
+    StreamedModels::Tick();
     CVector at = player->GetPosition();
     // The parked cars are driven from outside the loop below, and deliberately. That loop stops at
     // the first region the player is standing over and does nothing at all when they are over
     // none - which is exactly when a car standing at a Vice City kerb needs taking away, because
     // the player has just driven out of Vice City.
     RegionParkedCars::Tick(at);
+    // The traffic is ticked from out here too, and for the same reason the parked cars are: it
+    // owns vehicles that have to be handed back when the player leaves the city, and this loop
+    // does nothing at all when they are over no region. It used to be called from inside the
+    // loop, which meant a car of ours was only ever tidied away while the player was still
+    // standing over a PEDESTRIAN graph - two graphs that do not cover the same ground.
+    RegionTraffic::Tick(at);
+
+    RegionState* here = nullptr;
     for (RegionState& rs : Regions()) {
-        if (!PlayerOver(rs, at, Settings::world.regionPedRadius * kCullMargin)) {
-            // Out of this region altogether: let go of everybody, the game will remove them the
-            // moment they are far enough away and it is not this module's business any more.
-            rs.walkers.clear();
+        if (!here && PlayerOver(rs, at, Settings::world.regionPedRadius * kCullMargin)) {
+            here = &rs;
             continue;
         }
-        ManageWalkers(rs, at);
-        if (generatePeds) SpawnSome(rs, at, LivePedBudget());
-        // The police ride on this graph too, and on nothing else, so they are driven from here
-        // rather than from a hook of their own: one region under the player, one tick.
-        RegionPolice::Tick(at);
-        RegionTraffic::Tick(at);
-        break;
+        // Out of this region altogether: let go of everybody, the game will remove them the
+        // moment they are far enough away and it is not this module's business any more.
+        rs.walkers.clear();
     }
+    if (!here) {
+        // Over no region at all. Nothing of ours is being made, so nothing of ours should be
+        // held: give the streamer back anything we have asked it for.
+        StreamedModels::ReleaseAll();
+        return;
+    }
+    ManageWalkers(*here, at);
+    if (generatePeds) SpawnSome(*here, at, LivePedBudget());
+    ReportTally();
+    // The police ride on this graph too, and on nothing else, so they are driven from here rather
+    // than from a hook of their own: one region under the player, one tick.
+    RegionPolice::Tick(at);
 }
 
 RegionState* RegionUnder(const CVector& at) {

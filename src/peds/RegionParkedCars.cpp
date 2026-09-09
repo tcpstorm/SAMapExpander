@@ -365,6 +365,17 @@ bool CreateParkedCar(RegionState& rs, Bay& b, int model) {
 // docs/save-compatibility.md: our state does not go in San Andreas' blocks, and until there is a
 // sidecar to put it in, a session's memory is what there is. A new game or a load starts every
 // bay full, which is what a new game should look like.
+// Where a tick's attempts to fill a bay went. Same reason as the traffic's: "0 parked at its
+// kerbs" is a count, and a count cannot say whether every bay was out of range, or remembered as
+// emptied, or in shot, or had no model in memory, or CreateCarForScript refused.
+struct Tally {
+    int ticks, notReady, waiting, atBudget, poolFull;
+    int outOfRange, notArmed, taken, inShot, noModel, madeNothing, placed;
+    int lost, released;
+    unsigned nextReport;
+};
+Tally& Counts() { static Tally t{}; return t; }
+
 void RememberEmptied(Bay& b) {
     b.taken = true;
     unsigned seconds = (unsigned)(Settings::world.regionParkedCarsRespawn > 0.0f
@@ -413,6 +424,7 @@ int LiveCount(const RegionState& rs) {
 // of five, so this is the game's own trade rather than a new one - but it is the thing to look at
 // if San Andreas' traffic ever thins out after a long session of stealing parked cars.
 void Release(Bay& b, CVehicle* car) {
+    Counts().released++;
     VehicleSpawn::HandBackToTheGame(car);
     b.ref = -1;
     b.standing = -1;
@@ -428,6 +440,7 @@ void ManageBays(RegionState& rs, const CVector& player, bool over) {
         // VehicleSpawn::Resolve.
         CVehicle* car = VehicleSpawn::Resolve(b.ref, b.standing);
         if (!car) {
+            Counts().lost++;
             // The car is gone and we did not take it - blown up and burnt out, most likely. The
             // space is empty because something happened to it, so it stays empty for a while, but
             // only if the player was near enough to be the thing that happened.
@@ -470,29 +483,54 @@ void ManageBays(RegionState& rs, const CVector& player, bool over) {
     }
 }
 
+void ReportTally() {
+    Tally& t = Counts();
+    if (!Settings::world.debug) return;
+    if (CTimer::m_snTimeInMilliseconds < t.nextReport) return;
+    t.nextReport = CTimer::m_snTimeInMilliseconds + 1000;
+    if (!t.ticks) return;
+    Log::Write("parked/sec: %d tick(s) -> %d not ready, %d waiting for the spawn interval, %d at "
+               "budget, %d pool full; bays %d out of range, %d remembered as emptied, %d in shot, "
+               "%d no model in memory, %d CreateCarForScript said no, %d placed; %d vanished, "
+               "%d released to the player",
+               t.ticks, t.notReady, t.waiting, t.atBudget, t.poolFull, t.outOfRange, t.notArmed,
+               t.inShot, t.noModel, t.madeNothing, t.placed, t.lost, t.released);
+    Tally fresh{};
+    fresh.nextReport = t.nextReport;
+    t = fresh;
+}
+
 void FillBays(RegionState& rs, const CVector& player) {
-    if (!VehicleSpawn::Ready()) return;
-    if (CTimer::m_snTimeInMilliseconds < gNextSpawn) return;
-    if (LiveCount(rs) >= BayBudget()) return;
-    if (!VehicleSpawn::PoolHasRoom(kVehiclePoolReserve)) return;
+    Tally& t = Counts();
+    t.ticks++;
+    if (!VehicleSpawn::Ready()) { t.notReady++; return; }
+    if (CTimer::m_snTimeInMilliseconds < gNextSpawn) { t.waiting++; return; }
+    if (LiveCount(rs) >= BayBudget()) { t.atBudget++; return; }
+    if (!VehicleSpawn::PoolHasRoom(kVehiclePoolReserve)) { t.poolFull++; return; }
     gNextSpawn = CTimer::m_snTimeInMilliseconds + kSpawnIntervalMs;
 
     const float radius = Settings::world.regionParkedCarsRadius;
     for (Bay& b : rs.bays) {
-        if (b.ref >= 0 || !BayIsArmed(b)) continue;
+        if (b.ref >= 0) continue;
+        if (!BayIsArmed(b)) { t.notArmed++; continue; }
         CVector at = BayWorld(rs, b);
         float dx = at.x - player.x, dy = at.y - player.y;
         float d2 = dx * dx + dy * dy;
-        if (d2 > radius * radius) continue;
+        if (d2 > radius * radius) { t.outOfRange++; continue; }
         // Not in shot, unless it is far enough off that a car appearing there is not something
         // the eye catches. A space the player is standing and staring at simply stays empty.
         // A bay whose height is the -100 sentinel has no height to test yet, so the player's own
         // is used: the ground under a kerb is within a metre or two of the ground under them.
         CVector look(at.x, at.y, at.z <= kGroundZ ? player.z : at.z);
-        if (d2 < kQuietDistance * kQuietDistance && TheCamera.IsSphereVisible(look, 4.0f)) continue;
+        if (d2 < kQuietDistance * kQuietDistance && TheCamera.IsSphereVisible(look, 4.0f)) {
+            t.inShot++;
+            continue;
+        }
         int model = ChooseModel(rs, b);
-        if (model < 0) return;              // nothing of ours in memory yet; try again next tick
-        if (CreateParkedCar(rs, b, model)) return;   // one a tick, like everything else here
+        if (model < 0) { t.noModel++; return; }   // nothing of ours in memory yet; try next tick
+        if (CreateParkedCar(rs, b, model)) { t.placed++; return; }   // one a tick, like the rest
+        t.madeNothing++;
+        return;
     }
 }
 
@@ -512,6 +550,7 @@ void Tick(const CVector& playerPosition) {
         ManageBays(rs, playerPosition, over);
         if (over) FillBays(rs, playerPosition);
     }
+    ReportTally();
 }
 
 int Count() {

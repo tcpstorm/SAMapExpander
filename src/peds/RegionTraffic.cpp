@@ -520,6 +520,18 @@ bool ShouldYield(const RegionState& rs, const Driver& me, const CVector& myPos) 
 
 // ------------------------------------------------------------------ the frame
 
+// Where a tick's spawn attempts went. "0 car(s) driving its carriageways" is a count, and a count
+// cannot say whether the budget was full, no model was in memory, the pool was full, no node was
+// in range, every node was in shot, or CreateCarForScript refused. Each of those is a different
+// bug and they were guessed at three times over. Summed and reported once a second under Debug.
+struct Tally {
+    int ticks, notReady, atBudget, waiting, poolFull, noModel, noNodes;
+    int attempts, deadEnd, onSaGround, tooNear, inShot, crowded, madeNothing, placed;
+    int lost, gaveBack, tookAway;
+    unsigned nextReport;
+};
+Tally& Counts() { static Tally t{}; return t; }
+
 // Every way a car stops being ours goes through one of these two, and there is no third.
 //
 // GIVING ONE BACK is VehicleSpawn::HandBackToTheGame, and forgetting a car without calling it is
@@ -557,11 +569,15 @@ void ManageDrivers(RegionState& rs, const CVector& player) {
         // Resolve rather than CPools::GetVehicle: the handle alone would let a re-used pool slot
         // put one of San Andreas' own cars under everything below. See VehicleSpawn::Resolve.
         CVehicle* car = VehicleSpawn::Resolve(d.ref, d.model);
-        if (!car) continue;                      // the game removed it; the slot may be reused
+        // Gone, or the pool slot was re-used under the handle. Counted, because a car of ours that
+        // stops resolving the tick after it was made is a very different bug from one that was
+        // never made at all, and the two read the same in a population count.
+        if (!car) { Counts().lost++; continue; }
         CVector p = car->GetPosition();
         float dx = p.x - player.x, dy = p.y - player.y;
         if (dx * dx + dy * dy > cull * cull && !TheCamera.IsSphereVisible(p, 4.0f)) {
             VehicleSpawn::Remove(car);
+            Counts().tookAway++;
             continue;
         }
         // Once the player is driving it, it is the player's car and none of this module's
@@ -569,6 +585,7 @@ void ManageDrivers(RegionState& rs, const CVector& player) {
         // will ever be able to remove it again.
         if (car->m_pDriver && car->m_pDriver == (CPed*)FindPlayerPed()) {
             VehicleSpawn::HandBackToTheGame(car);
+            Counts().gaveBack++;
             continue;
         }
 
@@ -580,6 +597,7 @@ void ManageDrivers(RegionState& rs, const CVector& player) {
             // gap it cannot drive, hand it to the game - which means handing it back properly, so
             // that the game's own distance cleanup can have it.
             VehicleSpawn::HandBackToTheGame(car);
+            Counts().gaveBack++;
             continue;
         }
         if (toGoal < kArrivedDistance * kArrivedDistance) {
@@ -613,35 +631,59 @@ void ManageDrivers(RegionState& rs, const CVector& player) {
     rs.drivers.resize(write);
 }
 
+void ReportTally(const RegionState* here) {
+    Tally& t = Counts();
+    if (!Settings::world.debug) return;
+    if (CTimer::m_snTimeInMilliseconds < t.nextReport) return;
+    t.nextReport = CTimer::m_snTimeInMilliseconds + 1000;
+    if (!t.ticks) return;
+    Log::Write("traffic/sec: %d tick(s) -> %d not ready, %d at budget, %d waiting for the spawn "
+               "interval, %d pool full, %d no model in memory, %d no node in range; %d attempt(s) "
+               "-> %d dead end, %d on San Andreas' own ground, %d too near, %d in shot, %d "
+               "crowded, %d CreateCarForScript said no, %d placed; %d driving, %d vanished, %d "
+               "handed back, %d taken away",
+               t.ticks, t.notReady, t.atBudget, t.waiting, t.poolFull, t.noModel, t.noNodes,
+               t.attempts, t.deadEnd, t.onSaGround, t.tooNear, t.inShot, t.crowded, t.madeNothing,
+               t.placed, here ? (int)here->drivers.size() : 0, t.lost, t.gaveBack, t.tookAway);
+    Tally fresh{};
+    fresh.nextReport = t.nextReport;
+    t = fresh;
+}
+
 void SpawnSome(RegionState& rs, const CVector& player, int wanted) {
-    if (!VehicleSpawn::Ready()) return;
-    if ((int)rs.drivers.size() >= wanted) return;
-    if (CTimer::m_snTimeInMilliseconds < gNextSpawn) return;
+    Tally& t = Counts();
+    t.ticks++;
+    if (!VehicleSpawn::Ready()) { t.notReady++; return; }
+    if ((int)rs.drivers.size() >= wanted) { t.atBudget++; return; }
+    if (CTimer::m_snTimeInMilliseconds < gNextSpawn) { t.waiting++; return; }
     gNextSpawn = CTimer::m_snTimeInMilliseconds + kSpawnIntervalMs;
-    if (!VehicleSpawn::PoolHasRoom(kVehiclePoolReserve)) return;
+    if (!VehicleSpawn::PoolHasRoom(kVehiclePoolReserve)) { t.poolFull++; return; }
     int model = ChooseLoadedCar();
-    if (model < 0) return;
+    if (model < 0) { t.noModel++; return; }
 
     std::vector<int> candidates;
     NodesNear(rs, player, Settings::world.regionTrafficRadius, candidates);
-    if (candidates.empty()) return;
+    if (candidates.empty()) { t.noNodes++; return; }
     int placed = 0;
     for (int attempt = 0; attempt < 20 && placed < kSpawnsPerTick; attempt++) {
+        t.attempts++;
         int from = candidates[rand() % candidates.size()];
         const Node& n = rs.nodes[from];
-        if (n.linkCount <= 0) continue;
+        // A node with no lanes is not a road to put a car on - and `rand() % 0` is a divide by
+        // zero, which is a hardware fault and not a bad spawn.
+        if (n.linkCount <= 0 || n.lanes <= 0) { t.deadEnd++; continue; }
         int to = rs.links[n.firstLink + (rand() % n.linkCount)];
         int lane = rand() % (int)n.lanes;
         CVector at = LanePoint(rs, from, to, lane);
         // The seam: inside San Andreas' own map its own traffic generator owns the road, and two
         // systems that cannot see each other's cars must not both be putting cars on it.
-        if (SanAndreasOwnsThis(at)) continue;
+        if (SanAndreasOwnsThis(at)) { t.onSaGround++; continue; }
         float dx = at.x - player.x, dy = at.y - player.y;
         float dist = sqrtf(dx * dx + dy * dy);
-        if (dist < kMinSpawnDistance) continue;
+        if (dist < kMinSpawnDistance) { t.tooNear++; continue; }
         // Never where the player is looking: a car appearing in shot is the one thing that reads
         // as a spawn rather than as traffic.
-        if (TheCamera.IsSphereVisible(at, 4.0f)) continue;
+        if (TheCamera.IsSphereVisible(at, 4.0f)) { t.inShot++; continue; }
         // Not on top of another of ours.
         bool crowded = false;
         for (const Driver& other : rs.drivers) {
@@ -651,8 +693,9 @@ void SpawnSome(RegionState& rs, const CVector& player, int wanted) {
             float ox = q.x - at.x, oy = q.y - at.y;
             if (ox * ox + oy * oy < 100.0f) { crowded = true; break; }
         }
-        if (crowded) continue;
-        if (CreateCar(rs, from, to, lane, model)) placed++;
+        if (crowded) { t.crowded++; continue; }
+        if (CreateCar(rs, from, to, lane, model)) { placed++; t.placed++; }
+        else t.madeNothing++;
     }
 }
 
@@ -680,9 +723,10 @@ void Tick(const CVector& playerPosition) {
         for (const Driver& d : rs.drivers) LetGo(d, playerPosition);
         rs.drivers.clear();
     }
-    if (!here) return;
+    if (!here) { ReportTally(nullptr); return; }
     ManageDrivers(*here, playerPosition);
     SpawnSome(*here, playerPosition, CarBudget());
+    ReportTally(here);
 }
 
 int Count() {
