@@ -18,4 +18,22 @@ bool Under(float x, float y, float claimedZ, float& outZ);
 // search actually covered.
 float ProbeLift();
 
+// Every surface at (x, y) from `fromZ` downwards, highest first, into `out`. Returns how many were
+// written.
+//
+// This is a measuring instrument, not a placement routine. "The ped is under the map" and "the ped
+// is on the only floor there is" look identical from a single probe, and which of the two it is
+// decides whether the fix is a different start height or a different rule entirely. Guessing at
+// that from one number has now cost two rounds; this counts the decks.
+int Surfaces(float x, float y, float fromZ, float* out, int max);
+
+// The same, formatted for a log line: "3 surface(s) from 210.0 down: 12.4, 3.9, -18.2".
+void Describe(float x, float y, float fromZ, char* out, unsigned size);
+
+// Is this point below EVERY surface at its own x and y - that is, under the world rather than
+// under something? True for a player who has fallen through the map, or is flying under it, and
+// false for one standing in a tunnel, under a bridge or inside a building, because those still
+// have a floor beneath them. See Ground.cpp for why the distinction is drawn that way.
+bool BeneathEverything(float x, float y, float z);
+
 }   // namespace Ground

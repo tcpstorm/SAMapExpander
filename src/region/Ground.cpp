@@ -33,6 +33,7 @@
 // to find a street the graph is under, near enough not to reach the floor above it.
 #include <plugin.h>
 #include <CWorld.h>
+#include <cstdio>
 #include "Ground.h"
 
 using namespace plugin;
@@ -67,6 +68,59 @@ bool Below(float x, float y, float fromZ, float& outZ) {
 
 bool Under(float x, float y, float claimedZ, float& outZ) {
     return Below(x, y, claimedZ + kProbeLift, outZ);
+}
+
+// Counting the decks.
+//
+// FindGroundZFor3DCoord casts from the z it is given down to -1000 and stops at the first thing it
+// hits, so asking it again from just under that hit finds the next one down. Repeat and you have
+// every surface at that x and y, highest first. Half a unit of step is enough to clear a surface
+// without skipping the next one - collision faces are not that close together - and the whole
+// thing is bounded by `max` and by a floor of -300 so a point over open sea does not spin.
+int Surfaces(float x, float y, float fromZ, float* out, int max) {
+    int n = 0;
+    float z = fromZ;
+    while (n < max && z > -300.0f) {
+        bool found = false;
+        float g = CWorld::FindGroundZFor3DCoord(x, y, z, &found, nullptr);
+        if (!found) break;
+        out[n++] = g;
+        z = g - 0.5f;
+    }
+    return n;
+}
+
+// Under the world, as opposed to under something.
+//
+// A crowd follows the player, which is right, and it kept following one who was flying a jetpack
+// beneath the map - so people appeared around him down there, correctly by the rule and absurdly
+// by any other measure, and were reported as "peds spawning under the map". That is worth a rule
+// of its own rather than an accident, and the rule has to be careful: "there is collision above
+// me" is true in every tunnel, under every bridge and inside every building, and a crowd should
+// certainly carry on in those. What is never right is a player with NO floor beneath them at all.
+//
+// So this asks for every surface from well overhead and answers true only when all of them are
+// above the point. A tunnel has a road under your feet and fails the test; open sky under the map
+// has nothing under your feet and passes it.
+constexpr float kUnderWorldSlack = 1.5f;
+constexpr float kCeilingProbe = 400.0f;
+
+bool BeneathEverything(float x, float y, float z) {
+    float hits[8];
+    int n = Surfaces(x, y, z + kCeilingProbe, hits, 8);
+    if (n == 0) return false;   // nothing anywhere: not our business, and not a decision to make
+    for (int i = 0; i < n; i++)
+        if (hits[i] <= z + kUnderWorldSlack) return false;   // a floor at or below us
+    return true;
+}
+
+void Describe(float x, float y, float fromZ, char* out, unsigned size) {
+    float hits[8];
+    int n = Surfaces(x, y, fromZ, hits, 8);
+    int used = snprintf(out, size, "%d surface(s) from %.1f down:", n, fromZ);
+    for (int i = 0; i < n && used > 0 && (unsigned)used < size; i++)
+        used += snprintf(out + used, size - used, "%s %.2f", i ? "," : "", hits[i]);
+    if (n == 0 && (unsigned)used < size) snprintf(out + used, size - used, " nothing at all");
 }
 
 }   // namespace Ground

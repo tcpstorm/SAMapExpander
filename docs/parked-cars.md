@@ -439,6 +439,29 @@ All three spawners now use it, and **all three refuse to place anything when it 
 ground**, which is the part that matters: a bay or a node over a hole should be skipped, not filled
 at a fabricated height. Each reports the refusals in its per-second line.
 
+### 9b. A crowd follows the player, including where the player has no business being
+
+"Pedestrians are spawning under the map" turned out to be a player flying a jetpack under the map
+with the crowd correctly following him down. Nothing was misplaced; the rule was simply "near the
+player", and near the player was under the world.
+
+That is worth deciding rather than leaving to fall out. `Ground::BeneathEverything` asks for every
+surface at the player's own x/y from 400 units overhead and answers true only when **all** of them
+are above him — so a tunnel, a bridge and a building interior all still count as having ground,
+because there is a floor under his feet in each, and only genuinely being outside the world counts.
+While that is true nothing new is created; everything already out is still managed and tidied away
+as usual. Each spawner counts the ticks it skipped for this reason in its per-second line, so it
+never looks like one of the other faults.
+
+**The lesson worth keeping is about the diagnosis, not the code.** Two rounds of work went into a
+"the graph is twenty units under the street" theory built on two F8 readings of the player's height,
+and the theory was wrong because nobody asked what the player was standing on. The measurements that
+survived are the ones taken from files rather than from a single moment: every ped and car node
+against the IPL props within fifteen units of it is a median disagreement of **1.3** units, 75th
+percentile **3.4**, and a maximum of 21.5 across 237 samples — one outlier, not a second deck. F8
+now prints every surface under the player's feet with `Ground::Describe`, so the question "what is
+he actually standing on" is one keypress instead of an inference.
+
 ### 10. A spawn band that nearly touches its own cull band empties itself
 
 The traffic reported, every second for a whole session, `3 placed … 0 driving … 3 taken away`. Cars

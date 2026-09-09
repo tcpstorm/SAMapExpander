@@ -562,7 +562,7 @@ void FillBays(RegionState& rs, const CVector& player) {
 
 namespace RegionParkedCars {
 
-void Tick(const CVector& playerPosition) {
+void Tick(const CVector& playerPosition, bool playerHasGround) {
     if (!Settings::world.regionParkedCars) return;
     const float margin = Settings::world.regionParkedCarsRadius * kCullMargin;
     for (RegionState& rs : Regions()) {
@@ -572,7 +572,8 @@ void Tick(const CVector& playerPosition) {
         // street, and ManageBays is what does that - which is why this is not inside the "one
         // region under the player" loop the pedestrians and the traffic ride in.
         ManageBays(rs, playerPosition, over);
-        if (over) FillBays(rs, playerPosition);
+        // Bays are still emptied when the player is under the world; they are just not filled.
+        if (over && playerHasGround) FillBays(rs, playerPosition);
     }
     ReportTally();
 }

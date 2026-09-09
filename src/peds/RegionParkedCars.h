@@ -9,7 +9,7 @@ namespace RegionParkedCars {
     // traffic this is called whatever region the player is over, and when they are over none at
     // all, because a car of ours has to be tidied away when they drive out of the city as well as
     // when they walk out of the street.
-    void Tick(const CVector& playerPosition);
+    void Tick(const CVector& playerPosition, bool playerHasGround);
 
     // Let go of every bay and every car - between games, when the vehicle pool and its handle
     // re-use counters are about to be reset under us. The memory of which bays the player has
