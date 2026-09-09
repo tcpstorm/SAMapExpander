@@ -145,6 +145,13 @@ static void OnFrame() {
     char surfaces[256] = {};
     Ground::Describe(pos.x, pos.y, pos.z + 300.0f, surfaces, sizeof(surfaces));
     Log::Write("    ground under the player: %s (the player's own z is %.2f)", surfaces, pos.z);
+    // Stand on a road and press F8, near the region's origin and again at the far edge of the
+    // city. A graph that is a scaled copy of the map is a few units out near the origin and tens
+    // of units out at the edge, and no amount of watching the cars can show it - they follow their
+    // own graph faithfully either way. Two readings settle it; one settles nothing.
+    char roads[256] = {};
+    RegionTraffic::DescribeNearestNode(pos, roads, sizeof(roads));
+    Log::Write("    carriageways here: %s", roads);
     // The local coordinates above are the ones an Interior<N> box is written in, so F8 in a corner
     // of a room is how you find the numbers for one.
     std::string interior;
