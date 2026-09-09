@@ -3321,13 +3321,18 @@ def main():
         if object_dat:
             lines.append("ObjectData   = %s%s" % (base, object_dat))
         # The region's own pedestrians, written by tools/convert_peds.py rather than by this
-        # script. They get keys of their own rather than being appended to Img and Ide because the
-        # loader has to register the ped archive BEFORE the map one and give ped lines an id map of
-        # their own; src/core/Settings.h says why, at length. The keys are written whether or not
-        # convert_peds.py has been run - a region without them logs one "not found" line and gets
-        # San Andreas' own peds, which is the state every region is in until it is run.
-        lines += ["PedImg       = %speds.img" % base,
-                  "PedIde       = %speds.ide" % base]
+        # script - run it after this and it puts its models into the archive above and writes the
+        # peds.ide named here. A ped IDE is listed apart from the map ones because a `peds` line
+        # becomes a different model info out of a different store, and because the donor's ped ids
+        # start at 0 and so do GTA III's buildings, so the two need id maps of their own;
+        # src/core/Settings.h says the rest. Written whether or not convert_peds.py has been run:
+        # until it is, the loader logs one line naming the missing file and the region keeps San
+        # Andreas' own peds.
+        lines += ["PedIde       = %speds.ide" % base,
+                  "; PedImg is only needed when convert_peds.py could not merge into the archive",
+                  "; above and wrote a peds.img of its own. San Andreas has room for eight",
+                  "; archives in all and two imported cities already take it to seven.",
+                  "; PedImg     = %speds.img" % base]
         # One box per interior, measured off the placements rather than written by hand - see
         # interior_boxes. Emitted with the area and a count so the file says what it is looking at.
         boxes = interior_boxes(inst_areas)

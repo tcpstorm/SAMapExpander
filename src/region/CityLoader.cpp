@@ -978,19 +978,21 @@ std::string FormatInstFile(const std::vector<Inst>& insts, size_t first, size_t 
 
 // ---------------------------------------------------------------- stages
 
-// A region's ped archive goes in BEFORE its map archive, and the order is load-bearing rather than
-// tidy. The map import packs every .dff the donor shipped, pedestrians included, under the same
-// namespaced name that tools/convert_peds.py gives its converted one - `v_wmyst.dff` is in both -
-// but the map path only restamps the RenderWare version on a skin plugin it does not understand, so
-// the copy in the map archive is a Vice City 3.3 skin wearing a 3.6 label. Measured on the imported
-// vicecity.img: v_wmyst, v_bfyst and v_hmyst all hold a chunk whose length only adds up as 3.3's
-// 68-byte bone stride with no used-bone list.
+// PedImg is normally empty, and that is not an oversight: San Andreas has room for EIGHT archives
+// in all - CStreaming::ms_files is 8 x 0x30 at 0x8E48D8 - and it has spent five of them before this
+// runs (gta3, gta_int, carrec, script, cutscene) with player.img still to come in CGame::Init2. Two
+// imported cities take it to seven. There is no eighth for a ped archive, and a third city could
+// not register a map archive either. So tools/convert_peds.py puts its models into the region's own
+// archive and PedImg exists only for a region that has a slot to spare.
 //
-// CStreaming::LoadCdDirectory binds an archive entry to a model info by name and, at 0x5B6449, asks
-// CStreamingInfo whether that model already has a position; if it has, the later entry is dropped.
-// FIRST archive wins. So registering the ped archive first is what decides which of the two copies
-// a pedestrian is streamed from, and it is checked afterwards by ReportPedAssets rather than
-// assumed.
+// Where it is used, the ped archive goes in BEFORE the map archive, and the order is load-bearing
+// rather than tidy. The map import used to pack every .dff the donor shipped, pedestrians included,
+// under the same namespaced name the converter gives its own - `v_wmyst.dff` in both - with the
+// skin plugin's RenderWare version restamped but its 3.3 layout left alone. CStreaming::
+// LoadCdDirectory binds an archive entry to a model info by name and, at 0x5B6449, asks whether
+// that model already has a position; if it has, the later entry is dropped. FIRST archive wins.
+// (Inside one archive it is the first directory entry, which is why convert_peds.py replaces by
+// name rather than appending.) ReportPedAssets checks the outcome rather than assuming it.
 void RegisterOneArchiveList(RegionState& rs, const std::vector<std::string>& paths,
                             const char* what, unsigned& used) {
     for (const std::string& path : paths) {

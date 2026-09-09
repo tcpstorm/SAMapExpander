@@ -1167,6 +1167,45 @@ def region_name(prefix, stem):
     return name
 
 
+def merge_into_archive(path, files):
+    """Put these entries into an existing VER2 archive, replacing any of the same name.
+
+    The peds go into the region's own archive rather than one of their own because San Andreas has
+    room for eight archives in all - CStreaming::ms_files is 8 x 0x30 at 0x8E48D8 - and it has
+    already used five of them (gta3, gta_int, carrec, script, cutscene) with player.img still to
+    come in CGame::Init2. Two imported cities take it to seven; there is no eighth for a ped
+    archive, and a third city could not register a map archive either. Merging costs a rewrite of
+    the archive and no slot at all.
+
+    Replacing by name is what lets this fix a region that was imported before the map path learned
+    to leave skinned models out: the old, wrongly-stamped `v_wmyst.dff` is dropped here rather than
+    sitting in front of the converted one, since CStreaming::LoadCdDirectory keeps the first entry
+    it binds to a name (0x5B6449). Returns (added, replaced).
+    """
+    with open(path, "rb") as f:
+        head = f.read(8)
+        if head[:4] != b"VER2":
+            raise PedError("%s is not a San Andreas VER2 archive" % path)
+        count = struct.unpack("<I", head[4:])[0]
+        table = f.read(32 * count)
+        existing = []
+        for at in range(0, 32 * count, 32):
+            off, sectors, _pad = struct.unpack_from("<IHH", table, at)
+            name = table[at + 8:at + 32].split(b"\0", 1)[0].decode("latin-1")
+            if name:
+                existing.append((name, off * ic.SECTOR, sectors * ic.SECTOR))
+        fresh = {name.lower() for name, _blob in files}
+        kept, replaced = [], 0
+        for name, off, size in existing:
+            if name.lower() in fresh:
+                replaced += 1
+                continue
+            f.seek(off)
+            kept.append((name, f.read(size)))
+    ic.write_img_v2(path, kept + list(files))
+    return len(files) - replaced, replaced
+
+
 def repoint_ped_groups(path, prefix, converted):
     """Point an existing pedgrp.dat's `DONOR/SAMODEL` pairs at the models just converted.
 
@@ -1315,7 +1354,21 @@ def main():
             print("  " + n)
         return
     os.makedirs(out, exist_ok=True)
-    ic.write_img_v2(os.path.join(out, "peds.img"), files)
+    # Into the region's own archive when there is one, because there is no eighth streaming slot
+    # for an archive of our own - see merge_into_archive. Falling back to peds.img keeps this
+    # runnable on its own, and then the region needs a PedImg key.
+    region_img = os.path.join(out, region + ".img")
+    if os.path.isfile(region_img):
+        added, replaced = merge_into_archive(region_img, files)
+        print("%s.img: %d entry/entries added, %d replaced (an entry of the same name that was "
+              "already there - the map import used to pack the donor's own ped models with a "
+              "RenderWare 3.3 skin restamped 3.6)" % (region, added, replaced))
+        ped_img = None
+    else:
+        ic.write_img_v2(os.path.join(out, "peds.img"), files)
+        print("no %s.img here, so the peds went into peds.img of their own - the region needs a "
+              "PedImg key, and San Andreas has room for eight archives in all" % region)
+        ped_img = "peds.img"
     with open(os.path.join(out, "peds.ide"), "w", encoding="latin-1") as f:
         f.write("# Pedestrians imported from %s by tools/convert_peds.py.\n"
                 "#\n"
@@ -1338,10 +1391,10 @@ def main():
         print("pedgrp.dat: %d pairing(s) now name the imported model, %d still name a San Andreas "
               "stand-in because the donor model was not converted" % groups)
     print("wrote %s" % out)
-    print("add these to the region's section of MapExpander.ini if they are not already there:\n"
-          "    PedImg       = MapExpander\\%s\\peds.img\n"
-          "    PedIde       = MapExpander\\%s\\peds.ide"
-          % (os.path.basename(os.path.normpath(out)), os.path.basename(os.path.normpath(out))))
+    folder = os.path.basename(os.path.normpath(out))
+    print("this region's region.ini needs:\n    PedIde       = MapExpander\\%s\\peds.ide" % folder)
+    if ped_img:
+        print("    PedImg       = MapExpander\\%s\\%s" % (folder, ped_img))
 
 
 if __name__ == "__main__":
