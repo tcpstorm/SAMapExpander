@@ -497,7 +497,7 @@ void SetDestination(CVehicle* car, const RegionState& rs, const Driver& d) {
 CVehicle* CreateCar(RegionState& rs, int from, int to, int lane, int model) {
     CVector at = LanePoint(rs, from, to, lane);
     float ground = 0.0f;
-    if (!Ground::Under(at.x, at.y, at.z, ground)) return nullptr;
+    if (!Ground::Under(at.x, at.y, at.z, ground)) { Counts().noGround++; return nullptr; }
     at.z = ground;
     // CreateCarForScript does the whole placement properly - ground height, clearing space, adding
     // to the world - and one thing that is wrong for us: at 0x43206C it calls
@@ -778,8 +778,11 @@ void SpawnSome(RegionState& rs, const CVector& player, int wanted) {
             if (ox * ox + oy * oy < 100.0f) { crowded = true; break; }
         }
         if (crowded) { t.crowded++; continue; }
+        // CreateCar counts its own failures - there are two of them now, and inferring which from
+        // a bool got them added together: a run reported "32 no ground under the lane" and "32
+        // refused for landing somewhere else" which were the same 32 events, and the first label
+        // was simply wrong. A counter must be incremented where the decision is made.
         if (CreateCar(rs, from, to, lane, model)) { placed++; t.placed++; }
-        else t.noGround++;   // CreateCarForScript cannot fail for a car; no floor is the only way
     }
 }
 
