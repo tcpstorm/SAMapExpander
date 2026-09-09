@@ -126,6 +126,10 @@ constexpr int kVehiclePoolReserve = 14;
 // A car this far from the bay it was made in is no longer parked - shunted out by the player,
 // most likely - and its bay counts as emptied.
 constexpr float kDisturbedDistance = 6.0f;
+// How far a car may be from the bay it was asked for and still count as having gone there.
+// CreateCarForScript settles a car onto the road and clears space around it, so a few units is
+// that routine doing its job; anything past this is a car somewhere else entirely.
+constexpr float kMaxCreationSlip = 12.0f;
 // Below this much health a car is a wreck, and a wreck's bay is not refilled the moment the player
 // looks away. CVehicle starts at 1000.
 constexpr float kWreckedHealth = 300.0f;
@@ -325,7 +329,7 @@ CVector BayWorld(const RegionState& rs, const Bay& b) {
 struct Tally {
     int ticks, notReady, waiting, atBudget, poolFull;
     int outOfRange, notArmed, taken, inShot, noModel, noGround, madeNothing, placed;
-    int lost, released;
+    int lost, released, wentElsewhere;
     unsigned nextReport;
 };
 Tally& Counts() { static Tally t{}; return t; }
@@ -356,6 +360,22 @@ bool CreateParkedCar(RegionState& rs, Bay& b, int model) {
     if (!BaySpawnPoint(rs, b, at)) { Counts().noGround++; return false; }
     CVehicle* car = CCarCtrl::CreateCarForScript(model, at, false);
     if (!car) return false;
+    // Did it go where we asked? The traffic found a car of ours 6455 units from the player - the
+    // distance between an imported city and San Andreas - and a car left standing in Los Santos
+    // wearing a donor-paired model reads as "the wrong vehicles are spawning for the zone". These
+    // two modules share a spawner, so they share the check: a car that is not where it was put is
+    // removed at once and says so.
+    CVector landed = car->GetPosition();
+    float slipX = landed.x - at.x, slipY = landed.y - at.y;
+    float slip = sqrtf(slipX * slipX + slipY * slipY);
+    if (slip > kMaxCreationSlip) {
+        Log::Write("parked cars: asked for a car at (%.1f, %.1f, %.1f) and got one at (%.1f, %.1f, "
+                   "%.1f), %.0f units away. Refusing it", at.x, at.y, at.z,
+                   landed.x, landed.y, landed.z, slip);
+        VehicleSpawn::Remove(car);
+        Counts().wentElsewhere++;
+        return false;
+    }
     // Through the game's own setter, which moves the car between the counters San Andreas budgets
     // against; the constructor has already counted it once as a mission car. PERMANENT is the one
     // counter nothing reads - see VehicleSpawn.cpp, and read it before changing this.
@@ -516,9 +536,10 @@ void ReportTally() {
     Log::Write("parked/sec: %d tick(s) -> %d not ready, %d waiting for the spawn interval, %d at "
                "budget, %d pool full; bays %d out of range, %d remembered as emptied, %d in shot, "
                "%d no model in memory, %d no ground under the bay, %d CreateCarForScript said no, "
-               "%d placed; %d vanished, %d released to the player",
+               "%d placed; %d vanished, %d released to the player, %d refused for landing "
+               "somewhere else",
                t.ticks, t.notReady, t.waiting, t.atBudget, t.poolFull, t.outOfRange, t.notArmed,
-               t.inShot, t.noModel, t.noGround, t.madeNothing, t.placed, t.lost, t.released);
+               t.inShot, t.noModel, t.noGround, t.madeNothing, t.placed, t.lost, t.released, t.wentElsewhere);
     Tally fresh{};
     fresh.nextReport = t.nextReport;
     t = fresh;
