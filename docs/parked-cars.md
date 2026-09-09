@@ -582,6 +582,63 @@ for landing somewhere else` — the same 32 events, counted twice, because the c
 failure had happened from a `bool` return that could mean either. **A counter must be incremented
 where the decision is made**, not where the result is read.
 
+### 9g. An arrival distance must be a fraction of the leg, not a number
+
+The cars drove, and followed the shape of the carriageways while running wide of them — and Liberty
+City's looked noticeably better than Vice City's. **A fault in the steering, the lane maths or the
+mission would hit both cities alike.** Something that differs by region does not, and that
+observation is what found this.
+
+Measured over both graphs in the region files:
+
+| | 5% | 25% | median | 75% | 95% | shorter than the 8-unit arrival distance |
+|---|---|---|---|---|---|---|
+| **Vice City** | 1.9 | 6.2 | **10.6** | 18.4 | 36.9 | **36.5%** |
+| **Liberty City** | 3.9 | 10.0 | **12.6** | 25.0 | 28.3 | **19.2%** |
+
+A flat eight units is 0.76 of a typical Vice City link and 0.63 of a Liberty City one, and **more
+than a third of Vice City's links are shorter than it outright**. So a car was called "arrived" at
+a node it had not reached, handed the next leg, and left aiming one or two nodes ahead of itself —
+twice as often in Vice City as in Liberty City. That is the reported asymmetry, in the reported
+direction, from the files alone.
+
+Two changes, and the second matters as much as the first:
+
+- **The threshold is a fraction of the leg being driven** — 0.35 of it, floored at 2.5 units (about
+  half a car) and capped at the old 8 so a long straight still hands over early enough to turn.
+- **A leg has to be worth steering at.** Five per cent of Vice City's links are under 1.9 units,
+  shorter than the car; handing one out means arriving on the frame it is set, for ever. The next
+  node is now taken instead, up to six hops, until the target is at least 12 units from where the
+  car actually is. No node is skipped in the sense that matters — they are all still on the path
+  between, and a straight line across twelve units of road stays inside a lane.
+
+**Why not thin the graph at import instead**, which was the alternative: because the short links are
+not noise. They are how a donor city describes a *curve*, and a graph thinned to a comfortable
+driving spacing would lose the shape of every bend — the cars would cut corners worse, not better.
+The density is right for describing roads and wrong for choosing destinations, so the fix belongs in
+the thing choosing destinations. It also ships today against data the user already has, rather than
+requiring both cities to be re-imported.
+
+**What it was not.** A scale error in Vice City's graph was the competing explanation and it is
+dead. The node-to-nearest-map-placement *floor* — the 5th percentile, which measures alignment
+rather than how densely furnished a street is — is flat across the whole city for both graphs:
+4.20, 2.25, 1.98, 2.01, 2.65, 2.46 for the carriageways out to 2200 units from the region's zero,
+and 4.30, 2.21, 2.36, 2.24, 2.33, 4.45 for the pedestrian one. Three F8 readings agree: 5.1 units
+off at 664 from the origin, 6.1 at 1706, and one reading of 14.7 that was **taken from the air
+beside a terminal roof** and is worthless. A 0.85% scale error would have put that last grounded
+sample 14–15 units out; it was 6.1.
+
+### 9h. A reading should carry its own validity
+
+Three F8 samples in one evening were taken from a jetpack, from under the map, and from the air by
+a terminal roof, and each was reasoned from as though the player had been standing in a street. One
+cost a whole false theory about the graph being scaled, which took three exchanges to unwind, and it
+was caught only because the z on the line looked wrong to a human reading it.
+
+F8 now ends its ground line with `on the ground`, `AIRBORNE, N units above the floor beneath - not
+a reading from a street`, or `UNDER THE WORLD`. A measurement that depends on where somebody was
+standing should say where they were standing.
+
 ### 10. A spawn band that nearly touches its own cull band empties itself
 
 The traffic reported, every second for a whole session, `3 placed … 0 driving … 3 taken away`. Cars

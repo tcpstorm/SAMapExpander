@@ -114,6 +114,15 @@ bool BeneathEverything(float x, float y, float z) {
     return true;
 }
 
+bool Standing(float x, float y, float z, float& outZ) {
+    float hits[8];
+    int n = Surfaces(x, y, z + kCeilingProbe, hits, 8);
+    for (int i = 0; i < n; i++) {
+        if (hits[i] <= z + kUnderWorldSlack) { outZ = hits[i]; return true; }
+    }
+    return false;
+}
+
 void Describe(float x, float y, float fromZ, char* out, unsigned size) {
     float hits[8];
     int n = Surfaces(x, y, fromZ, hits, 8);
