@@ -30,6 +30,7 @@
 #include <vector>
 #include "CityLoader.h"
 #include "ArchiveSlots.h"
+#include "IdSpace.h"
 #include "ModelLimits.h"
 #include "RegionWeapons.h"
 #include "Settings.h"
@@ -1903,6 +1904,9 @@ void __cdecl Hooked_StreamingInit2() {
     Init2Original().ccall<void>();
     ReportMissingArchiveEntries();
     ReportPedAssets();
+    // Last, because CStreaming::LoadCdDirectory has just created the final TXD and COL slots and
+    // this counts what is left of every range a region spends, not just the model one.
+    IdSpace::Report();
 }
 
 void __cdecl Hooked_LoadLevel(const char* filename) {
