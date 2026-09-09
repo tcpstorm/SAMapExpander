@@ -31,6 +31,20 @@ struct MapRegion {
     // The region's own map assets, all in the region's coordinate system.
     std::vector<std::string> imgFiles;  // IMG archives registered with the streamer
     std::vector<std::string> ideFiles;  // IDE files; model ids are remapped into the free range
+
+    // The region's pedestrians, written by tools/convert_peds.py rather than by the map import,
+    // and kept apart from the two lists above for three reasons that are all load-bearing:
+    //
+    //   * a `peds` line becomes a CPedModelInfo out of a different store, with a budget of its own;
+    //   * the donor's ped model ids start at 0 and so do GTA III's buildings, so a ped IDE needs an
+    //     id map of its own or a ped and a building would be handed the same San Andreas id;
+    //   * the map archive still carries the donor's own ped .dff files under the same namespaced
+    //     names, with a skin plugin in the donor's layout that San Andreas cannot use, and
+    //     CStreaming::LoadCdDirectory keeps the FIRST archive entry it binds to a name (0x5B6449).
+    //     So the ped archive has to be registered before the map archive, which is an ordering the
+    //     code can guarantee and a single comma-separated list cannot.
+    std::vector<std::string> pedImgFiles;
+    std::vector<std::string> pedIdeFiles;
     std::vector<std::string> iplFiles;  // IPL files to load with the origin added to every coordinate
     std::vector<std::string> colFiles;  // .col archives loaded into permanent collision slots
     std::string objectDataFile;         // SA-format object.dat: which of the region's models are
@@ -70,6 +84,10 @@ struct MapRegion {
     std::string zoneNamesFile;           // "GXTKEY = Display Name" lines; empty if none
     std::string weaponFile;              // importer's weapons.dat: the source game's guns over SA's weapon types
     std::string pickupFile;              // importer's pickups.dat: the world pickups its main script placed
+    std::string pedNodeFile;             // importer's pednodes.dat: the source game's pedestrian path graph
+    std::string pedGroupFile;            // importer's pedgrp.dat: who walks in which of its districts
+    std::string carNodeFile;             // importer's carnodes.dat: the source game's carriageways
+    std::string parkedCarFile;           // importer's parkedcars.dat: where its own script parked a car
     std::string restartFile;             // importer's restarts.dat: the city's own hospitals and police stations
 
     // Interior<N> lines from this region's ini section, in the region's own coordinates. Several
@@ -115,6 +133,20 @@ struct WorldSettings {
     bool fallRecovery;                     // a player who falls out of a region is put back on that region's own ground, not on San Andreas' path graph
     bool regionRestarts;                   // dying or being arrested inside a region wakes the player at that region's own hospital or police station
     int pickupReserve;                     // CPickup slots left for San Andreas' own script, of its 620
+    bool regionPeds;                       // walk pedestrians on a region's own pednodes.dat graph
+    float regionPedDensity;                // multiplier on how many of them, 1.0 being San Andreas' own
+    float regionPedRadius;                 // world units around the player region peds live in
+    bool regionPolice;                     // answer a wanted level in a region with cops on foot
+    bool regionTraffic;                    // drive cars on a region's own carriageways, in our own memory
+    float regionTrafficDensity;            // multiplier on how many, 1.0 being what San Andreas asks for
+    float regionTrafficRadius;             // world units around the player traffic lives in
+    bool regionParkedCars;                 // stand cars in the kerbside spaces a region's own script used
+    float regionParkedCarsDensity;         // multiplier on the ceiling of how many exist at once
+    float regionParkedCarsRadius;          // world units around the player a space is worth filling in
+    float regionParkedCarsRespawn;         // seconds a space the player emptied stays empty; 0 = for ever
+    bool regionPaths;                      // put a region's own carriageways into CPathFind, i.e. traffic
+    bool widenPathNodes;                   // repoint the path coordinate scale so a node reaches a region
+    float pathNodeScale;                   // int16 units per world unit; <= 0 = derive from the world
     bool debug;                      // verbose log, F8 diagnostics, water render statistics
 };
 

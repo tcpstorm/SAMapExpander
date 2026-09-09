@@ -401,6 +401,20 @@ namespace Settings {
         world.regionWeaponMode = 0;        // Add: new weapon types, San Andreas' own left alone
         world.regionPickups = true;
         world.pickupReserve = 200;
+        world.regionPeds = true;
+        world.regionPedDensity = 1.0f;
+        world.regionPedRadius = 55.0f;
+        world.regionPolice = true;
+        world.regionTraffic = true;
+        world.regionTrafficDensity = 1.0f;
+        world.regionTrafficRadius = 90.0f;
+        world.regionParkedCars = true;
+        world.regionParkedCarsDensity = 1.0f;
+        world.regionParkedCarsRadius = 110.0f;
+        world.regionParkedCarsRespawn = 720.0f;
+        world.regionPaths = false;         // see MapExpander.ini: this is the untested half
+        world.widenPathNodes = true;
+        world.pathNodeScale = 0.0f;        // derive from the world the regions actually make
         world.fallRecovery = true;
         world.regionRestarts = true;
 
@@ -453,6 +467,20 @@ namespace Settings {
                 _stricmp(w->GetString("RegionWeaponMode", "Add").c_str(), "Replace") == 0 ? 1 : 0;
             world.regionPickups = w->GetBool("RegionPickups", true);
             world.pickupReserve = w->GetInt("PickupReserve", 200);
+            world.regionPeds = w->GetBool("RegionPeds", true);
+            world.regionPedDensity = w->GetFloat("RegionPedDensity", 1.0f);
+            world.regionPedRadius = w->GetFloat("RegionPedRadius", 55.0f);
+            world.regionPolice = w->GetBool("RegionPolice", true);
+            world.regionTraffic = w->GetBool("RegionTraffic", true);
+            world.regionTrafficDensity = w->GetFloat("RegionTrafficDensity", 1.0f);
+            world.regionTrafficRadius = w->GetFloat("RegionTrafficRadius", 90.0f);
+            world.regionParkedCars = w->GetBool("RegionParkedCars", true);
+            world.regionParkedCarsDensity = w->GetFloat("RegionParkedCarsDensity", 1.0f);
+            world.regionParkedCarsRadius = w->GetFloat("RegionParkedCarsRadius", 110.0f);
+            world.regionParkedCarsRespawn = w->GetFloat("RegionParkedCarsRespawn", 720.0f);
+            world.regionPaths = w->GetBool("RegionPaths", false);
+            world.widenPathNodes = w->GetBool("WidenPathNodes", true);
+            world.pathNodeScale = w->GetFloat("PathNodeScale", 0.0f);
             world.fallRecovery = w->GetBool("FallRecovery", true);
             world.regionRestarts = w->GetBool("RegionRestartPoints", true);
             for (const std::string& s : SplitPaths(w->GetString("DebugSkipModels", ""))) world.skipRenderModels.push_back(atoi(s.c_str()));
@@ -515,6 +543,8 @@ namespace Settings {
             r.waterXOffset = s.GetFloat("WaterXOffset", 0.0f);
             r.imgFiles = SplitPaths(s.GetString("Img", ""));
             r.ideFiles = SplitPaths(s.GetString("Ide", ""));
+            r.pedImgFiles = SplitPaths(s.GetString("PedImg", ""));
+            r.pedIdeFiles = SplitPaths(s.GetString("PedIde", ""));
             r.colFiles = SplitPaths(s.GetString("Col", ""));
             r.namesFile = s.GetString("Names", "");
             if (!r.namesFile.empty()) r.namesFile = ResolveGamePath(r.namesFile);
@@ -528,6 +558,10 @@ namespace Settings {
             if (s.Has("ZoneNames")) r.zoneNamesFile = ResolveGamePath(s.GetString("ZoneNames", ""));
             if (s.Has("Weapons")) r.weaponFile = ResolveGamePath(s.GetString("Weapons", ""));
             if (s.Has("Pickups")) r.pickupFile = ResolveGamePath(s.GetString("Pickups", ""));
+            if (s.Has("PedNodes")) r.pedNodeFile = ResolveGamePath(s.GetString("PedNodes", ""));
+            if (s.Has("PedGroups")) r.pedGroupFile = ResolveGamePath(s.GetString("PedGroups", ""));
+            if (s.Has("CarNodes")) r.carNodeFile = ResolveGamePath(s.GetString("CarNodes", ""));
+            if (s.Has("ParkedCars")) r.parkedCarFile = ResolveGamePath(s.GetString("ParkedCars", ""));
             if (s.Has("Restarts")) r.restartFile = ResolveGamePath(s.GetString("Restarts", ""));
             r.zoneInfoLabel = s.GetString("ZoneInfoLabel", "SAN_AND");
             r.regionName = s.GetString("RegionName", "");

@@ -287,11 +287,34 @@ bool ModelHasArchiveEntry(int id) {
 struct RegionState {
     const MapRegion* region;
     std::map<int, int> ids;   // source model id -> SA model id
+    // The same for the region's pedestrians, and deliberately not the same map. A donor's ped ids
+    // start at 0 and so do GTA III's buildings - the imported Liberty City IDEs run from id 0 to
+    // 3152 - so one map would hand a ped and a building the same San Andreas id and an `inst` line
+    // would then place a pedestrian where a wall should be. Peds are also never named by an inst
+    // line, never want the placeholder collision box, and never take part in LOD pairing, all of
+    // which walk rs.ids.
+    std::map<int, int> pedIds;
+    // Ids and names already used by this region's own ped lines. NameAlreadyTaken only sees model
+    // infos that exist, and a ped IDE is not handed to the game until the whole file is rewritten,
+    // so two lines in one file could otherwise both pass it and the second would overwrite the
+    // first's ms_modelInfoPtrs slot, leaking a ped store entry and leaving one model unreachable.
+    std::set<int> pedSourceIds;
+    std::set<std::string> pedNames;
     std::map<int, std::string> names;              // SA model id -> name as the IDE declares it
     std::map<std::string, std::string> originals;  // lowercase declared name -> name in the source game
     int added = 0;
     int droppedNoId = 0;
     int droppedNoStore = 0;
+
+    int pedsAdded = 0;
+    int pedsNoId = 0;
+    int pedsNoStore = 0;
+    int pedsShortLine = 0;      // fewer than the 14 columns LoadPedObject's sscanf reads
+    int pedsNameTaken = 0;      // a model of that name already exists; loading it would shadow one
+    int pedsDuplicate = 0;      // a second line of this region's with the same source id or name
+    int pedsBadPedType = 0;     // a PED_TYPE CPedType::FindPedType answers 32 to
+    int pedsBadAnimGroup = 0;   // an animation group San Andreas does not declare
+    std::string pedsRefusedNames;
 };
 
 // Install() runs from Main.cpp's static constructor, and MinGW initialises this translation unit's
@@ -409,6 +432,19 @@ std::string SafeName(const std::string& s) {
 
 // Only ids with an empty ms_modelInfoPtrs slot are handed out, so the configured range is checked
 // against what SA's own IDEs actually claimed rather than trusted.
+//
+// A pedestrian is given an id out of exactly the same range as a building, and the ranges San
+// Andreas does reserve for peds by value are all far below it: CStreaming::RequestSpecialChar and
+// its neighbours (0x40B450, 0x40B470, 0x40B490) hardcode `add reg, 0x122` so a special character is
+// always ids 290 upwards, and CCutsceneMgr (0x5B02C0) gates on 300..319 and indexes a 20-entry
+// table by (id - 300). FreeModelIdStart defaults to 18631, so nothing here can reach either.
+//
+// Otherwise nothing in San Andreas indexes anything by a ped's model id: CPopulation's ped groups
+// hold ids as int16 read back with movzx (0xC0F358, 21 per group, with 2000 as the "empty slot"
+// sentinel), CStreaming::ms_pedsLoaded holds eight full dwords, and CStreaming::RemoveModel decides
+// a model is a ped from its vtable rather than its number. The one real width limit is
+// CEntity::m_nModelIndex at +0x22, which is read sign-extended everywhere (0x5E48AE in
+// CPed::SetModelIndex among them) - so 32767, and ModelIdLimit stops at 26400 anyway.
 int AllocateModelId() {
     int end = FreeIdEnd();
     while (gNextFreeId <= end) {
@@ -428,7 +464,7 @@ int FreeIdsLeft() {
 
 // ---------------------------------------------------------------- IDE
 
-enum class IdeSection { None, Objs, Tobj, Anim, Weap, Txdp, Skip };
+enum class IdeSection { None, Objs, Tobj, Anim, Weap, Peds, Txdp, Skip };
 
 // Mirrors CFileLoader::LoadObject (0x5B3C60) closely enough to recover the flag word, which decides
 // whether the line lands in the atomic store or in the 70-entry damage-atomic store.
@@ -448,8 +484,71 @@ bool ObjsIsDamageable(const std::string& line) {
     return (flags & 0x1000) != 0;
 }
 
+// ---------------------------------------------------------------- what a `peds` line needs
+//
+// CFileLoader::LoadPedObject (0x5B7420) reads FOURTEEN columns with one sscanf:
+//
+//     %d %s %s %s %s %s %x %x %s %d %d %s %s %s
+//      id model txd  pedType statType animGroup  carMask flags  animFile  radio1 radio2
+//      audioPedType voice1 voice2
+//
+// and it does not look at sscanf's return value. A short line therefore leaves uninitialised stack
+// in the buffers it did not fill, and those go straight into CKeyGen::GetUppercaseKey and
+// CTxdStore::FindTxdSlot. So the column count is checked here rather than hoped for.
+//
+// Two of the columns are looked up in a table by name, and BOTH of those lookups answer an unknown
+// name with a number that is one past the end of the array it indexes. Neither is checked by the
+// game, and neither goes wrong until much later and somewhere else, so both are checked here.
+//
+//   Animation group. LoadPedObject seeds the index with CAnimManager::ms_numAnimAssocDefinitions
+//   (0x5B7432, `mov ebx, [0xB4EA28]` - 118, set by Animation::Initialise at 0x5BF6C1), walks the
+//   table comparing names, and writes whatever ebx still holds into CPedModelInfo + 0x24 (0x5B755F).
+//   An unknown group therefore leaves 118 there, and CPed::SetModelIndex (0x5E498B) hands that
+//   straight to CAnimManager::GetAnimAssocGroup, whose array is exactly 118 entries of 0x14 bytes
+//   on the heap (0x4D3A40). Entry 118 is past the allocation.
+//
+//   Ped type. CPedType::FindPedType (0x608790) walks 32 names and, for anything it does not know
+//   that is not "PLAYER_NETWORK" or "PLAYER_UNUSED", returns 32 (0x608825, `add eax, 0x20`) into
+//   CPedModelInfo + 0x28. CPedType::ms_apPedType holds 32; GetPedFlag guards the index but the
+//   acquaintance getters (0x6089B0 and its neighbours) do not.
+//
+// tools/convert_peds.py already maps a donor's group onto one animgrp.dat declares and whitelists
+// the ped type against San Andreas' 26 names. These are the checks that say so out loud, and that
+// hold for a peds.ide written by hand.
+constexpr uintptr_t kAnimGroupCount = 0xB4EA28;     // CAnimManager::ms_numAnimAssocDefinitions
+constexpr uintptr_t kGetAnimGroupName = 0x4D3A20;   // the name of definition n, as LoadPedObject reads it
+constexpr uintptr_t kFindPedType = 0x608790;        // CPedType::FindPedType, __cdecl
+constexpr int kPedTypeCount = 32;                   // CPedType::ms_apPedType
+constexpr int kPedIdeColumns = 14;
+
+bool AnimGroupDeclared(const std::string& name) {
+    typedef const char*(__cdecl* GetNameFn)(int);
+    int count = (int)patch::GetUInt(kAnimGroupCount);
+    for (int i = 0; i < count; i++) {
+        const char* have = reinterpret_cast<GetNameFn>(kGetAnimGroupName)(i);
+        if (have && _stricmp(have, name.c_str()) == 0) return true;
+    }
+    return false;   // including a table that is not up yet, which is reported once by the caller
+}
+
+bool PedTypeKnown(const std::string& name) {
+    typedef int(__cdecl* FindPedTypeFn)(const char*);
+    return reinterpret_cast<FindPedTypeFn>(kFindPedType)(name.c_str()) < kPedTypeCount;
+}
+
+// CModelInfo::GetModelInfo (0x4C5940) hashes the name and scans ms_modelInfoPtrs for the key; its
+// bounds are among the sites ModelLimits rewrites, so it sees the whole raised range. A `peds` line
+// naming something that already exists must not be loaded: two model infos would share a key, and
+// which one every later lookup by name answers with is then a matter of where the scan starts.
+// This is what stops a donor's un-namespaced ped section - `wmyst`, `bfyst` - from shadowing San
+// Andreas' own peds of the same name.
+bool NameAlreadyTaken(const std::string& name) {
+    int id = -1;
+    return CallGetModelInfoByName(name.c_str(), &id) != nullptr;
+}
+
 struct StoreBudget {
-    int atomic, damage, time, clump, weapon;
+    int atomic, damage, time, clump, weapon, ped;
 };
 
 StoreBudget CurrentBudget() {
@@ -458,6 +557,9 @@ StoreBudget CurrentBudget() {
     b.damage = kDamageStoreMax - (int)StoreCount(kDamageStore);
     b.time = ModelLimits::TimeCapacity() - (int)StoreCount(ModelLimits::TimeStore());
     b.clump = kClumpStoreMax - (int)StoreCount(kClumpStore);
+    // Vanilla San Andreas' data/peds.ide declares 276 of the ped store's 278, so a region's peds
+    // only fit when ModelLimits has moved that store to the heap; if it has not, this is 2.
+    b.ped = ModelLimits::PedCapacity() - (int)StoreCount(ModelLimits::PedStore());
     // Vanilla San Andreas fills 50 of the weapon store's 51, so a region's weapon models only fit
     // when RegionWeapons has moved that store to the heap; if it has not, this is 1 and the weap
     // lines are dropped with the same message as any other full store.
@@ -506,7 +608,11 @@ std::string DescribeModel(const RegionState& rs, int id) {
     return s + ")";
 }
 
-std::string TranslateIde(RegionState& rs, const std::string& source) {
+// `pedFile` is true only for a file the region named under PedIde - the output of
+// tools/convert_peds.py. A `peds` section in a map IDE stays skipped: the map import does not
+// namespace the ped columns (docs/asset-namespacing.md), so those lines name the donor's own
+// `wmyst` and `bfyst` and would collide with San Andreas' peds of the same name.
+std::string TranslateIde(RegionState& rs, const std::string& source, bool pedFile) {
     std::vector<std::string> lines = ReadLines(source);
     if (lines.empty()) {
         Log::Write("[%s] ide: %s is missing or empty", rs.region->name.c_str(), source.c_str());
@@ -532,8 +638,9 @@ std::string TranslateIde(RegionState& rs, const std::string& source) {
             else if (head == "weap")
                 section = RegionWeapons::Active() && !rs.region->weaponFile.empty()
                         ? IdeSection::Weap : IdeSection::Skip;
-            else if (head == "peds" || head == "cars" || head == "hier" ||
-                     head == "path" || head == "2dfx")
+            else if (head == "peds")
+                section = pedFile ? IdeSection::Peds : IdeSection::Skip;
+            else if (head == "cars" || head == "hier" || head == "path" || head == "2dfx")
                 section = IdeSection::Skip;
             else continue;
             if (section != IdeSection::Skip) out += head + "\n";
@@ -553,6 +660,41 @@ std::string TranslateIde(RegionState& rs, const std::string& source) {
         char* stop = nullptr;
         long oldId = strtol(line.c_str(), &stop, 10);
         if (stop != line.c_str() + idEnd) { rs.droppedNoId++; continue; }
+
+        // A ped is checked before it is offered, and a refusal is one ped rather than the region:
+        // everything LoadPedObject would do with a line it cannot read is a silent wrong answer -
+        // stack garbage hashed into a model key, or an animation group index one past the end of
+        // the table - so the line never reaches it.
+        if (section == IdeSection::Peds) {
+            std::vector<std::string> col = Tokens(line);
+            std::string name = col.size() > 1 ? col[1] : std::string("?");
+            const char* refusal = nullptr;
+            if ((int)col.size() < kPedIdeColumns) { rs.pedsShortLine++; refusal = "short line"; }
+            else if (rs.pedSourceIds.count((int)oldId) || rs.pedNames.count(Lower(col[1]))) {
+                rs.pedsDuplicate++;
+                refusal = "a ped line of this region already has that id or name";
+            }
+            else if (NameAlreadyTaken(col[1])) { rs.pedsNameTaken++; refusal = "name already used"; }
+            else if (!PedTypeKnown(col[3])) { rs.pedsBadPedType++; refusal = "no such ped type"; }
+            else if (!AnimGroupDeclared(col[5])) { rs.pedsBadAnimGroup++; refusal = "no such animation group"; }
+            if (refusal) {
+                if (rs.pedsRefusedNames.size() < 400)
+                    rs.pedsRefusedNames += (rs.pedsRefusedNames.empty() ? "" : ", ") +
+                                           name + " (" + refusal + ")";
+                continue;
+            }
+            if (budget.ped <= 0) { rs.pedsNoStore++; continue; }
+            int newId = AllocateModelId();
+            if (newId < 0) { rs.pedsNoId++; continue; }
+            rs.pedIds[(int)oldId] = newId;
+            rs.pedSourceIds.insert((int)oldId);
+            rs.pedNames.insert(Lower(col[1]));
+            rs.names[newId] = col[1];
+            budget.ped--;
+            out += std::to_string(newId) + line.substr(idEnd) + "\n";
+            rs.pedsAdded++;
+            continue;
+        }
 
         int* pool = nullptr;
         if (section == IdeSection::Tobj) pool = &budget.time;
@@ -843,40 +985,75 @@ std::string FormatInstFile(const std::vector<Inst>& insts, size_t first, size_t 
 
 // ---------------------------------------------------------------- stages
 
+// PedImg is normally empty, and that is not an oversight: San Andreas has room for EIGHT archives
+// in all - CStreaming::ms_files is 8 x 0x30 at 0x8E48D8 - and it has spent five of them before this
+// runs (gta3, gta_int, carrec, script, cutscene) with player.img still to come in CGame::Init2. Two
+// imported cities take it to seven. There is no eighth for a ped archive, and a third city could
+// not register a map archive either. So tools/convert_peds.py puts its models into the region's own
+// archive and PedImg exists only for a region that has a slot to spare.
+//
+// Where it is used, the ped archive goes in BEFORE the map archive, and the order is load-bearing
+// rather than tidy. The map import used to pack every .dff the donor shipped, pedestrians included,
+// under the same namespaced name the converter gives its own - `v_wmyst.dff` in both - with the
+// skin plugin's RenderWare version restamped but its 3.3 layout left alone. CStreaming::
+// LoadCdDirectory binds an archive entry to a model info by name and, at 0x5B6449, asks whether
+// that model already has a position; if it has, the later entry is dropped. FIRST archive wins.
+// (Inside one archive it is the first directory entry, which is why convert_peds.py replaces by
+// name rather than appending.) ReportPedAssets checks the outcome rather than assuming it.
+void RegisterOneArchiveList(RegionState& rs, const std::vector<std::string>& paths,
+                            const char* what, unsigned& used) {
+    for (const std::string& path : paths) {
+        if (!FileExists(path)) {
+            Log::Write("[%s] %s: %s not found", rs.region->name.c_str(), what, path.c_str());
+            continue;
+        }
+        // CClothes::Init registers player.img later, in CGame::Init2, so one slot has to be
+        // left for it - it would otherwise get archive 0 back and stream clothes from gta3.img.
+        if (used + 1 >= kMaxArchives) {
+            Log::Write("[%s] %s: %s NOT registered - CStreaming::ms_files is full (%u of %u "
+                       "archives used, one reserved for player.img)",
+                       rs.region->name.c_str(), what, path.c_str(), used, kMaxArchives);
+            continue;
+        }
+        std::string shortPath = GameRelativePath(path);
+        if (shortPath.size() > kArchivePathMax) {
+            Log::Write("[%s] %s: %s NOT registered - CStreaming::ms_files keeps only %u "
+                       "characters of an archive path and this one needs %u; put the archive "
+                       "closer to the game directory or give it a shorter name",
+                       rs.region->name.c_str(), what, path.c_str(), (unsigned)kArchivePathMax,
+                       (unsigned)shortPath.size());
+            continue;
+        }
+        unsigned slot = CallAddImageToList(shortPath.c_str(), true);
+        used++;
+        Log::Write("[%s] %s: %s registered as archive %u (%u/%u slots used)",
+                   rs.region->name.c_str(), what, shortPath.c_str(), slot, used, kMaxArchives);
+    }
+}
+
 void RegisterArchives() {
     unsigned used = 0;
     for (unsigned i = 0; i < kMaxArchives; i++)
         if (*reinterpret_cast<char*>(kStreamingFiles + i * kStreamingFileStride)) used++;
 
     for (RegionState& rs : Regions()) {
-        for (const std::string& path : rs.region->imgFiles) {
-            if (!FileExists(path)) {
-                Log::Write("[%s] img: %s not found", rs.region->name.c_str(), path.c_str());
-                continue;
-            }
-            // CClothes::Init registers player.img later, in CGame::Init2, so one slot has to be
-            // left for it - it would otherwise get archive 0 back and stream clothes from gta3.img.
-            if (used + 1 >= kMaxArchives) {
-                Log::Write("[%s] img: %s NOT registered - CStreaming::ms_files is full (%u of %u "
-                           "archives used, one reserved for player.img)",
-                           rs.region->name.c_str(), path.c_str(), used, kMaxArchives);
-                continue;
-            }
-            std::string shortPath = GameRelativePath(path);
-            if (shortPath.size() > kArchivePathMax) {
-                Log::Write("[%s] img: %s NOT registered - CStreaming::ms_files keeps only %u "
-                           "characters of an archive path and this one needs %u; put the archive "
-                           "closer to the game directory or give it a shorter name",
-                           rs.region->name.c_str(), path.c_str(), (unsigned)kArchivePathMax,
-                           (unsigned)shortPath.size());
-                continue;
-            }
-            unsigned slot = CallAddImageToList(shortPath.c_str(), true);
-            used++;
-            Log::Write("[%s] img: %s registered as archive %u (%u/%u slots used)",
-                       rs.region->name.c_str(), shortPath.c_str(), slot, used, kMaxArchives);
-        }
+        RegisterOneArchiveList(rs, rs.region->pedImgFiles, "pedimg", used);
+        RegisterOneArchiveList(rs, rs.region->imgFiles, "img", used);
     }
+}
+
+// Rewrite one IDE into the cache and hand the cached copy to the game's own parser.
+void LoadOneIde(RegionState& rs, const std::string& source, bool pedFile) {
+    std::string text = TranslateIde(rs, source, pedFile);
+    if (text.empty()) return;
+
+    std::string cached = CacheDir() + "\\" + SafeName(rs.region->name) + "_" +
+                         SafeName(BaseName(source)) + ".ide";
+    if (!WriteWholeFile(cached, text)) {
+        Log::Write("[%s] ide: cannot write %s", rs.region->name.c_str(), cached.c_str());
+        return;
+    }
+    CallLoadObjectTypes(cached.c_str());
 }
 
 void LoadModelDefinitions() {
@@ -884,24 +1061,14 @@ void LoadModelDefinitions() {
     int available = FreeIdsLeft();
     StoreBudget budget = CurrentBudget();
     Log::Write("models: %d free id(s) in %d..%d; store headroom atomic %d, damage %d, time %d, "
-               "clump %d, weapon %d",
+               "clump %d, weapon %d, ped %d",
                available, Settings::world.freeModelIdStart, FreeIdEnd(),
-               budget.atomic, budget.damage, budget.time, budget.clump, budget.weapon);
+               budget.atomic, budget.damage, budget.time, budget.clump, budget.weapon, budget.ped);
 
     for (RegionState& rs : Regions()) {
         LoadNameMap(rs);
-        for (const std::string& source : rs.region->ideFiles) {
-            std::string text = TranslateIde(rs, source);
-            if (text.empty()) continue;
-
-            std::string cached = CacheDir() + "\\" + SafeName(rs.region->name) + "_" +
-                                 SafeName(BaseName(source)) + ".ide";
-            if (!WriteWholeFile(cached, text)) {
-                Log::Write("[%s] ide: cannot write %s", rs.region->name.c_str(), cached.c_str());
-                continue;
-            }
-            CallLoadObjectTypes(cached.c_str());
-        }
+        for (const std::string& source : rs.region->ideFiles)
+            LoadOneIde(rs, source, false);
 
         // A line the vanilla parser refused leaves an empty slot behind; drop it so no inst line can
         // later hand LoadScene a model id with no model info (LinkLods would dereference nullptr).
@@ -928,6 +1095,57 @@ void LoadModelDefinitions() {
                        "the hard wall, not the id range",
                        rs.region->name.c_str(), AtomicLimit(), kDamageStoreMax,
                        ModelLimits::TimeCapacity(), kClumpStoreMax, RegionWeapons::Capacity());
+    }
+
+    // The pedestrians come after every region's map models, and the order is a save-compatibility
+    // decision rather than a convenience. AllocateModelId hands out ids in load order, so anything
+    // registered BEFORE a region's buildings would renumber them - and a savegame stores model ids
+    // inside its entities and a byte per model slot in its Streaming block (docs/save-compatibility.md).
+    // Adding or removing a region's peds this way moves nothing that was already assigned; it only
+    // appends. Removing a whole region still moves everything after it, which is the ledger's job
+    // and not fixed here.
+    // Both name checks below need the game's own tables. The animation definitions are the one that
+    // could plausibly not be up - Animation::Initialise fills ms_numAnimAssocDefinitions - and if
+    // they are not, every ped is refused for a reason that is not its own, so say which it is.
+    bool anyPeds = false;
+    for (RegionState& rs : Regions()) anyPeds = anyPeds || !rs.region->pedIdeFiles.empty();
+    if (anyPeds && (int)patch::GetUInt(kAnimGroupCount) <= 0)
+        Log::Write("peds: CAnimManager has no animation groups yet, so every ped line will be "
+                   "refused for an unknown group - this is the loader running earlier than "
+                   "Animation::Initialise, not a fault in the region's peds.ide");
+
+    for (RegionState& rs : Regions()) {
+        if (rs.region->pedIdeFiles.empty()) continue;
+        for (const std::string& source : rs.region->pedIdeFiles)
+            LoadOneIde(rs, source, true);
+
+        // Same cleanup as the map models: a line the vanilla parser refused leaves nothing behind,
+        // and a ped id with no model info would be handed to CPopulation::AddPed by whatever names
+        // it in pedgrp.dat.
+        int refusedByGame = 0;
+        for (auto it = rs.pedIds.begin(); it != rs.pedIds.end();) {
+            if (ModelInfoAt(it->second)) { ++it; continue; }
+            it = rs.pedIds.erase(it);
+            refusedByGame++;
+            rs.pedsAdded--;
+        }
+
+        Log::Write("[%s] peds: %d model(s) registered, %d refused here (%d short line, %d duplicate, "
+                   "%d name already used, %d unknown ped type, %d unknown animation group), %d "
+                   "dropped (ped model store full), %d dropped (no free id), %d rejected by the "
+                   "game's own IDE parser",
+                   rs.region->name.c_str(), rs.pedsAdded,
+                   rs.pedsShortLine + rs.pedsDuplicate + rs.pedsNameTaken + rs.pedsBadPedType +
+                       rs.pedsBadAnimGroup,
+                   rs.pedsShortLine, rs.pedsDuplicate, rs.pedsNameTaken, rs.pedsBadPedType,
+                   rs.pedsBadAnimGroup, rs.pedsNoStore, rs.pedsNoId, refusedByGame);
+        if (!rs.pedsRefusedNames.empty())
+            Log::Write("[%s] peds: refused - %s", rs.region->name.c_str(), rs.pedsRefusedNames.c_str());
+        if (rs.pedsNoStore)
+            Log::Write("[%s] peds: the ped model info store is full at %d entries (San Andreas' own "
+                       "data/peds.ide takes 276 of the vanilla 278) - raise ModelIdLimit above %d "
+                       "so ModelLimits moves it to the heap",
+                       rs.region->name.c_str(), ModelLimits::PedCapacity(), 20000);
     }
 }
 
@@ -1170,7 +1388,11 @@ void RaiseColModelPool() {
 int RegionTxdCount() {
     std::set<std::string> names;
     for (RegionState& rs : Regions()) {
-        for (const std::string& source : rs.region->ideFiles) {
+        std::vector<std::string> sources = rs.region->ideFiles;
+        // The ped dictionaries count too: LoadPedObject creates a TxdDef for every `peds` line's
+        // txd column, and Vice City's 105 peds and Liberty City's 78 bring 184 more names.
+        sources.insert(sources.end(), rs.region->pedIdeFiles.begin(), rs.region->pedIdeFiles.end());
+        for (const std::string& source : sources) {
             IdeSection section = IdeSection::None;
             for (const std::string& raw : ReadLines(source)) {
                 std::string line = Trim(raw);
@@ -1182,6 +1404,7 @@ int RegionTxdCount() {
                     else if (low == "anim") section = IdeSection::Anim;
                     else if (low == "weap" && RegionWeapons::Active() &&
                              !rs.region->weaponFile.empty()) section = IdeSection::Weap;
+                    else if (low == "peds") section = IdeSection::Peds;
                     continue;
                 }
                 if (low == "end") { section = IdeSection::None; continue; }
@@ -1247,6 +1470,42 @@ void ReportMissingArchiveEntries() {
                        "placements are skipped, because a request for one hangs the streamer: %s%s",
                        rs.region->name.c_str(), missing, (int)rs.ids.size(), which.c_str(),
                        missing > 20 ? ", ..." : "");
+    }
+}
+
+// A pedestrian needs two things out of an archive, not one: its .dff and the .txd its own IDE
+// column names. CFileLoader::LoadPedObject calls CBaseModelInfo::SetTexDictionary (0x4C4B40), which
+// creates a CTxdStore slot for that name whether or not anything ever fills it, and the slot's
+// streaming id is the slot number plus the TXD base (LoadCdDirectory, 0x5B62CE `add eax, 0x4E20`).
+// A ped whose dictionary never got an archive entry loads and walks with white skin, which reads as
+// a conversion fault and is not one - so it is named here instead.
+constexpr unsigned kTxdIndexOffset = 0xA;   // CBaseModelInfo::m_nTxdIndex, a u16
+
+void ReportPedAssets() {
+    for (RegionState& rs : Regions()) {
+        if (rs.pedIds.empty()) continue;
+        int noDff = 0, noTxd = 0;
+        std::string which;
+        for (const auto& pair : rs.pedIds) {
+            uint8_t* mi = static_cast<uint8_t*>(ModelInfoAt(pair.second));
+            bool dff = ModelHasArchiveEntry(pair.second);
+            unsigned short txd = mi ? *reinterpret_cast<unsigned short*>(mi + kTxdIndexOffset) : 0xFFFF;
+            bool tex = txd != 0xFFFF && ModelHasArchiveEntry(ModelLimits::TxdBase() + (int)txd);
+            if (dff && tex) continue;
+            if (!dff) noDff++;
+            if (!tex) noTxd++;
+            if (which.size() < 400)
+                which += (which.empty() ? "" : ", ") + DescribeModel(rs, pair.second) +
+                         (dff ? " (no .txd)" : tex ? " (no .dff)" : " (no .dff, no .txd)");
+        }
+        if (noDff || noTxd)
+            Log::Write("[%s] peds: of %d registered, %d have no .dff and %d no .txd in any "
+                       "archive - a request for one of those hangs the streamer, so check that the "
+                       "region's PedImg is listed and was found: %s",
+                       rs.region->name.c_str(), (int)rs.pedIds.size(), noDff, noTxd, which.c_str());
+        else
+            Log::Write("[%s] peds: all %d registered model(s) have both a .dff and a .txd bound",
+                       rs.region->name.c_str(), (int)rs.pedIds.size());
     }
 }
 
@@ -1575,6 +1834,7 @@ void __cdecl Hooked_StreamingInit2() {
     }
     Init2Original().ccall<void>();
     ReportMissingArchiveEntries();
+    ReportPedAssets();
 }
 
 void __cdecl Hooked_LoadLevel(const char* filename) {
@@ -1592,13 +1852,15 @@ void __cdecl Hooked_LoadLevel(const char* filename) {
 namespace CityLoader {
     void Install() {
         for (const MapRegion& r : Settings::regions)
-            if (!r.imgFiles.empty() || !r.ideFiles.empty() || !r.colFiles.empty())
+            if (!r.imgFiles.empty() || !r.ideFiles.empty() || !r.colFiles.empty() ||
+                !r.pedImgFiles.empty() || !r.pedIdeFiles.empty())
                 Regions().push_back({ &r });
         if (Regions().empty()) return;
 
         // A server places its own objects and owns the model id space; the same INI serves both.
         if (Settings::RunningUnderSaMp()) {
-            Log::Write("SA-MP: region Img/Ide/Col are left alone, the server places the city");
+            Log::Write("SA-MP: region Img/Ide/Col/PedImg/PedIde are left alone, the server places "
+                       "the city and owns the ped model ids");
             Regions().clear();
             return;
         }

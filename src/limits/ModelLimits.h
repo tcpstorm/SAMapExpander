@@ -16,6 +16,11 @@ namespace ModelLimits {
     int ScmBase();
     int TotalCount();   // CStreamingInfo entries: every resource id plus the 4 list-head sentinels
 
+    // Is this model in memory? There is no CStreaming::HasModelLoaded to call in 1.0 US, and the
+    // flag has to be read out of whichever ms_aInfoForModel is the live one - which is the whole
+    // reason this lives here and not in the caller.
+    bool ModelIsLoaded(int model);
+
     // Where the arrays live now: the vanilla globals, or the heap blocks they were moved to.
     uintptr_t StreamingInfo();   // CStreaming::ms_aInfoForModel
     uintptr_t ModelInfoPtrs();   // CModelInfo::ms_modelInfoPtrs
@@ -23,4 +28,11 @@ namespace ModelLimits {
     int AtomicCapacity();        // how many CAtomicModelInfo that store can hold
     uintptr_t TimeStore();       // CModelInfo::ms_timeModelInfoStore (int32 count, then objects)
     int TimeCapacity();          // how many CTimeModelInfo it can hold: what tobj lines become
+
+    // CModelInfo::ms_pedModelInfoStore. A `peds` IDE line does not land in the atomic store: it
+    // becomes a CPedModelInfo, 0x44 bytes against a CAtomicModelInfo's 0x20, in a store of its own
+    // that San Andreas' own 276 peds all but fill. CityLoader budgets `peds` lines against these
+    // exactly as it does tobj lines against the time store.
+    uintptr_t PedStore();
+    int PedCapacity();           // how many CPedModelInfo it can hold: what peds lines become
 }

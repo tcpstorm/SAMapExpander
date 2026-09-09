@@ -16,7 +16,15 @@
 // Nothing is written unless every single site still holds the value the table expects, so another
 // mod that moved one of these arrays first leaves the game vanilla instead of half-patched. Under
 // SA-MP the whole thing is skipped: the server decides the id space there.
+//
+// Two model info stores are moved here that have nothing to do with the id space and everything to
+// do with what a region's IDE lines become: the time store, which vanilla SA fills exactly, and the
+// ped store, which it fills to 276 of 278. Both are CStore<T, N> at a fixed address with an adder
+// that never checks its own count, so a bigger array is the whole fix; each has its own byte-checked
+// site table so that a mismatch in one costs only what that store carries.
 #include <plugin.h>
+#include <CStreaming.h>
+#include <CModelInfo.h>
 #include <cstdint>
 #include <cstdlib>
 #include <iterator>
@@ -55,6 +63,49 @@ constexpr int kVanillaTimeCapacity = 169;
 constexpr int kTimeHeadroom = 1024;
 constexpr uintptr_t kTimeModelInfoCtor = 0x4C5640;   // CTimeModelInfo::CTimeModelInfo, __thiscall
 
+// CStore<CPedModelInfo, 278>: what every `peds` line becomes, and the reason a ped is not just an
+// object with a skeleton as far as this file is concerned. CModelInfo::AddPedModel (0x4C67A0)
+//
+//     mov eax, [0xB478F8]      ; the count
+//     imul esi, eax, 0x44      ; sizeof(CPedModelInfo)
+//     add esi, 0xB478FC        ; the objects
+//     inc eax / mov [0xB478F8], eax
+//     ... mov [ecx*4 + 0xA9B0C8], esi
+//
+// multiplies and increments without ever comparing the count to 278 - the same shape as the time
+// store and the weapon store - so a bigger array is all it takes. San Andreas' own data/peds.ide
+// declares 276 of the 278, which leaves room for two imported peds and no more.
+//
+// The store lives at a fixed address rather than in the id space, so it is not in kSites and is
+// moved by its own byte-verified table below; that also keeps a mismatch here from rolling back the
+// id limit, which is the larger and more useful half.
+constexpr uintptr_t kPedStoreCount = 0xB478F8;
+constexpr uintptr_t kPedStoreObjects = 0xB478FC;
+constexpr unsigned kPedElem = 0x44;
+constexpr int kVanillaPedCapacity = 278;
+constexpr int kPedHeadroom = 512;   // Vice City's 105 and Liberty City's 78, with room for a third
+constexpr uintptr_t kPedModelInfoCtor = 0x4C57A0;   // __thiscall: base ctor, vtable 0x85BDC0, +0x34 = 0
+
+struct StoreSite {
+    uintptr_t address;
+    uint32_t oldValue;
+    uint8_t operandOffset;
+};
+
+// Every instruction in the first .text that names the ped store, from tools/xref.py. The two left
+// alone - the CRT's vector constructor at 0x84BCF0 and its atexit destructor at 0x8562B0 - build
+// and tear down the original static block, which simply goes unused.
+const StoreSite kPedStoreSites[] = {
+    { 0x4C6517, kPedStoreCount,   1 },   // Models::ShutDown      mov eax, [count]
+    { 0x4C6522, kPedStoreObjects, 1 },   //                       mov edi, objects
+    { 0x4C652E, kPedStoreCount,   1 },   //                       mov eax, [count]
+    { 0x4C6608, kPedStoreCount,   2 },   //                       mov [count], ebp
+    { 0x4C67A0, kPedStoreCount,   1 },   // Models::AddPedModel   mov eax, [count]
+    { 0x4C67AB, kPedStoreObjects, 2 },   //                       add esi, objects
+    { 0x4C67B2, kPedStoreCount,   1 },   //                       mov [count], eax
+    { 0x4C6857, kPedStoreCount,   2 },   // Models::Initialise    mov [count], edi
+};
+
 // Vanilla bases, in the order they follow the DFF range.
 constexpr int kTxdBase = 20000, kColBase = 25000, kIplBase = 25255, kDatBase = 25511;
 constexpr int kIfpBase = 25575, kRrrBase = 25755, kScmBase = 26230;
@@ -65,6 +116,8 @@ uint8_t* gInfo = nullptr;
 uint8_t* gPtrs = nullptr;
 uint8_t* gStore = nullptr;
 uint8_t* gTimeStore = nullptr;
+uint8_t* gPedStore = nullptr;
+int gPedCapacity = kVanillaPedCapacity;
 
 int Shift() { return gModelCount - kVanillaModelCount; }
 
@@ -122,6 +175,49 @@ bool AllSitesVanilla() {
         }
     }
     return true;
+}
+
+// The ped model info store, moved the same way the weapon store is (RegionWeapons::RelocateStore):
+// its own bytes checked, its own failure. Nothing here is required for the id limit, so a mismatch
+// only costs a region its pedestrians - PedCapacity() then answers the vanilla 278, of which San
+// Andreas' own peds.ide takes 276, and CityLoader drops the rest of a region's `peds` lines with
+// the same "store full" line any other store gives.
+void RelocatePedStore() {
+    for (const StoreSite& s : kPedStoreSites) {
+        uint32_t have = patch::GetUInt(s.address + s.operandOffset);
+        if (have != s.oldValue) {
+            Log::Write("ERROR: the ped model store was not moved: 0x%X holds 0x%X, expected 0x%X "
+                       "(another mod patched it); a region's pedestrian models are left out",
+                       (unsigned)s.address, have, s.oldValue);
+            return;
+        }
+    }
+
+    const int capacity = kVanillaPedCapacity + kPedHeadroom;
+    gPedStore = (uint8_t*)calloc(1, 4 + (size_t)capacity * kPedElem);
+    if (!gPedStore) {
+        Log::Write("ERROR: the ped model store was not moved: out of memory");
+        return;
+    }
+
+    // The vanilla store's objects are built by a static initialiser that has not run yet - this
+    // plugin loads first - so ours are built the way the game builds them. CPedModelInfo's
+    // constructor calls CBaseModelInfo's, writes its own vtable (0x85BDC0) and clears the pointer
+    // at +0x34 that its destructor frees; it touches nothing outside the object.
+    typedef void(__thiscall* PedModelInfoCtor)(void*);
+    const PedModelInfoCtor construct = reinterpret_cast<PedModelInfoCtor>(kPedModelInfoCtor);
+    for (int i = 0; i < capacity; i++) construct(gPedStore + 4 + (size_t)i * kPedElem);
+
+    const uint32_t newCount = (uint32_t)(uintptr_t)gPedStore;
+    const uint32_t newObjects = newCount + 4;
+    for (const StoreSite& s : kPedStoreSites)
+        patch::SetUInt(s.address + s.operandOffset,
+                       s.oldValue == kPedStoreCount ? newCount : newObjects);
+
+    gPedCapacity = capacity;
+    Log::Write("ped model store moved to the heap: %d entries of %u bytes at %p (vanilla %d, of "
+               "which San Andreas' own data/peds.ide takes 276)",
+               capacity, kPedElem, (void*)(gPedStore + 4), kVanillaPedCapacity);
 }
 
 bool Allocate() {
@@ -185,11 +281,31 @@ int RrrBase() { return kRrrBase + Shift(); }
 int ScmBase() { return kScmBase + Shift(); }
 int TotalCount() { return kVanillaTotal + Shift(); }
 
+// CStreamingInfo::m_nLoadState. The game reads it inlined at over a hundred sites as
+// `cmp byte ptr [m*0x14 + 0x8E4CD0], 1` - 0x8E4CD0 being ms_aInfoForModel[0] plus this offset -
+// because there is no CStreaming::HasModelLoaded to call in 1.0 US.
+//
+// Reading it at that literal address is right in a vanilla game and WRONG here: when the limit is
+// raised the array is on the heap and the static one at 0x8E4CC0 is abandoned, still holding the
+// zeros CStreaming::Init left in it. A caller that reads the old address is told that nothing in
+// the game is loaded, for ever, which is not a crash and not a log line - it is a city with no
+// traffic, no parked cars and no pedestrians in it, and every subsystem reporting itself fine.
+constexpr unsigned kLoadStateOffset = 0x10;
+constexpr unsigned char kLoadStateLoaded = 1;
+
+bool ModelIsLoaded(int model) {
+    if (model < 0 || model >= TotalCount()) return false;
+    return *(const unsigned char*)(StreamingInfo() + (uintptr_t)model * kInfoElem + kLoadStateOffset)
+           == kLoadStateLoaded;
+}
+
 uintptr_t StreamingInfo() { return gActive ? (uintptr_t)gInfo : kInfoArray; }
 uintptr_t ModelInfoPtrs() { return gActive ? (uintptr_t)gPtrs : kPtrArray; }
 uintptr_t AtomicStore() { return gActive ? (uintptr_t)gStore : kAtomicStore; }
 uintptr_t TimeStore() { return gActive ? (uintptr_t)gTimeStore : kTimeStore; }
 int TimeCapacity() { return gActive ? kVanillaTimeCapacity + kTimeHeadroom : kVanillaTimeCapacity; }
+uintptr_t PedStore() { return gPedStore ? (uintptr_t)gPedStore : kPedStoreCount; }
+int PedCapacity() { return gPedCapacity; }
 int AtomicCapacity() { return gActive ? kVanillaAtomicCapacity + Shift() + kAtomicHeadroom : kVanillaAtomicCapacity; }
 
 void Install() {
@@ -242,10 +358,36 @@ void Install() {
     }
     patch::SetUInt(kArrayBasePtr, (uintptr_t)gInfo);
 
+    // After the id limit is settled, not before: a rolled-back id limit must leave the ped store
+    // where it was too, so the game is either wholly patched or wholly vanilla.
+    RelocatePedStore();
+
     gActive = true;
     Log::Write("model id limit %d -> %d: txd %d, col %d, ipl %d, dat %d, ifp %d, rrr %d, scm %d, "
                "%d streaming entries", kVanillaModelCount, gModelCount, TxdBase(), ColBase(),
                IplBase(), DatBase(), IfpBase(), RrrBase(), ScmBase(), TotalCount());
+    // plugin-sdk caches both arrays at static-initialisation time, by reading the disp32 out of an
+    // instruction rather than by naming the global:
+    //
+    //   CStreaming::ms_aInfoForModel  = *(CStreamingInfo***)0x408B25  (CStreaming::RemoveModel)
+    //   CModelInfo::ms_modelInfoPtrs  = *(CBaseModelInfo***)0x40CD67  (RequestModelStream)
+    //
+    // Both of those operands are in the table above, so the SDK gets the right answer - but only
+    // if its initialiser runs after this one, and the two are ordinary C++ static initialisers in
+    // the same DLL, whose relative order the standard does not fix and mingw's .ctors walk runs
+    // BACKWARDS through the link order. Getting it wrong is silent: every CStreaming::HasModelLoaded
+    // and CModelInfo::GetModelInfo in the plugin reads the abandoned array instead. So the
+    // pointers are put right here, where the answer is known, and the log says which way round it
+    // fell so the question never has to be asked again.
+    bool sdkWasStale = (uintptr_t)CStreaming::ms_aInfoForModel != (uintptr_t)gInfo ||
+                       (uintptr_t)CModelInfo::ms_modelInfoPtrs != (uintptr_t)gPtrs;
+    CStreaming::ms_aInfoForModel = reinterpret_cast<CStreamingInfo*>(gInfo);
+    CModelInfo::ms_modelInfoPtrs = reinterpret_cast<CBaseModelInfo**>(gPtrs);
+    Log::Write("model id limit: plugin-sdk's cached array pointers %s",
+               sdkWasStale ? "still named the vanilla arrays and have been re-pointed at the moved "
+                             "ones (its initialiser ran first)"
+                           : "already named the moved arrays (its initialiser ran second)");
+
     Log::Write("model id limit: %d site(s) patched (array %d + %d + %d, time store %d, resource "
                "base %d + %d, count %d, sentinel %d)", (int)std::size(kSites), patched[kInfoArray],
                patched[kPtrArray], patched[kAtomicStore], patched[kTimeStore], patched[kResourceBase],

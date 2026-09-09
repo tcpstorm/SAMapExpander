@@ -148,6 +148,7 @@ struct Stats {
     int outOfRange[SEC_COUNT] = {};
     int full[SEC_COUNT] = {};
     int ignoredLines = 0;
+    int cullLines = 0;
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -326,6 +327,18 @@ void ProcessFile(const MapRegion& region, const std::string& path, unsigned mask
         if (line.compare(0, 3, "end") == 0) { section = SEC_NONE; continue; }
         if (section == SEC_IGNORED) { stats.ignoredLines++; continue; }
         if (!(mask & (1u << section))) continue;
+        // A region's cull section is not loaded, whatever the mask says. III and Vice City write a
+        // cull line as centre, box minimum, box maximum, flag, wanted-level drop; San Andreas
+        // reads the same eleven numbers as centre, skew, width-Y, bottom-Z, width-X, skew,
+        // top-Z, flag, extra - so a donor line handed to CFileLoader::LoadCullZone becomes a box
+        // hundreds of units wide with the donor's flag bits read under San Andreas' meanings.
+        // Liberty City's 749 lines filled the game's attribute array (1300) and its tunnel array
+        // (40) to the brim that way, and the flags they carried - camera close-in, stairs, first
+        // person, fewer cars, no police - were applied across the whole city: the camera jumped
+        // to strange places until the player walked out of the box, and traffic behaved oddly.
+        // Only a cull section authored in San Andreas' own dialect could be loaded here, and no
+        // donor's is.
+        if (section == SEC_CULL) { stats.cullLines++; continue; }
 
         std::vector<std::string> tokens = Tokenise(line);
         const SectionSpec& spec = kSpec[section];
@@ -387,6 +400,10 @@ void ProcessFile(const MapRegion& region, const std::string& path, unsigned mask
     if (summary.empty()) summary = "nothing";
     Log::Write("[%s] %s: %s (%d line(s) in unsupported sections)",
                region.name.c_str(), path.c_str(), summary.c_str(), stats.ignoredLines);
+    if (stats.cullLines)
+        Log::Write("[%s] %s: %d cull line(s) left alone - the donor's cull dialect is not San "
+                   "Andreas', and read as San Andreas' it becomes city-wide camera and traffic "
+                   "attributes", region.name.c_str(), path.c_str(), stats.cullLines);
 
     for (int i = 0; i < SEC_COUNT; i++) {
         if (stats.full[i])

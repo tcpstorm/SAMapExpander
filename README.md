@@ -19,6 +19,30 @@ What it does today:
   grid before wrapping it into the repeat-sector array, so outside the map a ped's ped and vehicle
   scanners came back empty: punches animated but never connected, and ped AI ignored everyone around
   it. Four two-byte patches drop the clamps.
+- **People on the pavement, and police who come after you.** San Andreas generates its population on
+  the path graph, and a path node position is an `int16 × 0.125` that reaches only ±4096, so an
+  imported city was silent. The importer writes out the source game's own pedestrian graph and the
+  crowd each of its districts draws — its `pedgrp.dat`, its zone boxes and the `SET_ZONE_PED_GROUP`
+  calls in its `main.scm` — and the plugin holds the graph itself and walks people along it with a
+  task that never touches `CPathFind`. A wanted level is answered on foot. San Andreas' own peds,
+  over San Andreas' own map, are untouched. Traffic still needs the path encoding widened; see
+  *docs/known-limitations.md*.
+- **Traffic on the imported city's own roads.** San Andreas' path system cannot hold them and never
+  will: a vehicle link is addressed by a packed `uint16` with a ten-bit index, so 1024 per path area,
+  and Vice City's roads need three times the total capacity of the areas its ground falls into. So
+  the importer writes out the source game's own carriageways and the plugin holds them itself,
+  spawning cars and putting them on a go-to-coordinates mission from node to node — the game does
+  all the driving. Lanes come from the donor's own lane counts, offset to the right of travel by San
+  Andreas' own 5.4-unit lane width. **San Andreas' path data is not touched at all**, so its own
+  traffic cannot regress. What this does not give is traffic lights or path-based pursuit AI; see
+  *docs/known-limitations.md*.
+- **Cars parked at the imported city's own kerbs.** Neither donor game puts a parked car in a map
+  file: both create them from `main.scm` with the `CREATE_CAR_GENERATOR` opcode and literal
+  coordinates, so the importer mines them — 148 spaces in Vice City, 147 in Liberty City — and the
+  plugin stands a car in each. They are **not** San Andreas car generators: `CTheCarGenerators` is a
+  fixed 500-entry save block written by array index with positions compressed to ±4096, which a
+  region cannot even be expressed in. A space the player empties stays empty rather than refilling
+  the moment they look away. See *docs/parked-cars.md*.
 - **A region's own map assets.** Point a region at its original `.img`, `.ide`, `.ipl` and `.col` and the
   plugin registers the archive, remaps the model ids into a free range and places every `inst` line at
   the region's origin — through the game's own loaders. See *Loading a city's own assets*; `ModelIdLimit`
@@ -87,7 +111,7 @@ needs a hole in the collision to be found first. Leave it off for normal play.
 | `WorldOriginX/Y` | SA world position of the region's local (0,0) |
 | `WorldOriginZ` | height added to everything the region loads (water levels, zone boxes, IPL and inst coordinates) when the map was placed higher or lower than in its own game; default 0 |
 | `WorldMinX/MaxX/MinY/MaxY` | alternative to the origin: extent in SA space; the origin becomes its centre |
-| `Img`, `Ide`, `Ipl`, `Col` | the region's own map assets — see *Loading a city's own assets* |
+| `Img`, `Ide`, `Ipl`, `Col`, `PedIde` | the region's own map assets and its pedestrians — see *Loading a city's own assets* |
 | `Interior<N>` | `area, minX, minY, minZ, maxX, maxY, maxZ [, name]` — one box, in the region's own coordinates, that puts the player in that interior; see *Interiors* |
 | `Weapons` | the source game's guns, added as weapon types of their own alongside San Andreas' (or written over them, under `RegionWeaponMode = Replace`). Ignored under SA-MP. |
 | `Pickups` | the world pickups the source game's main script leaves around its map, in the region's own coordinates. Ignored under SA-MP. |
@@ -128,6 +152,17 @@ SA x 4171..6963, y −778..2626).
 | `RegionRestartPoints` | 1 | die or get arrested inside a region and you wake at that region’s own hospital or police station, mined from the donor’s `main.scm` into its `restarts.dat`. Answered by hooking the two `CRestart` searches: nothing is added to San Andreas’ restart arrays, so the savegame stays byte for byte what vanilla writes. Outside a region the game answers, untouched. Skipped under SA-MP. |
 
 | `PickupReserve` | 200 | how many free pickup slots to leave SA's own script once a region has taken what it wants. Counted into the enlarged array's size rather than deducted from SA's 620 |
+| `RegionPeds` | 1 | walk pedestrians on a region's own `PedNodes` graph, choosing who from its `PedGroups` table. Skipped under SA-MP. |
+| `RegionPedDensity` | 1.0 | multiplier on how many; stacks with the game's own population slider |
+| `RegionPedRadius` | 55.0 | how far from the player they live. 55 sits inside the band the game itself uses — it creates its own at 42.5–50.5 and removes them past 65 off screen, 54.5 on it |
+| `RegionPolice` | 1 | answer a wanted level in a region with cops on foot. Skipped under SA-MP. |
+| `RegionTraffic` | 1 | drive cars on a region's own `CarNodes` carriageways. Skipped under SA-MP. |
+| `RegionTrafficDensity` | 1.0 | multiplier on how many, over the car budget popcycle.dat gives for the player's zone |
+| `RegionTrafficRadius` | 90.0 | how far from the player traffic lives |
+| `RegionParkedCars` | 1 | stand cars in the kerbside spaces a region's own script used, from its `ParkedCars` file. Skipped under SA-MP. |
+| `RegionParkedCarsDensity` | 1.0 | ceiling on how many exist at once (1.0 = 14), not a thinning of the source game's own spaces |
+| `RegionParkedCarsRadius` | 110.0 | how far from the player a space is worth filling in |
+| `RegionParkedCarsRespawn` | 720.0 | seconds a space stays empty after the player takes or destroys the car in it; 0 = for the rest of the session |
 | `Debug` | 0 | verbose log, F8 diagnostics, water render statistics |
 
 ### Region data (feature branches)
@@ -155,11 +190,18 @@ source game's `gta_vc.dat`/`gta3.dat` for the file order and writes `MapExpander
 
 - `<region>.img` — every `.dff`/`.txd` from the source `gta3.img`, repacked as an SA *VER2* archive
   (SA cannot read the III/VC *v1* `.img`+`.dir` pair, so never point `Img=` at the original).
+  Skinned models are the one exception and are left out: only `tools/convert_peds.py` can rewrite a
+  skin plugin, whose layout — not just its version stamp — differs between RenderWare 3.3 and 3.6.
 - `col\` — every `.col` from the archive plus the `.dat`'s `COLFILE` entries, as loose files.
 - `ide\`, `ipl\` — the files the `.dat` lists, copied in its order.
 - `tiles\radarNN.png` — decoded from the radar TXDs (DXT1/3, paletted and raw rasters).
 - `american.gxt`, `waterpro.dat`, `navig.zon`, `info.zon`.
 - `region.ini` — the `[region]` keys to paste, with `Ide`/`Ipl` in `.dat` order.
+
+Then run `tools/convert_peds.py` against the same two directories. It converts the donor game's
+own pedestrians onto San Andreas' skeleton, merges them into `<region>.img`, writes `peds.ide` and
+`peds.txt`, and points `pedgrp.dat`'s `DONOR/SAMODEL` pairs at the imported names — 105 models for
+Vice City and 78 for Liberty City. `docs/donor-peds.md` is the whole story.
 
 **Names.** San Andreas keeps no asset names - only a CRC32 of each (`CKeyGen`) - so a region's
 model or dictionary whose name matches one of SA's would silently lose to SA's copy, and two of a
@@ -189,7 +231,10 @@ Col = MapExpander\vicecity\col\*.col
 
 The models themselves must be RenderWare clumps San Andreas can read; Vice City geometry generally
 loads, and anything the game refuses shows up as a missing model, not as a crash. There are 8 archive
-slots in total and SA uses 3, so up to 5 region archives can be added.
+slots in total, and San Andreas has spent **5** of them by the time a region is registered — `gta3`,
+`gta_int`, and `carrec`, `script` and `cutscene` from `gta.dat` — with `player.img` still to come. So
+there is room for two region archives and no more, which is why a region's pedestrians go into its
+own archive rather than one of their own. The log names the slot each archive got.
 
 **What the plugin does with them.** Region archives are registered just before SA scans archive
 directories; the IDE files are then fed through the game's own parser with every model id rewritten
@@ -207,12 +252,21 @@ session and does not depend on the collision quad tree, which cannot address any
 **The ID limit.** Vanilla SA leaves model ids 18631–19999 free — 1369 for all regions together — and
 its 14000-entry *atomic model-info store* is almost full, so on its own only a few dozen models fit.
 `ModelIdLimit` (default 25000) adds 5000 ids and grows that store to match, which is enough for a
-Vice City. `tobj` (time-of-day) and `anim` models still have no room: SA fills those stores exactly,
-so a city's night-lit variants are dropped and logged. The plugin never overruns a store: it stops
-and writes to `MapExpander.log` how many models were dropped and which limit ran out.
+Vice City. The `tobj` (time-of-day) and ped stores are grown alongside it, because SA fills both to the
+brim — 169 of 169 and 276 of 278 — and neither adder checks its own count. The plugin never overruns
+a store: it stops and writes to `MapExpander.log` how many models were dropped and which limit ran
+out.
 
-**Under SA-MP** the region's `Img`/`Ide`/`Col` are ignored (the server places the city and owns the
-id space), so one INI serves single-player and multiplayer.
+**Pedestrians.** `PedIde` names the region's own people — `tools/convert_peds.py` converts the donor
+game's ped models to San Andreas' skeleton and merges them into the archive `Img` names. They are
+listed apart from `Ide` because a `peds` line becomes a `CPedModelInfo` out of a store San Andreas'
+own 276 peds all but fill, and because the donor's ped ids start at 0 and so do GTA III's buildings,
+so the two need id maps of their own. A `peds` section inside a *map* IDE is still ignored: those
+columns are never namespaced, so they name San Andreas' own peds. `docs/donor-peds.md` has the whole
+of it, including what each failure looks like in the log.
+
+**Under SA-MP** the region's `Img`/`Ide`/`Col`/`PedIde` are ignored (the server places the city and
+owns the id space), so one INI serves single-player and multiplayer.
 
 **Listing files.** `Ide`, `Ipl`, `Col` (and `Zones`, `Gxt`) take comma lists; an entry like
 `MapExpander\vicecity\ide\*.ide` expands to every match in name order. Put files whose order matters

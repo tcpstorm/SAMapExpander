@@ -2,6 +2,7 @@
 """Turn a GTA III / Vice City install into a MapExpander region folder.
 
     import_city.py <source game dir> <SA game dir> [--region=vicecity] [--lite] [--no-rename]
+                                                   [--parked-cars-only]
 
 Writes <SA game dir>/MapExpander/<region>/ with
 
@@ -18,6 +19,15 @@ Writes <SA game dir>/MapExpander/<region>/ with
                    weapon nearest to it, with ide/weapons.ide carrying their meshes (Vice City only)
     pickups.dat    the world pickups the source game's main script places, copied from
                    tools/pickups_<region>.dat beside this script
+    pednodes.dat   the source game's own pedestrian path graph, in its own coordinates: where a
+                   pedestrian may stand and where they may walk next. San Andreas cannot hold
+                   these - a path node position is an int16 times 0.125 and reaches only +/-4096 -
+                   so the plugin keeps the graph itself
+    pedgrp.dat     who walks where: the source game's ped groups and the zone boxes they belong
+                   to, each of its ped models paired with the San Andreas model standing in for it
+    parkedcars.dat where the source game parked a car, mined from the CREATE_CAR_GENERATOR calls
+                   in its main.scm, each vehicle paired with the San Andreas model standing in for
+                   it. These are the plugin's own spawns, not San Andreas car generators
     region.ini     the [region] keys to paste into MapExpander.ini, lists in .dat order, with the
                    origin the conversion this project follows places that city at
 
@@ -28,6 +38,10 @@ dictionary, so it has to be packed and renamed like everything else.
 
 --lite writes only the last three groups (tiles, text/water/zones, region.ini): what a region
 needs when something else - a server, a map mod - already places the buildings.
+
+--parked-cars-only writes parkedcars.dat into a region folder that already exists and adds the
+one key to its region.ini, touching nothing else. A full import rewrites the archive, the
+collision and every IDE and IPL; adding one data file should not cost that.
 
 Every model and texture dictionary is renamed under a two-character tag for the source game
 ("v_" for Vice City, "l_" for III) - in the archive, the IDE model/txd columns, the IPL inst
@@ -45,6 +59,7 @@ replaced, the .zon files are rewritten to match, and names.txt records both.
 Runs on plain Python; Pillow is used for the PNGs if it is installed, else a built-in writer.
 """
 import collections
+import math
 import time
 import os
 import re
@@ -566,6 +581,7 @@ RW_304 = 0x30400          # ... and at which a material grew surface properties 
 GEOM_TEXTURED, GEOM_PRELIT, GEOM_TEXTURED2, GEOM_NATIVE = 0x04, 0x08, 0x80, 0x01000000
 GEOM_TRISTRIP = 0x01      # the geometry's own "my meshes are strips" flag
 RW_BINMESH = 0x50E        # the mesh split the D3D pipeline instances from, one mesh per material
+RW_SKIN = 0x116           # the bone indices, weights and inverse-bind matrices of a skinned model
 
 # How far to lift a vertex's baked lighting towards white: out = in + (255 - in) * PRELIT_LIFT.
 #
@@ -709,11 +725,52 @@ def convert_extension(data, s, e, what):
     for kind, _ver, cs, ce in rw_children(data, s, e, what + " extension"):
         if kind in DROP_PLUGINS:
             continue
+        # The skin plugin is the one chunk whose LAYOUT changed between the donors' RenderWare and
+        # San Andreas', not just its version stamp: 3.3 writes a bone count with no used-bone list
+        # and pads every inverse-bind matrix to 68 bytes, 3.6 writes numBones/numUsedBones/
+        # maxWeightsPerVertex, the used-bone list, and 64-byte matrices. Passing one through with
+        # only the header restamped therefore produces a 3.3 body wearing a 3.6 label - which is
+        # what this function did, silently, until the models carrying one were taken out of this
+        # path entirely (see `dff_has_skin` and its caller).
+        #
+        # So it is dropped here rather than copied, and that is not a loss in either caller: a
+        # model with a skin is kept out of the region archive altogether, and convert_peds.py runs
+        # its geometry through this same code and then writes its own rebuilt skin over the top
+        # (`replace_skin`, which appends when there is nothing to replace). What the drop buys is
+        # that no route through this file can put a 3.3 skin in a San Andreas model again.
+        if kind == RW_SKIN:
+            continue
         if kind == RW_MATFX and ce - cs > 4:
             body.append(rw_chunk(kind, convert_matfx(data, cs, ce)))
         else:
             body.append(rw_chunk(kind, data[cs:ce]))
     return rw_chunk(RW_EXTENSION, b"".join(body))
+
+
+def dff_has_skin(data):
+    """Does this clump carry a skin plugin (0x116) anywhere inside it?
+
+    Walked rather than parsed, because the point is to decide whether the model belongs in this
+    path at all before anything tries to read it. Measured over the retail archives: 275 of Vice
+    City's 6043 entries and 18 of GTA III's 3856, and in both cases those are exactly the models
+    tools/convert_peds.py exists for plus the cutscene cast - Vice City's 107 `peds` models, its
+    168 `hier` ones, and GTA III's 18 cutscene heads. None of the 168 and 18 is referenced by any
+    section this importer emits.
+    """
+    def walk(at, end):
+        while at + 12 <= end:
+            kind, size, _lib = struct.unpack_from("<III", data, at)
+            body, tail = at + 12, at + 12 + size
+            if tail > end:
+                return False
+            if kind == RW_SKIN:
+                return True
+            if kind in RW_CONTAINERS and walk(body, tail):
+                return True
+            at = tail
+        return False
+
+    return len(data) >= 12 and walk(0, len(data))
 
 
 def convert_texture(data, s, e):
@@ -2856,6 +2913,1219 @@ def write_weapons(out, src, sa, renames, prefix):
     return "weapons.dat", "weapons.ide"
 
 
+# ---------------------------------------------------------------- pedestrian paths
+
+# Both donor games write path node coordinates multiplied by sixteen. Nothing says so in the files;
+# it is simply what their exporter did, and it is confirmed here by the result: Vice City's ped
+# nodes come out spanning x -1829..889 and y -1589..1508, which is its map to the metre.
+PATH_SCALE = 16.0
+
+# A path group is always twelve node slots, used or not. A node's first column says which:
+#   0  unused - the slot is padding and its coordinates are all zero
+#   1  external - an end of the group, joined to the matching end of a neighbouring group
+#   2  internal - joined only inside its own group, through the `next` column
+PATH_NODE_UNUSED, PATH_NODE_EXTERNAL, PATH_NODE_INTERNAL = 0, 1, 2
+PATH_GROUP_SLOTS = 12
+
+# Vice City's IPL path groups are headed "type, id": 0 is a PEDESTRIAN path, 1 a vehicle path and
+# 2 a boat path. That is what the game's own loader does - CFileLoader::LoadScene sends type 0 to
+# LoadPedPathNode, 1 to LoadCarPathNode and 2 to LoadCarPathNode with the water flag - and San
+# Andreas' leftover paths*.ipl, written in the same format, agree: matched against its binary
+# NODES*.DAT, type 0 lands only on ped nodes and types 1 and 2 only on vehicle nodes, and the
+# pedestrian-crossing flag is set on type 0 alone. An earlier reading had 0 and 1 the other way
+# round, which put the cars on the pavements and the peds in the road; the "9514 type-0 nodes to
+# 4588 type-1" count that looked inverted was the pavement outnumbering the road, as it should.
+VC_PATH_PED, VC_PATH_CAR, VC_PATH_BOAT = 0, 1, 2
+# GTA III says it in words instead, in the group header's first column.
+III_PATH_KIND = {"car": VC_PATH_CAR, "ped": VC_PATH_PED}
+
+# Columns after the three coordinates. Both games write the first nine columns the same way -
+# type, next, crossing, x, y, z, median, left lanes, right lanes - and Vice City adds three more
+# that GTA III has no equivalent of. GTA III writes 160 in the median column and its loader throws
+# it away; Vice City's car nodes carry the full width of the central reservation in metres there
+# (its loader stores 8 * min(width, 15)), and its ped nodes the width of the pavement.
+PATH_COL_CROSSING, PATH_COL_MEDIAN, PATH_COL_LEFT, PATH_COL_RIGHT = 2, 6, 7, 8
+
+# How close two external nodes have to be before they are taken to be the same point. The two games
+# joined them at run time by looking for the nearest external node of another group; here they are
+# merged outright, which is the same thing and leaves a simpler graph. The threshold is generous
+# against the measured data: for Vice City the nearest external node in another group is within
+# 0.35 units for 95 per cent of them, and within 1.6 for 99 per cent.
+PATH_MERGE_RADIUS = 2.0
+
+
+def read_path_groups(text):
+    """Every path group in an IPL or IDE `path` section, as {"head": [...], "nodes": [[...], ...]}.
+
+    The section is unusual among the two games' formats in being indented rather than flat: a group
+    starts with an unindented header line and its twelve node lines follow, each beginning with a
+    tab. That indentation is the only thing separating a header from a node, so it is what this
+    reads - `end` closes the section as it does everywhere else.
+    """
+    groups, inside, current = [], False, None
+    for raw in text.splitlines():
+        stripped = raw.strip()
+        if not inside:
+            if stripped.lower() == "path":
+                inside = True
+            continue
+        if stripped.lower() == "end":
+            inside = False
+            continue
+        if not stripped or stripped.startswith("#"):
+            continue
+        fields = [t.strip() for t in stripped.split(",")]
+        if raw[:1].isspace():
+            if current is not None:
+                current["nodes"].append(fields)
+        else:
+            current = {"head": fields, "nodes": []}
+            groups.append(current)
+    return groups
+
+
+class PedGraph:
+    """The pedestrian graph of a whole city: unique nodes, and which of them are joined.
+
+    Nodes go in with the coordinates the source game gives, in its own world, and links are added
+    both ways - the two games' path links are one-directional in the file only because a group
+    lists each node once. Coincident external nodes are merged as they arrive, so that the graph
+    comes out connected across the group boundaries the exporter left everywhere.
+    """
+
+    CELL = 4.0                # merge lookup grid; must be at least PATH_MERGE_RADIUS
+
+    def __init__(self):
+        self.pos = []         # [x, y, z] per node
+        self.links = []       # set of neighbour indices per node
+        self.zone = []        # ped group id per node, filled in later; -1 until then
+        self.lanes = []       # (median, left lanes, right lanes, crossing) - what traffic needs
+        self.merges = 0       # external nodes that landed on one already there
+        self._cells = {}
+
+    def _key(self, x, y, z):
+        return (int(x // self.CELL), int(y // self.CELL), int(z // self.CELL))
+
+    def add(self, x, y, z, merge):
+        """Return the index of a node at this point, merging onto an existing one when asked."""
+        if merge:
+            kx, ky, kz = self._key(x, y, z)
+            best, bestd = -1, PATH_MERGE_RADIUS ** 2
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    for dz in (-1, 0, 1):
+                        for i in self._cells.get((kx + dx, ky + dy, kz + dz), ()):
+                            px, py, pz = self.pos[i]
+                            d = (px - x) ** 2 + (py - y) ** 2 + (pz - z) ** 2
+                            if d < bestd:
+                                best, bestd = i, d
+            if best >= 0:
+                self.merges += 1
+                return best
+        index = len(self.pos)
+        self.pos.append([x, y, z])
+        self.links.append(set())
+        self.zone.append(-1)
+        self.lanes.append((10.0, 1, 1, 0))   # median, left lanes, right lanes, crossing
+        if merge:
+            self._cells.setdefault(self._key(x, y, z), []).append(index)
+        return index
+
+    def join(self, a, b):
+        if a != b and a >= 0 and b >= 0:
+            self.links[a].add(b)
+            self.links[b].add(a)
+
+    def add_group(self, nodes):
+        """One twelve-slot path group. Returns how many live nodes it contributed."""
+        mine, live = {}, 0
+        for slot, fields in enumerate(nodes[:PATH_GROUP_SLOTS]):
+            if len(fields) < 6:
+                continue
+            try:
+                kind = int(float(fields[0]))
+                x = float(fields[3]) / PATH_SCALE
+                y = float(fields[4]) / PATH_SCALE
+                z = float(fields[5]) / PATH_SCALE
+            except ValueError:
+                continue
+            if kind == PATH_NODE_UNUSED:
+                continue
+            # Only the group's ends are merged with other groups. An internal node that happened to
+            # land on another group's internal node is a coincidence, not a junction, and merging
+            # the two would join two pavements that the source game kept apart.
+            index = self.add(x, y, z, kind == PATH_NODE_EXTERNAL)
+            mine[slot] = index
+            live += 1
+            # What traffic needs and a pedestrian does not: how wide the central reservation is and
+            # how many lanes run each way. A merged node keeps whichever description came first;
+            # they are two ends of the same junction and the source game agreed with itself.
+            if len(self.lanes) > index and self.lanes[index] == (10.0, 1, 1, 0):
+                def column(at, default, cast=int):
+                    try:
+                        return cast(float(fields[at]))
+                    except (IndexError, ValueError):
+                        return default
+                # The median goes down exactly as the source game wrote it, undivided, because the
+                # two games do not agree about what it is. GTA III writes the constant 160 for
+                # every car node, which is 10 units once the coordinate scale is taken off it.
+                # Vice City writes a continuous small value - 3.5, 4, 1.92 - which is already a
+                # width and would become a couple of centimetres if the same scale were applied.
+                # Rather than guess which reading is right for which, the raw number is recorded
+                # and nothing uses it; lane placement is done from the lane counts and San Andreas'
+                # own lane width, which cannot be wrong for either game.
+                self.lanes[index] = (column(PATH_COL_MEDIAN, 0.0, float),
+                                     column(PATH_COL_LEFT, 1), column(PATH_COL_RIGHT, 1),
+                                     column(PATH_COL_CROSSING, 0))
+        for slot, fields in enumerate(nodes[:PATH_GROUP_SLOTS]):
+            if slot not in mine or len(fields) < 2:
+                continue
+            try:
+                nxt = int(float(fields[1]))
+            except ValueError:
+                continue
+            if nxt in mine:
+                self.join(mine[slot], mine[nxt])
+        return live
+
+    def drop_isolated(self):
+        """Throw away nodes nothing links to, and renumber. Returns how many went.
+
+        A node with no neighbour is a place a pedestrian could be put and then have nowhere to walk,
+        which is worse than not putting one there: it would stand in the street for ever.
+        """
+        keep = [i for i in range(len(self.pos)) if self.links[i]]
+        if len(keep) == len(self.pos):
+            return 0
+        renumber = {old: new for new, old in enumerate(keep)}
+        dropped = len(self.pos) - len(keep)
+        self.pos = [self.pos[i] for i in keep]
+        self.zone = [self.zone[i] for i in keep]
+        self.lanes = [self.lanes[i] for i in keep]
+        self.links = [set(renumber[n] for n in self.links[i] if n in renumber) for i in keep]
+        return dropped
+
+
+def vc_path_graph(ipl_texts, want):
+    """Vice City: one kind of path graph out of the `path` sections of its IPL files.
+
+    Vice City puts its whole path network in the IPLs, at absolute world coordinates, so this is
+    only a matter of reading it. GTA III does not - see iii_path_graph.
+    """
+    graph, groups = PedGraph(), 0
+    for text in ipl_texts:
+        for group in read_path_groups(text):
+            if not group["head"]:
+                continue
+            try:
+                kind = int(float(group["head"][0]))
+            except ValueError:
+                continue
+            if kind != want:
+                continue
+            if graph.add_group(group["nodes"]):
+                groups += 1
+    return graph, groups
+
+
+def iii_path_graph(ide_texts, ipl_texts, renames, want, negate_w=True):
+    """GTA III: one kind of path graph, assembled from path groups attached to road models.
+
+    III stores its paths quite differently from Vice City, which is why they are read separately.
+    A III path group lives in an IDE, is headed `ped, <model id>, <model name>` or `car, ...`, and
+    its coordinates are relative to the model rather than to the world: the group describes the
+    pavement or the carriageway across one road tile, and the tile is placed many times. So the
+    world nodes are the group transformed by every `inst` line that places that model - which is
+    also why III's road tiles are the same handful of meshes laid end to end.
+
+    An inst line carries a quaternion, and III's road tiles are laid flat and turned only about the
+    vertical, so only that rotation is applied. A tile pitched or rolled would come out wrong, and
+    none of III's are. Which sign that rotation takes is decided by measurement rather than by
+    argument - see iii_rotation_sign.
+    """
+    want_word = "ped" if want == VC_PATH_PED else "car"
+    by_model, graph, groups, placed = {}, PedGraph(), 0, 0
+    for text in ide_texts:
+        for group in read_path_groups(text):
+            head = group["head"]
+            if len(head) < 3 or head[0].strip().lower() != want_word:
+                continue
+            by_model.setdefault(head[2].strip().lower(), []).append(group["nodes"])
+            groups += 1
+    if not by_model:
+        return graph, 0
+    # The IDE names the model as the source game called it; the IPLs this reads have already been
+    # renamed under the region's tag, so look the group up under both.
+    tagged = {}
+    for name, nodes in by_model.items():
+        tagged[name] = nodes
+        new = renames.get(name + ".dff")
+        if new:
+            tagged[new.lower()] = nodes
+    for text in ipl_texts:
+        section = None
+        for raw in text.splitlines():
+            s = raw.strip()
+            low = s.lower()
+            if section is None:
+                if low in ("inst", "cull", "pick", "zone", "path", "occl", "mult", "enex", "cars",
+                           "jump", "tcyc", "auzo", "grge"):
+                    section = low
+                continue
+            if low == "end":
+                section = None
+                continue
+            if section != "inst" or not s or s.startswith("#"):
+                continue
+            tok = [t.strip() for t in re.split(r"[,\s]+", s) if t.strip()]
+            if len(tok) < 12:
+                continue
+            nodesets = tagged.get(tok[1].lower())
+            if not nodesets:
+                continue
+            try:
+                ox, oy, oz = float(tok[2]), float(tok[3]), float(tok[4])
+                rz, rw = float(tok[10]), float(tok[11])
+            except ValueError:
+                continue
+            # A quaternion turning only about the vertical is (0, 0, sin(a/2), cos(a/2)); III writes
+            # the scalar part last, and whether it is negated relative to the usual convention is
+            # settled by measurement rather than by reading it off - see iii_rotation_sign.
+            angle = (-2.0 if negate_w else 2.0) * math.atan2(rz, rw)
+            cos_a, sin_a = math.cos(angle), math.sin(angle)
+            for nodes in nodesets:
+                turned = []
+                for fields in nodes:
+                    if len(fields) < 6:
+                        turned.append(fields)
+                        continue
+                    try:
+                        x, y, z = float(fields[3]), float(fields[4]), float(fields[5])
+                    except ValueError:
+                        turned.append(fields)
+                        continue
+                    wx = ox + (x * cos_a - y * sin_a) / PATH_SCALE
+                    wy = oy + (x * sin_a + y * cos_a) / PATH_SCALE
+                    wz = oz + z / PATH_SCALE
+                    # add_group divides by PATH_SCALE itself, so hand it back scaled up again.
+                    turned.append(list(fields[:3]) +
+                                  ["%.6f" % (wx * PATH_SCALE), "%.6f" % (wy * PATH_SCALE),
+                                   "%.6f" % (wz * PATH_SCALE)] + list(fields[6:]))
+                if graph.add_group(turned):
+                    placed += 1
+    return graph, placed
+
+
+def iii_rotation_sign(ide_texts, ipl_texts, renames, want):
+    """Which way GTA III's placement quaternions turn, decided by the data rather than by argument.
+
+    A III path group is authored once and instanced at every placement of its road model, so the
+    ends of two adjacent tiles only land on each other if the rotation is applied the right way
+    round. Get the sign wrong and every group is turned the wrong way about its tile: the graph
+    still builds, but the external ends that should be the same point are not, so far fewer of them
+    merge. So both signs are tried and the one that merges more wins - which is a measurement of
+    the answer rather than a reading of the convention, and it says so in the log either way.
+    """
+    best = None
+    for negate_w in (True, False):
+        graph, placed = iii_path_graph(ide_texts, ipl_texts, renames, want, negate_w)
+        if best is None or graph.merges > best[0].merges:
+            best = (graph, placed, negate_w)
+    return best
+
+
+def write_path_nodes(out, name, graph, zones, what, extra):
+    """One path graph as a table: a node per line, its links on the same line.
+
+    `extra` says whether the lane columns are written. A pedestrian has no use for them - both
+    games leave the median at zero for a ped node - and traffic needs all of them.
+    """
+    lines = [
+        "# %s for this region, written by tools/import_city.py." % what,
+        "#",
+        "# The source game's own graph, in the region's own coordinates. San Andreas cannot hold",
+        "# these as they are: it stores a path node position as an int16 times 0.125, which reaches",
+        "# only +/-4095.875, and this region sits well past that. See docs/known-limitations.md.",
+        "#",
+        "# One node per line, numbered by the order they appear in:",
+        "#",
+        ("#   x y z zone median left right crossing link link ..." if extra else
+         "#   x y z zone link link ..."),
+        "#",
+        "# zone is a line number in pedgrp.dat's zone table, or -1 for nowhere in particular. The",
+        "# links are node numbers and every one of them is written on both nodes.",
+    ]
+    if extra:
+        lines += [
+            "# left and right are how many lanes run each way - the columns the source game's own",
+            "# traffic drove by - and crossing is its pedestrian-crossing flag.",
+            "#",
+            "# median is the source game's own number, exactly as it wrote it, and the two games",
+            "# do not agree about what it means: GTA III writes 160 for every car node and Vice",
+            "# City writes a continuous small value like 3.5 or 4. Nothing reads it. Lanes are",
+            "# placed from the counts above and San Andreas' own 5.4-unit lane width instead,",
+            "# which cannot be wrong for either of them.",
+        ]
+    lines += [
+        "#",
+        "# %d node(s), %d link(s), %d zone(s)."
+        % (len(graph.pos), sum(len(l) for l in graph.links) // 2, len(zones)),
+    ]
+    for i, (x, y, z) in enumerate(graph.pos):
+        links = " ".join(str(n) for n in sorted(graph.links[i]))
+        if extra:
+            median, left, right, crossing = graph.lanes[i]
+            lines.append("%.3f %.3f %.3f %d %.2f %d %d %d %s"
+                         % (x, y, z, graph.zone[i], median, left, right, crossing, links))
+        else:
+            lines.append("%.3f %.3f %.3f %d %s" % (x, y, z, graph.zone[i], links))
+    with open(os.path.join(out, name), "w", encoding="latin-1") as f:
+        f.write("\n".join(lines) + "\n")
+    return name
+
+
+# ---------------------------------------------------------------- who walks where
+
+# The two donor games decide who walks in a district exactly the same way as each other, and not at
+# all the way San Andreas does - which is why this is read from the source rather than mapped onto
+# anything of San Andreas'.
+#
+#   data/pedgrp.dat        numbered groups of ped model names. GTA III writes eight per group and
+#                          has 31 groups; Vice City writes sixteen and has 67.
+#   the zone boxes         data/gta3.zon for III, the type 2 "info" zones of data/info.zon for
+#                          Vice City. A name may be used by several boxes; they share one record.
+#   data/main.scm          and here is the link, which is in neither of the above: both games set
+#                          a zone's ped group from their mission script, with the opcode this file
+#                          calls SET_ZONE_PED_GROUP, once for daytime and once for night.
+#
+# San Andreas does none of this. Its zones carry no population fields at all; its script hands each
+# zone one of twenty popcycle types and data/popcycle.dat then gives percentages per hour across
+# eighteen columns. There is no honest mapping between the two schemes, and there does not need to
+# be one: San Andreas' own spawner never runs over an imported city - it has no path nodes there -
+# so the plugin is the only thing putting people in these streets and it reads this table directly.
+# San Andreas' own map keeps its own crowd, untouched.
+
+# SET_ZONE_PED_GROUP. Both games use the same opcode number, which is the one thing about their
+# scripts that is the same; the pickup work on this project found their float encodings differ, so
+# nothing here is assumed to carry over without being counted against the source.
+SCM_SET_ZONE_PED_GROUP = 0x0324
+SCM_LABEL_BYTES = 8
+# Immediate integer parameters: type byte then that many bytes, little endian and signed.
+SCM_INT_SIZES = {0x04: 1, 0x05: 2, 0x06: 4}
+
+
+def scm_int(blob, at):
+    """(value, bytes consumed) of an immediate integer parameter, or (None, 0)."""
+    if at >= len(blob):
+        return None, 0
+    size = SCM_INT_SIZES.get(blob[at])
+    if not size or at + 1 + size > len(blob):
+        return None, 0
+    return int.from_bytes(blob[at + 1:at + 1 + size], "little", signed=True), 1 + size
+
+
+def scm_zone_ped_groups(path, group_count, known_zones):
+    """{ZONE: (day group, night group)} out of a compiled main.scm.
+
+    The opcode is found by scanning for its two bytes rather than by walking the script, which
+    would mean implementing both games' whole instruction sets to know how long each one is. A
+    two-byte needle on its own would match plenty of coincidences, so every candidate has to earn
+    its place: the eight bytes after it must read as a zone label the zone file actually declares,
+    and the two parameters after that must be a day/night flag and a group number in range. The
+    caller is told how many were found so a wrong count is visible rather than silent - GTA III
+    should give 84 and Vice City 96, two per zone.
+
+    A later call wins over an earlier one, which is what the games themselves do: Vice City sets
+    TERMINL twice in its start-up block and means the second.
+    """
+    with open(path, "rb") as f:
+        blob = f.read()
+    needle = SCM_SET_ZONE_PED_GROUP.to_bytes(2, "little")
+    found, at = {}, 0
+    while True:
+        at = blob.find(needle, at)
+        if at < 0:
+            break
+        start = at
+        at += 1
+        p = start + 2
+        raw = blob[p:p + SCM_LABEL_BYTES]
+        if len(raw) < SCM_LABEL_BYTES:
+            continue
+        # The label is NUL terminated inside its eight bytes. What follows the terminator is not
+        # reliably anything: Vice City pads with 0xCC, GTA III mostly pads with NULs but leaves the
+        # odd byte of its assembler's scratch behind - "CHINA\0I\0", "PARK\0\0U\0" - and rejecting
+        # those cost two of GTA III's zones. So the tail only has to be bytes a text buffer could
+        # hold; the real filter is the zone name and the two parameters below.
+        name = raw.split(b"\0", 1)[0]
+        if not name or any(b not in (0x00, 0xCC) and not 0x20 <= b <= 0x7E for b in raw):
+            continue
+        try:
+            label = name.decode("ascii")
+        except UnicodeDecodeError:
+            continue
+        if not re.fullmatch(r"[A-Za-z0-9_]+", label) or label.upper() not in known_zones:
+            continue
+        day, used = scm_int(blob, p + SCM_LABEL_BYTES)
+        if used == 0 or day not in (0, 1):
+            continue
+        group, used2 = scm_int(blob, p + SCM_LABEL_BYTES + used)
+        if used2 == 0 or not 0 <= group < group_count:
+            continue
+        pair = list(found.get(label.upper(), (0, 0)))
+        pair[0 if day else 1] = group
+        found[label.upper()] = tuple(pair)
+    return found
+
+
+def read_donor_pedgrp(path):
+    """The donor's data/pedgrp.dat: [(comment, [model names])] in file order, index = group number.
+
+    The comment at the end of a line is the group's name in the game's own words ("redlight night",
+    "ghetto1") and it is kept, because it is the only thing that makes the emitted table readable.
+
+    Three of GTA III's lines are missing a comma between two names - groups 8, 9 and 17 in the
+    stock file - so the split is on whitespace as well as commas rather than on commas alone.
+    """
+    groups = []
+    with open(path, "r", encoding="latin-1") as f:
+        for raw in f:
+            line = raw.rstrip("\n")
+            comment = ""
+            for marker in ("//", "#"):
+                cut = line.find(marker)
+                if cut >= 0:
+                    if not comment:
+                        comment = line[cut + len(marker):].strip()
+                    line = line[:cut]
+            if not line.strip():
+                continue
+            names = [t for t in re.split(r"[,\s]+", line.strip()) if t]
+            if names:
+                groups.append((comment, names))
+    return groups
+
+
+def read_zon_boxes(text, want_types):
+    """[(name, x1, y1, z1, x2, y2, z2)] from the zone lines of a .zon, for the given zone types."""
+    boxes, section = [], None
+    for raw in text.splitlines():
+        s = raw.strip()
+        low = s.lower()
+        if section is None:
+            if low in ("zone", "end"):
+                section = "zone" if low == "zone" else None
+            continue
+        if low == "end":
+            section = None
+            continue
+        if not s or s.startswith("#") or s.startswith(";"):
+            continue
+        t = [x.strip() for x in re.split(r"[,\s]+", s) if x.strip()]
+        if len(t) < 9:
+            continue
+        try:
+            kind = int(float(t[1]))
+            v = [float(x) for x in t[2:8]]
+        except ValueError:
+            continue
+        if want_types is not None and kind not in want_types:
+            continue
+        boxes.append((t[0], min(v[0], v[3]), min(v[1], v[4]), min(v[2], v[5]),
+                      max(v[0], v[3]), max(v[1], v[4]), max(v[2], v[5])))
+    return boxes
+
+
+def stamp_zones(graph, boxes, zone_index):
+    """Give every node the zone it stands in, smallest box first. Returns how many got one.
+
+    Smallest first is what both games do when boxes overlap, and they overlap a great deal: Vice
+    City draws 165 info boxes over 44 names, and a small one inside a large one is how a shop front
+    is given a different crowd from the street it stands on.
+    """
+    ordered = sorted(range(len(boxes)),
+                     key=lambda i: ((boxes[i][4] - boxes[i][1]) * (boxes[i][5] - boxes[i][2])))
+    stamped = 0
+    for n, (x, y, z) in enumerate(graph.pos):
+        for i in ordered:
+            name, x1, y1, z1, x2, y2, z2 = boxes[i]
+            if x1 <= x <= x2 and y1 <= y <= y2 and z1 <= z <= z2:
+                zi = zone_index.get(name.upper())
+                if zi is not None:
+                    graph.zone[n] = zi
+                    stamped += 1
+                break
+    return stamped
+
+
+def sa_ped_models(sa):
+    """Every ped model San Andreas declares, in data/peds.ide order."""
+    path = find_file(sa, "data/peds.ide")
+    if not path:
+        return []
+    names, section = [], None
+    with open(path, "r", encoding="latin-1") as f:
+        for raw in f:
+            s = raw.strip()
+            low = s.lower()
+            if section is None:
+                if low == "peds":
+                    section = "peds"
+                continue
+            if low == "end":
+                section = None
+                continue
+            if not s or s.startswith("#"):
+                continue
+            t = [x.strip() for x in s.split(",")]
+            if len(t) > 2 and t[1].lower() != "null":
+                names.append(t[1])
+    return names
+
+
+# San Andreas and Vice City name a ped model the same way - ethnicity, sex, age, then what they are
+# doing: WMYST is a White Male Young on the STreet, BFORI a Black Female Old and RIch. San Andreas
+# adds a city letter in front for a model that belongs to one of its three cities (SWMYST is the
+# San Fierro one, VWMYCD a Las Vegas one) and a longer role tail. That shared convention is what
+# makes a placeholder mapping possible at all, and it is why most of Vice City's crowd maps onto a
+# San Andreas model that means the same thing rather than onto a stand-in.
+#
+# GTA III shares nothing with either: its peds are male02, fatfemale01, docker1, pimp. Those are
+# mapped by the hand-written table below.
+PED_ETHNICITY = "BHWOSIJVCDG"      # the first letter of a model name, when it is one of these
+PED_SEX = "MF"
+PED_AGE = "YO"
+
+# What Vice City's role suffixes mean and what San Andreas has that is nearest. The first entry
+# that San Andreas actually declares wins; an empty list means "nothing like it, take the fallback".
+VC_PED_ROLE = {
+    "ST": ["ST"],                       # street
+    "RI": ["RI"],                       # rich
+    "BU": ["BU"],                       # business
+    "TR": ["TR1", "TR2", "TR3", "TR"],  # tramp - San Andreas numbers them
+    "BE": ["BE"],                       # beach
+    "PR": ["PRO"],                      # prostitute
+    "CR": ["CR"],                       # criminal
+    "DK": ["CON", "CONB"],              # docker - San Andreas has no docks, so a labourer
+    "CW": ["CON", "CONB"],              # construction worker
+    "GO": ["GOL1", "GOL2"],             # golfer
+    "JG": ["JG"],                       # jogger
+    "SH": ["ST"],                       # shopper - San Andreas has no shopper model
+    "SK": ["BMX", "BP"],                # skater - the nearest thing on wheels
+    "PI": ["PIMP", "CR"],               # pimp
+    "BB": ["MOUN", "ST"],               # basketball
+    "AP": ["AP"],                       # airport worker
+    "LG": ["LG"],                       # lifeguard
+    "MD": ["VA", "ST"],                 # maid
+    "CG": ["ST"],                       # cheerleader
+    "TO": ["RI", "BE"],                 # tourist
+    "G1": ["ST"],
+    "G2": ["ST"],
+}
+
+# GTA III's ped names carry no structure at all, so its crowd is placed by hand. Each is the San
+# Andreas model that reads most like it in the street; where San Andreas has no equivalent the
+# nearest role is used and the comment says what was lost.
+III_PED_MAP = {
+    "male01": "WMYST", "male02": "WMYST", "male03": "HMYST",
+    "female01": "WFYST", "female02": "WFYST", "female03": "HFYST",
+    "fatmale01": "WMOST", "fatmale02": "BMOST",
+    "fatfemale01": "WFOST", "fatfemale02": "BFOST",
+    "worker1": "WMYCON", "worker2": "WMYCONB",
+    "const1": "WMYCON", "const2": "WMYCONB",
+    "docker1": "WMYCON", "docker2": "BMYCON",
+    "scum_man": "WMOTR1", "scum_wom": "SWFOST",
+    "pimp": "BMYPIMP",
+    "criminal01": "WMYCR", "criminal02": "BMYCR",
+    "prostitute": "WFYPRO", "prostitute2": "BFYPRO",
+    "cas_man": "WMYRI", "cas_wom": "WFYRI",
+    "li_man1": "WMORI", "li_man2": "WMOST", "li_wom1": "WFORI", "li_wom2": "WFOST",
+    "ct_man1": "OMYST", "ct_man2": "OMOST", "ct_wom1": "OFYST", "ct_wom2": "OFOST",
+    "b_man1": "BMYST", "b_man2": "BMYRI", "b_man3": "BMOST",
+    "b_wom1": "BFYST", "b_wom2": "BFYRI", "b_wom3": "BFOST",
+    "hos_man": "WMYCON", "hos_wom": "WFYST",      # hospital staff; SA's medics are not civilians
+    "st_man": "WMYBU", "st_wom": "WFYBU",         # studio
+    "stud_man": "WMYST", "stud_wom": "WFYST",     # students
+    "shopper1": "WFYST", "shopper2": "HFYST", "shopper3": "BFYST",
+    "mod_man": "WMYRI", "mod_wom": "WFYRI",
+    "fan_man1": "WMYST", "fan_man2": "BMYST", "fan_wom": "WFYST",
+    "p_man1": "BMYST", "p_man2": "HMYST", "p_wom1": "BFYST", "p_wom2": "HFYST",
+}
+
+# When nothing else matches. male01 is deliberately not used: both donor pedgrp.dat files say in
+# their own headers not to put it in a group, and San Andreas' own does the same.
+PED_FALLBACK = ["WMYST", "WFYST", "BMYST", "BFYST", "HMYST", "HFYST"]
+
+
+def split_ped_name(name):
+    """(ethnicity, sex, age, role) of a San Andreas / Vice City ped name, or None.
+
+    San Andreas puts a city letter in front of some of its models - SWMYST, VWMYCD, CWMOFR - so a
+    six-letter name whose first letter would otherwise make no sense as an ethnicity is tried again
+    without it.
+    """
+    for start in (0, 1):
+        s = name.upper()[start:]
+        if len(s) >= 4 and s[0] in PED_ETHNICITY and s[1] in PED_SEX and s[2] in PED_AGE:
+            return s[0], s[1], s[2], s[3:]
+    return None
+
+
+# What somebody does when San Andreas has nobody doing what they did. Ordinary before well-off,
+# because a crowd of strangers reads better as ordinary; and this is the last thing tried before
+# giving up on the description altogether, so it decides what a Vice City docker or lifeguard turns
+# into. Without it the answer is whatever peds.ide happens to declare first, which is the RIch
+# models, and a docks crowd came out dressed for a yacht club.
+PED_ROLE_LAST_RESORT = ["ST", "TR1", "BU", "RI", "BE"]
+
+
+def map_vc_ped(name, sa_by_key, sa_names):
+    """The San Andreas model that stands in for a Vice City one, and why.
+
+    Tried in order of how much is being given up: the same name, then the same person doing the
+    same or the nearest job, then the same job done by somebody a little older or younger or of
+    another background, then the same person doing something ordinary, and only then anybody at all.
+    """
+    upper = name.upper()
+    if upper in sa_names:
+        return sa_names[upper], "same name"
+    parts = split_ped_name(upper)
+    if not parts:
+        return PED_FALLBACK[0], "no name to read"
+    eth, sex, age, role = parts
+    roles = [role] + [r for r in VC_PED_ROLE.get(role[:2], []) if r != role]
+    for wanted in roles:
+        hit = sa_by_key.get((eth, sex, age, wanted))
+        if hit:
+            return hit, "same person, same job" if wanted == role else "nearest job"
+    other_age = "O" if age == "Y" else "Y"
+    for wanted in roles:
+        hit = sa_by_key.get((eth, sex, other_age, wanted))
+        if hit:
+            return hit, "same job, older or younger"
+    for wanted in roles:
+        for key, hit in sa_by_key.items():
+            if key[1] == sex and key[3] == wanted:
+                return hit, "same job, different background"
+    for wanted in PED_ROLE_LAST_RESORT:
+        hit = sa_by_key.get((eth, sex, age, wanted))
+        if hit:
+            return hit, "same person, ordinary job"
+    for key, hit in sa_by_key.items():
+        if key[:3] == (eth, sex, age):
+            return hit, "same person, any job"
+    for key, hit in sa_by_key.items():
+        if key[1:3] == (sex, age):
+            return hit, "same sex and age"
+    for key, hit in sa_by_key.items():
+        if key[1] == sex:
+            return hit, "same sex"
+    return PED_FALLBACK[0], "nothing alike"
+
+
+def build_ped_map(donor_names, sa_list, prefix):
+    """{donor name: (SA name, why)} for every model the donor's ped groups ask for."""
+    sa_names = {n.upper(): n for n in sa_list}
+    sa_by_key = {}
+    for n in sa_list:
+        parts = split_ped_name(n)
+        if parts and parts not in sa_by_key:
+            sa_by_key[parts] = n
+    out = {}
+    for name in donor_names:
+        if prefix == "iii_":
+            hit = III_PED_MAP.get(name.lower())
+            out[name] = ((sa_names.get((hit or "").upper(), hit or PED_FALLBACK[0]), "hand-mapped")
+                         if hit else (PED_FALLBACK[0], "no equivalent"))
+        else:
+            out[name] = map_vc_ped(name, sa_by_key, sa_names)
+    return out
+
+
+def write_ped_groups(out, groups, zones, ped_map, prefix):
+    """pedgrp.dat: who walks in each of the region's districts, over San Andreas' own models."""
+    lines = [
+        "# Who walks where in this region, written by tools/import_city.py from the source game's",
+        "# data/pedgrp.dat, its zone boxes and the SET_ZONE_PED_GROUP calls in its main.scm.",
+        "#",
+        "# Two kinds of line, in any order:",
+        "#",
+        "#   zone  <n> <NAME> <day group> <night group>",
+        "#   group <n> <name> <DONOR/SAMODEL> <DONOR/SAMODEL> ...",
+        "#",
+        "# pednodes.dat stamps every pedestrian node with a zone number from the table here, so a",
+        "# node knows who walks on it; the plugin picks the day or the night group by the clock and",
+        "# then a model from it at random.",
+        "#",
+        "# The right-hand side of each pair is the San Andreas model actually used. The left-hand",
+        "# side is what the source game asked for, and it is written down for exactly one reason:",
+        "# these are placeholders. When the donor's own ped models are imported, this file is where",
+        "# they go - change SAMODEL to the imported model's name and nothing else has to change,",
+        "# the same way weapons.dat pairs an imported gun with the San Andreas weapon it borrows.",
+        "#",
+        "# Vice City and San Andreas happen to name a ped the same way - ethnicity, sex, age, then",
+        "# the job - so most of the pairing here is the San Andreas model that means the same",
+        "# thing. GTA III names its peds male02, docker1, pimp, and shares nothing, so its crowd is",
+        "# paired by a table written by hand in tools/import_city.py.",
+        "#",
+        "# %d zone(s), %d group(s), %d distinct model(s)."
+        % (len(zones), len(groups), len(ped_map)),
+    ]
+    for i, (name, day, night) in enumerate(zones):
+        lines.append("zone  %-3d %-8s %d %d" % (i, name, day, night))
+    for i, (comment, names) in enumerate(groups):
+        pairs = " ".join("%s/%s" % (n, ped_map.get(n, (PED_FALLBACK[0], ""))[0]) for n in names)
+        label = re.sub(r"[^A-Za-z0-9_]+", "_", comment).strip("_") or "group%d" % i
+        lines.append("group %-3d %-18s %s" % (i, label, pairs))
+    with open(os.path.join(out, "pedgrp.dat"), "w", encoding="latin-1") as f:
+        f.write("\n".join(lines) + "\n")
+    return "pedgrp.dat"
+
+
+# ---------------------------------------------------------------- the cars parked at the kerb
+#
+# Empty streets are most of why an imported city still reads as a model rather than a place, and
+# neither donor game puts its parked cars in a map file. Both create them from data/main.scm, with
+# literal coordinates, through one opcode:
+#
+#   0x014B CREATE_CAR_GENERATOR  x y z angle model colour1 colour2 force alarm lock minDelay
+#                                maxDelay  -> handle
+#   0x014C SET_CAR_GENERATOR     handle count       (0 = off, >100 = for ever)
+#
+# The parameter order was read off the script stream rather than taken from an opcode listing,
+# because the listings reorder the parameters for display. It is the same in both games; what is
+# NOT the same is the float encoding, which the pickup work on this project already found: Vice
+# City writes a 32-bit IEEE float behind a 0x06 type byte, GTA III writes an int16 divided by 16.
+#
+# Nothing walks the whole instruction set to find these - that would mean implementing two games'
+# scripts - so the two opcode bytes are scanned for and every candidate has to earn its place.
+# Four filters, in order of how cheap they are:
+#
+#   1. shape       twelve immediate parameters, the first four floats and the last eight integers,
+#                  then a variable to store the handle in. This alone throws out 39 of Vice City's
+#                  211 raw matches and 13 of GTA III's 162.
+#   2. chain       a real generator has a neighbour: the bytes after it are either the
+#                  SET_CAR_GENERATOR that switches it on, addressed to the same variable, or
+#                  another well-shaped generator. Vice City's are all of the first kind and GTA
+#                  III's almost all of the second. A coincidence has no neighbour.
+#   3. sense       the model is -1 or an id the source game's own default.ide declares as a
+#                  vehicle; the heading is a bearing; alarm and lock are percentages; the delays
+#                  are ordered.
+#   4. ground      the position falls inside one of the source game's own zone boxes - the same
+#                  file the ped-group miner validates its zone labels against.
+#
+# A generator the script switches OFF the moment it makes it is left out: those are the ones a
+# mission turns on later, and a car that belongs to a mission we are not running is not street
+# furniture. That rule drops two of GTA III's and twenty-four of Vice City's.
+#
+# WHAT IS CARRIED ACROSS, and what is not:
+#
+#   position    the source game's own, in its own coordinates; the plugin adds the region origin.
+#               A z of -100 means "on the ground here" in both donor games - and, as it happens,
+#               in San Andreas too: CCarCtrl::CreateCarForScript compares z against the float at
+#               0x859014, which is exactly -100.0, and resolves it through CWorld::FindGroundZ
+#               itself. So the convention travels untranslated.
+#   heading     degrees. Both donor games and San Andreas measure a heading the same way - local
+#               +Y forward, turning anticlockwise about Z - which is confirmed by San Andreas'
+#               own car generator multiplying its stored byte angle by the float at 0x859BBC,
+#               2*pi/256, with no sign change. Degrees times pi/180 is the whole conversion.
+#   model       paired with a San Andreas model, written into the file as DONOR/SAMODEL exactly
+#               as pedgrp.dat pairs a person. A model of -1 is the source game asking for "any
+#               ordinary car", which San Andreas' own generators ask for in the same way (a
+#               negative model id, see CCarGenerator::DoInternalProcessing at 0x6F352E), so it is
+#               written as `random` and answered from the `fleet` line at the top of the file.
+#   lock        the percentage chance the source game gave that car of being locked. Applied.
+#   alarm       the same for an alarm. Written down and NOT applied: San Andreas keeps an alarm
+#               state rather than a flag and the sentinel for "fitted but quiet" was not
+#               established here, and a car that howls when it is brushed is worse than one with
+#               no alarm at all.
+#   colour      the source game's own carcols.dat indices. Written down and NOT applied, because
+#               a donor palette index is not a San Andreas palette index - they are different
+#               tables of different length. 317 of the 320 generators say -1 anyway, which both
+#               games read as "any colour this model comes in", so this costs three cars.
+#   force       whether the generator ignores the game's parked-car budget. Dropped: it exists to
+#               steer San Andreas' own CCarGenerator budget, and these are not in it.
+#   delays      the minimum and maximum wait before a generator makes another car. Dropped: they
+#               are what makes a stolen parked car reappear within seconds, which is the one
+#               behaviour of the donor's system this deliberately does not reproduce.
+
+SCM_CREATE_CAR_GENERATOR = 0x014B
+SCM_SET_CAR_GENERATOR = 0x014C
+
+# The "class" column of a cars line, in every one of the three games. It is what a donor's own
+# random-car chooser draws on, so it is also what decides whether a model belongs in the fleet a
+# `random` generator picks from.
+VEHICLE_CLASSES = {
+    "normal", "poorfamily", "richfamily", "executive", "worker", "big", "taxi", "moped",
+    "motorbike", "leisureboat", "workerboat", "bicycle", "ignore", "special", "bike",
+}
+# Ordinary traffic: what a car generator asking for "any car" should be able to get. `ignore` is
+# every mission and emergency vehicle, and the boats and bikes are not what a kerb wants.
+FLEET_CLASSES = ("normal", "poorfamily", "richfamily", "executive", "worker", "taxi")
+
+
+def read_vehicle_ide(path):
+    """{id: (name, type, class)} from the cars section of a III / VC / SA IDE.
+
+    Three of San Andreas' 212 lines - emperor, wayfarer and dodo - separate the model name from
+    the texture dictionary with a tab instead of a comma, which shifts every field after them by
+    one and silently loses those three models. The name field is therefore split again on
+    whitespace and the row rebuilt, rather than trusting the commas.
+    """
+    out, section = {}, None
+    with open(path, "r", encoding="latin-1") as f:
+        for raw in f:
+            s = raw.strip()
+            low = s.lower()
+            if section is None:
+                if low == "cars":
+                    section = 1
+                continue
+            if low == "end":
+                section = None
+                continue
+            if not s or s.startswith("#"):
+                continue
+            t = [x.strip() for x in s.split(",")]
+            if len(t) > 1 and len(t[1].split()) > 1:
+                merged = t[1].split()
+                t = [t[0]] + merged[:2] + t[2:]
+            if len(t) < 7:
+                continue
+            try:
+                ident = int(t[0])
+            except ValueError:
+                continue
+            # GTA III has no anims column, so the class is one field earlier than in VC and SA.
+            klass = ""
+            for i in (6, 7):
+                if i < len(t) and t[i].lower() in VEHICLE_CLASSES:
+                    klass = t[i].lower()
+                    break
+            out[ident] = (t[1].lower(), t[3].lower(), klass)
+    return out
+
+
+# San Andreas kept a great many of Vice City's and GTA III's vehicle names - landstal, peren,
+# sentinel, infernus, cheetah, taxi, ambulan, rumpo, stallion and forty more - the same way it kept
+# their ped naming, and for the same reason: it is the same series. So the pairing below only has
+# to cover the models whose names San Andreas did not keep. Each is the San Andreas vehicle of the
+# nearest class and era, and the comment says what is being given up.
+VEHICLE_MAP = {
+    # GTA III
+    "idaho":    ("glendale",  "a 70s American mid-size; SA has no Idaho"),
+    "blista":   ("blistac",   "SA renamed it the Blista Compact"),
+    "kuruma":   ("previon",   "a Japanese saloon; SA has no Kuruma"),
+    "police":   ("copcarla",  "a marked police car; SA's is Los Santos'"),
+    "bellyup":  ("boxville",  "Bellyup Fish - a panel van; the livery is lost"),
+    "mrwongs":  ("boxville",  "Mr Wong's laundry van; the livery is lost"),
+    "mafia":    ("admiral",   "the Mafia Sentinel - a black executive saloon"),
+    "yakuza":   ("sultan",    "the Yakuza Stinger - a fast Japanese saloon"),
+    "columb":   ("huntley",   "the Cartel Cruiser - a boxy 4x4 wagon"),
+    "panlant":  ("yankee",    "Panlantic's construction truck"),
+    "toyz":     ("mrwhoop",   "the Toyz van; SA's novelty van is the ice cream one"),
+    # Vice City
+    "stinger":  ("comet",     "a two-seat European sports car"),
+    "rio":      ("tropic",    "a cabin cruiser"),
+    "fbicar":   ("washing",   "the FBI Washington, without the badge"),
+    "angel":    ("freeway",   "a cruiser motorcycle"),
+    "sentxs":   ("sentinel",  "the Sentinel XS is a Sentinel"),
+    "gangbur":  ("burrito",   "the Gang Burrito is a Burrito"),
+    "pheonix":  ("phoenix",   "Vice City spells it wrong; San Andreas does not"),
+    "kaufman":  ("cabbie",    "the Kaufman Cab"),
+    "vicechee": ("cheetah",   "the Vice Cheetah, without the police livery"),
+}
+# When a donor vehicle has no name in San Andreas and no line above. Ordinary before interesting,
+# for the same reason the crowd falls back to a stranger in the street rather than to a millionaire.
+VEHICLE_FALLBACK = "premier"
+
+
+def map_vehicle(name, sa_names):
+    """(SA model name, why) for one donor vehicle name."""
+    low = name.lower()
+    if low in sa_names:
+        return sa_names[low], "same name"
+    hit = VEHICLE_MAP.get(low)
+    if hit and hit[0] in sa_names:
+        return sa_names[hit[0]], hit[1] or "hand-mapped"
+    return VEHICLE_FALLBACK, "no equivalent"
+
+
+def scm_int(blob, at, floats_are_ieee):
+    """(kind, value, bytes consumed) of one immediate script parameter, or None.
+
+    kind is 'int', 'float' or 'var'. Type bytes: 01 int32, 02 global, 03 local, 04 int8,
+    05 int16, 06 float - and a float is four IEEE bytes in Vice City and two fixed-point bytes,
+    sixteenths of a unit, in GTA III.
+    """
+    if at >= len(blob):
+        return None
+    t = blob[at]
+    width = {0x04: 1, 0x05: 2, 0x01: 4}.get(t)
+    if width:
+        if at + 1 + width > len(blob):
+            return None
+        return "int", int.from_bytes(blob[at + 1:at + 1 + width], "little", signed=True), 1 + width
+    if t in (0x02, 0x03):
+        if at + 3 > len(blob):
+            return None
+        return "var", int.from_bytes(blob[at + 1:at + 3], "little"), 3
+    if t == 0x06:
+        if not floats_are_ieee:
+            if at + 3 > len(blob):
+                return None
+            return "float", int.from_bytes(blob[at + 1:at + 3], "little", signed=True) / 16.0, 3
+        if at + 5 > len(blob):
+            return None
+        return "float", struct.unpack("<f", blob[at + 1:at + 5])[0], 5
+    return None
+
+
+def scm_parked_cars(path, prefix, vehicles, boxes):
+    """[(x, y, z, heading, model, col1, col2, alarm, lock, offset)] out of a compiled main.scm.
+
+    See the comment block above for the opcode, the four filters and what each one is worth. The
+    counts are returned alongside so a bad import is visible rather than silent.
+    """
+    with open(path, "rb") as f:
+        blob = f.read()
+    ieee = prefix != "iii_"
+    needle = SCM_CREATE_CAR_GENERATOR.to_bytes(2, "little")
+    switch = SCM_SET_CAR_GENERATOR.to_bytes(2, "little")
+    counts = collections.Counter()
+
+    # ---- filter 1: shape
+    shaped = {}          # start offset -> (values, handle kind, handle index, end offset)
+    at = 0
+    while True:
+        at = blob.find(needle, at)
+        if at < 0:
+            break
+        counts["raw"] += 1
+        p = at + 2
+        vals, ok = [], True
+        for i in range(12):
+            r = scm_int(blob, p, ieee)
+            if r is None or r[0] == "var" or (i < 4) != (r[0] == "float"):
+                ok = False
+                break
+            vals.append(r[1])
+            p += r[2]
+        if ok:
+            handle = scm_int(blob, p, ieee)
+            if handle and handle[0] == "var":
+                shaped[at] = (vals, handle[1], p + handle[2])
+            else:
+                ok = False
+        if not ok:
+            counts["not the right shape"] += 1
+        at += 1
+
+    # ---- filter 2: chain. A generator's neighbour is the switch addressed to its own handle, or
+    # another generator starting exactly where it ends. Nothing else has a neighbour.
+    ends = {v[2]: start for start, v in shaped.items()}
+    kept = {}
+    for start, (vals, handle, end) in shaped.items():
+        switched = None
+        if blob[end:end + 2] == switch:
+            h = scm_int(blob, end + 2, ieee)
+            c = scm_int(blob, end + 2 + h[2], ieee) if h else None
+            if h and h[0] == "var" and h[1] == handle and c and c[0] == "int":
+                switched = c[1]
+        chained = switched is not None or end in shaped or start in ends
+        if not chained:
+            counts["no neighbour"] += 1
+            continue
+        if switched == 0:
+            counts["the script switches it off"] += 1
+            continue
+        kept[start] = vals
+
+    # ---- filters 3 and 4: sense, then ground
+    out = []
+    for start in sorted(kept):
+        x, y, z, angle, model, c1, c2, force, alarm, lock, lo, hi = kept[start]
+        if model != -1 and model not in vehicles:
+            counts["names no vehicle of this game"] += 1
+            continue
+        if not -360.0 <= angle <= 360.0 or not 0 <= alarm <= 100 or not 0 <= lock <= 100 \
+                or force not in (0, 1) or lo > hi or lo < 0:
+            counts["a column out of range"] += 1
+            continue
+        if boxes and not any(bx[1] <= x <= bx[4] and bx[2] <= y <= bx[5] for bx in boxes):
+            counts["outside every zone of this map"] += 1
+            continue
+        out.append((x, y, z, angle % 360.0, model, c1, c2, alarm, lock, start))
+    counts["kept"] = len(out)
+    return out, counts
+
+
+def write_parked_cars(out, generators, vehicles, sa_vehicles, counts, prefix, road_points):
+    """parkedcars.dat: where the source game parked a car, over San Andreas' own models."""
+    sa_names = {n.lower(): n for _i, (n, _t, _c) in sa_vehicles.items()}
+    # The fleet a `random` generator draws from: the source game's own ordinary traffic, each
+    # paired the same way a named car is. Boats, bikes, aircraft and everything the source game
+    # marks `ignore` - its mission and emergency vehicles - are left out.
+    fleet = []
+    for _i, (name, kind, klass) in sorted(vehicles.items()):
+        if kind == "car" and klass in FLEET_CLASSES:
+            fleet.append((name, map_vehicle(name, sa_names)[0]))
+    why = collections.Counter()
+    rows = []
+    for x, y, z, angle, model, c1, c2, alarm, lock, offset in generators:
+        if model < 0:
+            pair, note = "random/*", "any ordinary car"
+        else:
+            donor = vehicles[model][0]
+            sa, reason = map_vehicle(donor, sa_names)
+            why[reason] += 1
+            pair, note = "%s/%s" % (donor, sa), donor
+        rows.append("car   %9.2f %9.2f %8.2f %6.1f  %-20s %4d %4d %4d %4d   # %s @0x%x"
+                    % (x, y, z, angle, pair, c1, c2, alarm, lock, note, offset))
+
+    near = ""
+    if road_points:
+        # Not a filter - a car parked in a yard is legitimately away from a carriageway - but the
+        # number says at a glance whether the mined coordinates are in the same world as the roads.
+        # This is the independent check on the whole exercise: the placements come out of a
+        # compiled script and the carriageways out of the map files, and nothing connects the two
+        # except both being the same city.
+        cells = {}
+        for px, py in road_points:
+            cells.setdefault((int(px // 64), int(py // 64)), []).append((px, py))
+        far = 0
+        worst = 0.0
+        for x, y, _z, _a, _m, _c1, _c2, _al, _lk, _o in generators:
+            best = 1e18
+            cx, cy = int(x // 64), int(y // 64)
+            for dx in range(-2, 3):
+                for dy in range(-2, 3):
+                    for px, py in cells.get((cx + dx, cy + dy), ()):
+                        best = min(best, (px - x) ** 2 + (py - y) ** 2)
+            best = best ** 0.5
+            if best > 40.0:
+                far += 1
+            worst = max(worst, best if best < 1e8 else 0.0)
+        near = ("; %d of them stand more than 40 units from the nearest carriageway node, "
+                "furthest %.0f" % (far, worst))
+
+    lines = [
+        "# Where %s parked a car, written by tools/import_city.py from the source game's"
+        % ("GTA III" if prefix == "iii_" else "Vice City"),
+        "# data/main.scm. Neither donor game puts its parked cars in a map file: both create them",
+        "# from the mission script with literal coordinates, through the CREATE_CAR_GENERATOR",
+        "# opcode 0x014B. See tools/import_city.py for the opcode layout and the four filters",
+        "# every candidate had to pass.",
+        "#",
+        "# These are NOT San Andreas car generators. CTheCarGenerators is a fixed 500-entry save",
+        "# block written by array index with positions compressed to int16 * 0.125, which reaches",
+        "# +/-4096 - a region beyond that cannot even be expressed in it, and a save made with one",
+        "# set of regions would read a different city's cars with another. The plugin owns these,",
+        "# spawns them itself, and San Andreas' own block stays exactly what vanilla writes.",
+        "#",
+        "# Two kinds of line:",
+        "#",
+        "#   fleet <DONOR/SAMODEL> <DONOR/SAMODEL> ...",
+        "#   car   x y z heading <DONOR/SAMODEL> colour1 colour2 alarm lock",
+        "#",
+        "# fleet is what the source game meant by \"any ordinary car\": its own traffic models,",
+        "# each paired with the San Andreas model standing in for it. A car line whose model reads",
+        "# random/* is a generator that asked for one of those rather than for something in",
+        "# particular - 61 of Vice City's 148 did.",
+        "#",
+        "# The right-hand side of every pair is the San Andreas model actually used; the left is",
+        "# what the source game asked for. That is written down for one reason: these are",
+        "# placeholders, and when the donor's own vehicles are imported this file is where they go",
+        "# - change SAMODEL to the imported model's name and nothing else has to change, exactly",
+        "# as pedgrp.dat pairs a person and weapons.dat pairs a gun.",
+        "#",
+        "#   x y z     the region's own coordinates; the plugin adds the region origin. A z of",
+        "#             -100 means \"on the ground here\", which is the convention in both donor",
+        "#             games AND in San Andreas - CCarCtrl::CreateCarForScript compares against",
+        "#             the float at 0x859014, which is -100.0 exactly - so it travels untranslated.",
+        "#   heading   degrees, 0 facing north, turning anticlockwise. The same in all three games.",
+        "#   colour    the SOURCE game's carcols.dat indices, or -1 for \"any colour this model",
+        "#             comes in\". Recorded, not applied: a donor palette index means a different",
+        "#             colour in San Andreas' own, longer table.",
+        "#   alarm     percent chance the source game gave this one an alarm. Recorded, not",
+        "#             applied - see the note in tools/import_city.py.",
+        "#   lock      percent chance it left it locked. Applied.",
+        "#",
+        "# %d generator(s) of %d the script contains%s."
+        % (counts["kept"], counts["raw"], near),
+        "# Left out: %s." % (", ".join("%d %s" % (n, k) for k, n in counts.most_common()
+                                       if k not in ("raw", "kept")) or "none"),
+        "",
+        "fleet " + " ".join("%s/%s" % (d, s) for d, s in fleet),
+        "",
+    ]
+    lines += rows
+    with open(os.path.join(out, "parkedcars.dat"), "w", encoding="latin-1") as f:
+        f.write("\n".join(lines) + "\n")
+    return "parkedcars.dat", fleet, why
+
+
+def region_road_points(out):
+    """[(x, y)] from a region folder's own carnodes.dat, or None if it has none.
+
+    Only used to report how far the mined placements sit from the roads. --parked-cars-only does
+    not build the path graph, so it reads back the one the last full import wrote.
+    """
+    path = os.path.join(out, "carnodes.dat")
+    if not os.path.exists(path):
+        return None
+    points = []
+    with open(path, "r", encoding="latin-1") as f:
+        for raw in f:
+            line = raw.split("#", 1)[0]
+            t = [x for x in re.split(r"[,\s]+", line.strip()) if x]
+            if len(t) < 8:
+                continue
+            try:
+                points.append((float(t[0]), float(t[1])))
+            except ValueError:
+                continue
+    return points or None
+
+
+def import_parked_cars(out, src, sa, prefix, boxes, road_points):
+    """Mine the source main.scm for its parked cars and write the region's parkedcars.dat.
+
+    Returns the file name, or None when there is nothing to write. Everything it needs it opens
+    itself, so it can be run on its own against a region folder that already exists - see
+    --parked-cars-only - as well as from the middle of a full import.
+    """
+    scm_path = find_file(src, "data/main.scm")
+    ide_path = find_file(src, "data/default.ide")
+    sa_ide_path = find_file(sa, "data/vehicles.ide")
+    for what, path in (("data/main.scm", scm_path), ("data/default.ide", ide_path)):
+        if not path:
+            print("  %s not found - the region gets no parked cars" % what)
+            return None
+    if not sa_ide_path:
+        print("  San Andreas' data/vehicles.ide not found - the region gets no parked cars")
+        return None
+    vehicles = read_vehicle_ide(ide_path)
+    sa_vehicles = read_vehicle_ide(sa_ide_path)
+    generators, counts = scm_parked_cars(scm_path, prefix, vehicles, boxes)
+    if not generators:
+        print("parkedcars.dat: no car generators found in data/main.scm (%d raw match(es)) - the "
+              "region gets no parked cars" % counts["raw"])
+        return None
+    name, fleet, why = write_parked_cars(out, generators, vehicles, sa_vehicles, counts, prefix,
+                                         road_points)
+    randoms = sum(1 for g in generators if g[4] < 0)
+    print("parkedcars.dat: %d parked car(s) of %d raw opcode match(es); %d ask for any ordinary "
+          "car and draw on a fleet of %d model(s)"
+          % (len(generators), counts["raw"], randoms, len(fleet)))
+    print("  left out: %s"
+          % (", ".join("%d %s" % (n, k) for k, n in counts.most_common()
+                       if k not in ("raw", "kept")) or "none"))
+    print("  models over San Andreas' own: %s"
+          % ", ".join("%d %s" % (n, w) for w, n in why.most_common()))
+    return name
+
+
 # ---------------------------------------------------------------- main
 
 def main():
@@ -2989,6 +4259,7 @@ def main():
     failed_txds = []
     failed_dffs = []
     dropped_dups = []
+    skinned_out = []
 
     def blobs():
         """(index, name, bytes) for every source entry, in the order `sources` names them."""
@@ -3036,6 +4307,25 @@ def main():
                 part[1].extend(chunks)
                 part[2] += 1
         elif ext == ".dff":
+            # A skinned model does not belong in this archive, and until this check it was in it
+            # and wrong. convert_extension only restamps a plugin's header, and the skin plugin's
+            # LAYOUT differs between the donors' RenderWare and San Andreas' - so every one of
+            # these went in as a 3.3 body wearing a 3.6 label. Measured on the already-imported
+            # vicecity.img: v_wmyst, v_bfyst and v_hmyst hold a chunk whose length only adds up as
+            # 3.3's 68-byte bone stride with no used-bone list.
+            #
+            # It was harmless only because CityLoader skipped `peds` sections. It stops being
+            # harmless the moment it does not, because tools/convert_peds.py writes its correctly
+            # converted model under the SAME namespaced name into peds.img, and
+            # CStreaming::LoadCdDirectory keeps the FIRST archive entry it binds to a name
+            # (0x5B6449) - so which of the two a pedestrian streamed from would come down to
+            # archive registration order.
+            #
+            # The models this drops are the donor's pedestrians, which peds.img carries instead,
+            # and its cutscene cast, which lives in `hier` sections nothing here emits.
+            if dff_has_skin(blob):
+                skinned_out.append(name)
+                continue
             key = renamed(name)
             dff_refs[key.lower().rsplit(".", 1)[0]] = dff_texture_names(blob)
             dffs += 1
@@ -3198,6 +4488,12 @@ def main():
         if dff_merged:
             print("meshes: %d geometry/geometries had identical materials merged, so the D3D "
                   "pipeline instances one mesh per material instead of one per face" % dff_merged)
+        if skinned_out:
+            print("skinned models: %d .dff left out of the archive - this path only restamps a "
+                  "skin plugin's header and its layout differs between RenderWare 3.3 and 3.6, so "
+                  "a model with one has to come from tools/convert_peds.py (%s%s)"
+                  % (len(skinned_out), ", ".join(sorted(skinned_out)[:6]),
+                     ", ..." if len(skinned_out) > 6 else ""))
     if dropped_dups:
         print("dropped %d later cop%s of a .dff name the archive already carries (the source game "
               "binds only the first): %s" % (len(dropped_dups), "y" if len(dropped_dups) == 1 else "ies",
@@ -3292,6 +4588,7 @@ def main():
         cols += 1
 
     ide_out, ipl_out = [], []
+    ide_texts, ipl_texts = [], []      # as the source wrote them, for the path sections below
     ide_drop_flags = III_DROP_FLAGS if dat_name.lower() == "gta3.dat" else 0
     if lite:
         ide_rel, ipl_rel = [], []
@@ -3302,6 +4599,7 @@ def main():
             continue
         with open(p, "r", encoding="latin-1") as f:
             text = f.read()
+        ide_texts.append(text)
         name = os.path.basename(p).lower()
         with open(os.path.join(out, "ide", name), "w", encoding="latin-1") as f:
             f.write(rename_ide(text, renames, ide_drop_flags))
@@ -3317,6 +4615,7 @@ def main():
             continue
         with open(p, "r", encoding="latin-1") as f:
             text = f.read()
+        ipl_texts.append(text)
         name = os.path.basename(p).lower()
         inst_areas += area_placements(text)
         with open(os.path.join(out, "ipl", name), "w", encoding="latin-1") as f:
@@ -3342,6 +4641,101 @@ def main():
             print("  object.dat: %s" % note)
     elif not lite:
         print("  data/object.dat not found - the region's props will all be static scenery")
+
+    # The pedestrian graph and the crowd that walks it. Both come out of files this script has
+    # already opened for other reasons, so the cost is only the reading; both are skipped for a
+    # --lite import, which places no map and therefore has no pavement to put anybody on.
+    ped_nodes_out, ped_groups_out, car_nodes_out, parked_cars_out = None, None, None, None
+    if not lite:
+        if prefix == "iii_":
+            graph, contributed, negate_w = iii_rotation_sign(ide_texts, ipl_texts, renames,
+                                                             VC_PATH_PED)
+            source_of_paths = "%d road placement(s) carrying a ped path group" % contributed
+            print("paths: GTA III's placement quaternion turns with w %s - it merges %d external "
+                  "end(s) that way and fewer the other, which is how the sign was settled"
+                  % ("negated" if negate_w else "as written", graph.merges))
+        else:
+            graph, contributed = vc_path_graph(ipl_texts, VC_PATH_PED)
+            source_of_paths = "%d ped path group(s)" % contributed
+            negate_w = True
+        orphans = graph.drop_isolated()
+        if not graph.pos:
+            print("no pedestrian path nodes found - the region gets no peds")
+        else:
+            zone_file = "data/gta3.zon" if prefix == "iii_" else "data/info.zon"
+            # Vice City keeps three kinds of zone in three files and only the type 2 boxes of
+            # info.zon carry population; GTA III keeps all of its in gta3.zon and the type means
+            # something else there, so every box counts.
+            zone_types = None if prefix == "iii_" else (2,)
+            zone_path = find_file(src, zone_file)
+            boxes = []
+            if zone_path:
+                with open(zone_path, "r", encoding="latin-1") as f:
+                    boxes = read_zon_boxes(f.read(), zone_types)
+            pedgrp_path = find_file(src, "data/pedgrp.dat")
+            groups = read_donor_pedgrp(pedgrp_path) if pedgrp_path else []
+            scm_path = find_file(src, "data/main.scm")
+            names_in_boxes = set(b[0].upper() for b in boxes)
+            assigned = (scm_zone_ped_groups(scm_path, len(groups), names_in_boxes)
+                        if scm_path and groups else {})
+            # One zone table line per name the script actually assigned; a box whose name was never
+            # assigned is left off and its nodes fall back to the default group, which is what the
+            # source game does with it too.
+            zones = [(name, day, night) for name, (day, night) in sorted(assigned.items())]
+            zone_index = {name: i for i, (name, _d, _n) in enumerate(zones)}
+            stamped = stamp_zones(graph, boxes, zone_index) if zones else 0
+
+            wanted = sorted(set(n for _c, names in groups for n in names))
+            ped_map = build_ped_map(wanted, sa_ped_models(sa), prefix)
+            ped_nodes_out = write_path_nodes(out, "pednodes.dat", graph, zones,
+                                             "Pedestrian path nodes", False)
+            ped_groups_out = write_ped_groups(out, groups, zones, ped_map, prefix)
+
+            # The carriageways, read the same way and out of the same files. These are what the
+            # plugin hands to CPathFind once the node encoding has been widened, which is what
+            # traffic is made of; the pedestrian graph above stays in the plugin's own memory,
+            # because San Andreas' own ped spawner would otherwise draw its own crowd over the top
+            # of the source game's districts.
+            if prefix == "iii_":
+                cars, car_groups = iii_path_graph(ide_texts, ipl_texts, renames, VC_PATH_CAR,
+                                                  negate_w)
+                car_source = "%d road placement(s) carrying a car path group" % car_groups
+            else:
+                cars, car_groups = vc_path_graph(ipl_texts, VC_PATH_CAR)
+                car_source = "%d car path group(s)" % car_groups
+            car_orphans = cars.drop_isolated()
+            if cars.pos:
+                if zones:
+                    stamp_zones(cars, boxes, zone_index)
+                car_nodes_out = write_path_nodes(out, "carnodes.dat", cars, zones,
+                                                 "Vehicle path nodes", True)
+                lanes = collections.Counter(l[1] + l[2] for l in cars.lanes)
+                print("carnodes.dat: %d node(s) and %d link(s) from %s%s; lanes per node %s"
+                      % (len(cars.pos), sum(len(l) for l in cars.links) // 2, car_source,
+                         "" if not car_orphans else
+                         ", %d node(s) nothing links to left out" % car_orphans,
+                         ", ".join("%d with %d" % (n, k) for k, n in sorted(lanes.items()))))
+            else:
+                print("no vehicle path nodes found - the region gets no traffic")
+
+            why = collections.Counter(w for _n, w in ped_map.values())
+            print("pednodes.dat: %d node(s) and %d link(s) from %s%s; %d stand in one of %d "
+                  "district(s) the script gives a crowd"
+                  % (len(graph.pos), sum(len(l) for l in graph.links) // 2, source_of_paths,
+                     "" if not orphans else ", %d node(s) nothing links to left out" % orphans,
+                     stamped, len(zones)))
+            print("pedgrp.dat: %d group(s) of the source game's own, %d model(s) over San Andreas' "
+                  "own: %s" % (len(groups), len(ped_map),
+                               ", ".join("%d %s" % (n, w) for w, n in why.most_common())))
+            if boxes and not zones:
+                print("  no SET_ZONE_PED_GROUP calls found in data/main.scm - every node takes the "
+                      "default group; the crowd will be right for the city and not for the street")
+
+            # The cars the source game parked at its kerbs, mined from the same main.scm and
+            # validated against the same zone boxes. Its own block, above, explains the opcode.
+            parked_cars_out = import_parked_cars(
+                out, src, sa, prefix, boxes,
+                [(p[0], p[1]) for p in cars.pos] if cars.pos else None)
 
     copied, zones_have, gxt_missed = [], [], []
     for rel, dst in text_files:
@@ -3486,6 +4880,14 @@ def main():
         print("no %s beside this script; the region gets no pickups.dat" % os.path.basename(mined))
     if pickups_out:
         lines.append("Pickups      = %s%s" % (base, pickups_out))
+    if ped_nodes_out:
+        lines.append("PedNodes     = %s%s" % (base, ped_nodes_out))
+    if ped_groups_out:
+        lines.append("PedGroups    = %s%s" % (base, ped_groups_out))
+    if car_nodes_out:
+        lines.append("CarNodes     = %s%s" % (base, car_nodes_out))
+    if parked_cars_out:
+        lines.append("ParkedCars   = %s%s" % (base, parked_cars_out))
 
     # The city's own hospitals and police stations, mined out of the source main.scm the same way -
     # see the block above scm_restart_points. Checked against the zone boxes the region is about to
@@ -3512,6 +4914,19 @@ def main():
                   "Names        = %snames.txt" % base]
         if object_dat:
             lines.append("ObjectData   = %s%s" % (base, object_dat))
+        # The region's own pedestrians, written by tools/convert_peds.py rather than by this
+        # script - run it after this and it puts its models into the archive above and writes the
+        # peds.ide named here. A ped IDE is listed apart from the map ones because a `peds` line
+        # becomes a different model info out of a different store, and because the donor's ped ids
+        # start at 0 and so do GTA III's buildings, so the two need id maps of their own;
+        # src/core/Settings.h says the rest. Written whether or not convert_peds.py has been run:
+        # until it is, the loader logs one line naming the missing file and the region keeps San
+        # Andreas' own peds.
+        lines += ["PedIde       = %speds.ide" % base,
+                  "; PedImg is only needed when convert_peds.py could not merge into the archive",
+                  "; above and wrote a peds.img of its own. San Andreas has room for eight",
+                  "; archives in all and two imported cities already take it to seven.",
+                  "; PedImg     = %speds.img" % base]
         # One box per interior, measured off the placements rather than written by hand - see
         # interior_boxes. Emitted with the area and a count so the file says what it is looking at.
         boxes = interior_boxes(inst_areas)
@@ -3573,5 +4988,62 @@ def main():
     print("\nwrote %s - paste it into MapExpander.ini" % os.path.join(out, "region.ini"))
 
 
+def parked_cars_only():
+    """--parked-cars-only: write just parkedcars.dat into a region folder that already exists.
+
+    A full import rewrites the archive, the collision and every IDE and IPL, which takes minutes
+    and has twice been interrupted with the game holding a file open. Adding one data file to a
+    region that is already there should not cost that, so this does only that: it reads the source
+    game's script and zone file, writes parkedcars.dat, and adds the one key to the region.ini the
+    importer left behind. Nothing else in the folder is touched.
+    """
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    opts = [a for a in sys.argv[1:] if a.startswith("--")]
+    if len(args) < 2:
+        sys.exit(__doc__)
+    src, sa = args[0], args[1]
+    region = "vicecity"
+    for o in opts:
+        if o.startswith("--region="):
+            region = o.split("=", 1)[1]
+    dat_name = read_dat(src)[0]
+    prefix = "iii_" if dat_name.lower() == "gta3.dat" else "vc_"
+    out = os.path.join(sa, "MapExpander", region)
+    if not os.path.isdir(out):
+        sys.exit("%s does not exist - run a full import first" % out)
+    print("source: %s (%s)\noutput: %s" % (src, dat_name, out))
+
+    zone_path = find_file(src, "data/gta3.zon" if prefix == "iii_" else "data/info.zon")
+    boxes = []
+    if zone_path:
+        with open(zone_path, "r", encoding="latin-1") as f:
+            boxes = read_zon_boxes(f.read(), None if prefix == "iii_" else (2,))
+    else:
+        print("  no zone file found - the placements are not checked against the map's own boxes")
+    name = import_parked_cars(out, src, sa, prefix, boxes, region_road_points(out))
+    if not name:
+        return
+
+    # Put the key in the region.ini the importer already wrote, replacing any line that is there.
+    ini = os.path.join(out, "region.ini")
+    key = "ParkedCars   = MapExpander\\%s\\%s" % (region, name)
+    if not os.path.exists(ini):
+        print("\nno %s - add this line to the region's section in MapExpander.ini:\n  %s"
+              % (ini, key))
+        return
+    with open(ini, "r") as f:
+        lines = [l.rstrip("\n") for l in f]
+    lines = [l for l in lines if not l.strip().lower().startswith("parkedcars")]
+    at = max((i for i, l in enumerate(lines) if l.strip().lower().startswith("carnodes")),
+             default=len(lines) - 1)
+    lines.insert(at + 1, key)
+    with open(ini, "w") as f:
+        f.write("\n".join(lines) + "\n")
+    print("\nwrote %s and added\n  %s\nto %s" % (os.path.join(out, name), key, ini))
+
+
 if __name__ == "__main__":
-    main()
+    if "--parked-cars-only" in sys.argv:
+        parked_cars_only()
+    else:
+        main()

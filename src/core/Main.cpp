@@ -15,8 +15,10 @@
 #include "MapWindow.h"
 #include "DebugKeys.h"
 #include "Teleport.h"
+#include "PathDraw.h"
 #include "Watchdog.h"
 #include "TxdProbe.h"
+#include "PathLoadProbe.h"
 #include "RenderGuard.h"
 #include "Gxt.h"
 #include "Zones.h"
@@ -24,8 +26,15 @@
 #include "FallRecovery.h"
 #include "RegionRestarts.h"
 #include "ModelLimits.h"
+#include "PathScale.h"
+#include "Fla.h"
+#include <string>
 #include "RegionWeapons.h"
 #include "RegionPickups.h"
+#include "RegionPeds.h"
+#include "RegionPolice.h"
+#include "RegionTraffic.h"
+#include "RegionParkedCars.h"
 #include "PickupSlots.h"
 
 using namespace plugin;
@@ -37,7 +46,22 @@ public:
         CrashLog::Install();
         Settings::Load();
 
+        // Say once, at the top of the log, whether somebody else is already running the show. The
+        // path system and the world sector grid are both things fastman92's limit adjuster does
+        // properly and this plugin stands aside from, and knowing it is there explains a great
+        // many later lines that would otherwise read as failures.
+        if (Fla::Loaded()) {
+            std::string version = Fla::Version(), paths;
+            Fla::DescribePathEncoding(paths);
+            Log::Write("fastman92's limit adjuster is loaded%s%s; paths: %s",
+                       version.empty() ? "" : ", version ", version.c_str(), paths.c_str());
+        }
+
         ModelLimits::Install();   // must move the streaming arrays before the game initialises them
+        // Before anything reads a path node, which is everything about traffic. It only rewrites
+        // operands, so it does not care what else has been installed - but it must be in place
+        // before CPathFind loads its first area.
+        PathScale::Install();
         Gxt::Install();
         if (!Settings::regions.empty()) {
             RadarOverlay::Install();
@@ -56,6 +80,14 @@ public:
                 WorldSectors::Install();
                 MapWindow::Install();
             Interiors::Install();
+            // After CityLoader, because a region's pedestrians stand on the collision it places
+            // and its first tick is a frame away either way.
+            // Police before pedestrians: the pedestrian tick is what drives them, so it must not
+            // start before they know whether they can task a ped at all.
+            RegionPolice::Install();
+            RegionTraffic::Install();
+            RegionParkedCars::Install();
+            RegionPeds::Install();
             FallRecovery::Install();
             RegionRestarts::Install();
         }
@@ -68,8 +100,12 @@ public:
         IplLoader::Install();
         DebugKeys::Install();
         Teleport::Install();
+        // After the region modules, which is where its graphs come from, and after DebugKeys so
+        // the two key read-outs land next to each other in the log.
+        PathDraw::Install();
         Watchdog::Install();
         TxdProbe::Install();
+        PathLoadProbe::Install();
         RenderGuard::Install();
 
         Log::Write("MapExpander initialised: %u region(s)", (unsigned)Settings::regions.size());
