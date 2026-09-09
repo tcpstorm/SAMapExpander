@@ -1083,6 +1083,7 @@ def ide_line(model_id, model, txd, cols, stat_types, anim_groups, kind):
         Andreas does not know is not resolvable.
     """
     ped_type = cols[3].strip().upper()
+    ped_type = DONOR_PED_TYPE.get(ped_type, ped_type)
     if ped_type not in SA_PED_TYPES:
         ped_type = "CIVMALE"
     stat = cols[4].strip().upper()
@@ -1095,19 +1096,44 @@ def ide_line(model_id, model, txd, cols, stat_types, anim_groups, kind):
         cars = "0"
     female = ped_type in ("CIVFEMALE", "PROSTITUTE")
     voice = "VOICE_GEN_FEM01" if female else "VOICE_GEN_MALE01"
+    # One of San Andreas' six audio ped types, never a name invented here: anything else is -1 from
+    # CAEPedSpeechAudioEntity::GetAudioPedType and a ped that never speaks. Police, paramedics and
+    # firemen are all PED_TYPE_EMG; there is no PED_TYPE_COP or PED_TYPE_MEDIC.
     kind = "PED_TYPE_GEN"
-    if ped_type == "COP":
-        kind, voice = "PED_TYPE_COP", "VOICE_GEN_MALE01"
-    elif ped_type == "EMERGENCY":
-        kind = "PED_TYPE_MEDIC"
+    if ped_type in ("COP", "MEDIC", "FIREMAN"):
+        kind, voice = "PED_TYPE_EMG", "VOICE_GEN_MALE01"
+    elif ped_type.startswith("GANG"):
+        kind = "PED_TYPE_GANG"
+    assert kind in SA_AUDIO_PED_TYPES, kind
     return "%d, %s, %s, %s, %s, %s, %s, 0, null, 9,9, %s, %s, %s" % (
         model_id, model, txd, ped_type, stat, group, cars, kind, voice, voice)
 
 
-SA_PED_TYPES = {"PLAYER1", "PLAYER2", "PLAYER3", "PLAYER4", "CIVMALE", "CIVFEMALE", "COP",
+# CPedType::ms_apszPedTypeNames, read out of gta_sa.exe at 0x8D23B8 rather than recalled: thirty-two
+# names, and CPedType::FindPedType (0x608790) answers 32 - one past the thirty-two-entry
+# CPedType::ms_apPedType - for anything that is not one of them and is not PLAYER_NETWORK or
+# PLAYER_UNUSED (0x608825, `add eax, 0x20`). CPedType::GetPedFlag guards that index; the
+# acquaintance getters at 0x6089B0 and its neighbours do not.
+#
+# Written down because the list this had before was wrong in both directions: it offered PLAYER3,
+# PLAYER4 and EMERGENCY, which San Andreas does not have, and lacked MISSION2..MISSION8. EMERGENCY
+# is the one that mattered - it is what Vice City's and GTA III's `medic` declares, so one ped per
+# region went out with a ped type of 32.
+SA_PED_TYPES = {"PLAYER1", "PLAYER2", "PLAYER_NETWORK", "PLAYER_UNUSED",
+                "CIVMALE", "CIVFEMALE", "COP",
                 "GANG1", "GANG2", "GANG3", "GANG4", "GANG5", "GANG6", "GANG7", "GANG8", "GANG9",
-                "GANG10", "DEALER", "MEDIC", "FIREMAN", "CRIMINAL", "BUM", "PROSTITUTE",
-                "SPECIAL", "MISSION1", "EMERGENCY"}
+                "GANG10", "DEALER", "MEDIC", "FIREMAN", "CRIMINAL", "BUM", "PROSTITUTE", "SPECIAL",
+                "MISSION1", "MISSION2", "MISSION3", "MISSION4", "MISSION5", "MISSION6", "MISSION7",
+                "MISSION8"}
+
+# What a donor's ped type becomes when San Andreas has no such name but does have the same idea.
+DONOR_PED_TYPE = {"EMERGENCY": "MEDIC", "PLAYER3": "PLAYER2", "PLAYER4": "PLAYER2"}
+
+# CAEPedSpeechAudioEntity's six audio ped types, the pointers at 0x8C8108; GetAudioPedType
+# (0x4E3C60) returns -1 for anything else and GetVoice then returns -1 as well, which is a ped that
+# never speaks. The `PED_TYPE_COP` and `PED_TYPE_MEDIC` this used to write are not among them.
+SA_AUDIO_PED_TYPES = {"PED_TYPE_GEN", "PED_TYPE_EMG", "PED_TYPE_PLAYER", "PED_TYPE_GANG",
+                      "PED_TYPE_GFD", "PED_TYPE_SPC"}
 
 
 def sa_stat_types(sa_dir):
@@ -1139,6 +1165,47 @@ def region_name(prefix, stem):
     if len(name) > 19:
         raise PedError("%s is %d characters once tagged; the archive allows 19" % (name, len(name)))
     return name
+
+
+def repoint_ped_groups(path, prefix, converted):
+    """Point an existing pedgrp.dat's `DONOR/SAMODEL` pairs at the models just converted.
+
+    This is the whole of "use the imported peds", and it is deliberately a data change. The plugin
+    reads only the right-hand side of each pair (`src/peds/RegionPeds.cpp`, which splits on the `/`
+    and looks the remainder up by name through CModelInfo::GetModelInfo), so swapping the San
+    Andreas stand-in for the imported model is all there is to it - no code in `src/peds/` changes,
+    which is what the pairing was for.
+
+    A pair whose donor model was not converted keeps its stand-in, so a partial conversion leaves a
+    working crowd rather than gaps. Returns (repointed, left as stand-ins), or None if there is no
+    pedgrp.dat to rewrite - the map import writes that file, and it may not have been run.
+    """
+    if not os.path.exists(path):
+        return None
+    with open(path, "r", encoding="latin-1") as f:
+        lines = f.read().splitlines()
+
+    repointed = left = 0
+    out = []
+    for line in lines:
+        if not line.lower().startswith("group "):
+            out.append(line)
+            continue
+        parts = line.split()
+        for i in range(3, len(parts)):
+            donor, slash, _stand_in = parts[i].partition("/")
+            if not slash:
+                continue
+            if donor.lower() in converted:
+                parts[i] = "%s/%s" % (donor, region_name(prefix, donor))
+                repointed += 1
+            else:
+                left += 1
+        out.append("group %-3s %-18s %s" % (parts[1], parts[2], " ".join(parts[3:])))
+
+    with open(path, "w", encoding="latin-1") as f:
+        f.write("\n".join(out) + "\n")
+    return repointed, left
 
 
 def main():
@@ -1198,6 +1265,7 @@ def main():
                 blobs.setdefault("txd", {})[stem] = f.read(size)
 
     files, lines, notes = [], [], []
+    converted_stems = set()
     done = failed = 0
     for stem in sorted(blobs.get("dff", {})):
         cols = wanted[stem]
@@ -1211,6 +1279,7 @@ def main():
             notes.append("%-14s SKIPPED  %s: %s" % (stem, type(err).__name__, err))
             continue
         done += 1
+        converted_stems.add(stem.lower())
         model = region_name(prefix, stem)
         txd_stem = cols[2].lower()
         txd = region_name(prefix, txd_stem)
@@ -1260,7 +1329,19 @@ def main():
     with open(os.path.join(out, "peds.txt"), "w", encoding="latin-1") as f:
         f.write("# What became of each of %s's pedestrians.\n#\n" % region)
         f.write("\n".join(notes) + "\n")
+
+    groups = repoint_ped_groups(os.path.join(out, "pedgrp.dat"), prefix, converted_stems)
+    if groups is None:
+        print("no pedgrp.dat in %s - run tools/import_city.py first and this again, or the "
+              "region's crowd stays San Andreas'" % out)
+    else:
+        print("pedgrp.dat: %d pairing(s) now name the imported model, %d still name a San Andreas "
+              "stand-in because the donor model was not converted" % groups)
     print("wrote %s" % out)
+    print("add these to the region's section of MapExpander.ini if they are not already there:\n"
+          "    PedImg       = MapExpander\\%s\\peds.img\n"
+          "    PedIde       = MapExpander\\%s\\peds.ide"
+          % (os.path.basename(os.path.normpath(out)), os.path.basename(os.path.normpath(out))))
 
 
 if __name__ == "__main__":
