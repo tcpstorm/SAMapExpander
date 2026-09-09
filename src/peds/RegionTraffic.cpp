@@ -109,7 +109,7 @@ constexpr float kMaxCreationSlip = 12.0f;
 struct Tally {
     int ticks, notReady, atBudget, waiting, poolFull, noModel, noNodes;
     int attempts, deadEnd, onSaGround, tooNear, tooFar, inShot, crowded, noGround, madeNothing, placed;
-    int lost, gaveBack, tookAway, noPlayerGround, wentElsewhere;
+    int lost, gaveBack, tookAway, noPlayerGround, wentElsewhere, advanced;
     float tookAwayFurthest, tookAwayDeepestFall;
     unsigned nextReport;
 };
@@ -118,6 +118,28 @@ Tally& Counts() { static Tally t{}; return t; }
 // Where the player was this tick, for log lines deep in the creation path that would otherwise
 // have to be handed it through calls that do not otherwise need it.
 CVector& LastPlayer() { static CVector v; return v; }
+
+// CAutoPilot::m_vecDestinationCoors, as the GAME reads it.
+//
+// plugin-sdk puts m_autoPilot at CVehicle+0x390 and m_vecDestinationCoors at CAutoPilot+0x5C, so
+// +0x3EC - and the mission handler agrees: at 0x437420 and 0x437419 it loads [esi+0x3EC] and
+// [esi+0x3F0] and pushes them into CCarCtrl::SteerAICarWithPhysicsHeadingForTarget. The
+// diagnostic below reads the raw offset rather than the plugin-sdk field on purpose. Twice today a
+// number was believed because the code printed what it MEANT to write; the only way to know what a
+// car is steering for is to read it from where the steering reads it.
+constexpr uintptr_t kAutoPilotDestination = 0x3EC;
+
+// A few cars a second, no more - this is a positional fact per line, which is worth more than a
+// rate, but not worth a thousand lines a second.
+constexpr unsigned kDriverReportIntervalMs = 350;
+unsigned gNextDriverReport = 0;
+
+bool ReportOneDriver() {
+    if (!Settings::world.debug) return false;
+    if (CTimer::m_snTimeInMilliseconds < gNextDriverReport) return false;
+    gNextDriverReport = CTimer::m_snTimeInMilliseconds + kDriverReportIntervalMs;
+    return true;
+}
 
 // MISSION_GOTOCOORDS_STRAIGHT is the ONLY mission that drives a car towards an arbitrary
 // coordinate without touching the path graph. Its handler at 0x4373FB calls
@@ -677,6 +699,11 @@ void ManageDrivers(RegionState& rs, const CVector& player) {
             continue;
         }
         if (toGoal < kArrivedDistance * kArrivedDistance) {
+            // Counted, not changed. The median link in Vice City is 10.6 units long and a quarter
+            // of them are shorter than 6.2 - both inside kArrivedDistance, which is 8 - so a car
+            // may be "arrived" at a node it has not reached and skip on to the next. If that is
+            // happening this number is far larger than one advance per car per link.
+            Counts().advanced++;
             int next = NextNode(rs, d.from, d.to);
             d.from = d.to;
             d.to = next;
@@ -702,6 +729,32 @@ void ManageDrivers(RegionState& rs, const CVector& player) {
         float clear = reinterpret_cast<float(__cdecl*)(void*)>(kFindMaxSpeedInTraffic)(car);
         if (clear >= 0.0f && clear < (float)speed) speed = (char)clear;
         pilot.m_nCruiseSpeed = speed;
+
+        // One car, a few times a second: where it is, what the GAME thinks it is steering for, and
+        // what this module thinks the node it is steering for is. If the last two disagree, the
+        // route is being computed in one space and driven in another, and the size of the
+        // disagreement names which - an origin is thousands, a lane offset is single figures, a
+        // scale is proportional to the distance from the region's own zero. If they agree, the
+        // route is right and the fault is in how it is followed.
+        if (ReportOneDriver()) {
+            const float* dest = (const float*)((const char*)car + kAutoPilotDestination);
+            CVector node = NodeWorld(rs, d.to);
+            CVector lane = LanePoint(rs, d.to, NextNode(rs, d.from, d.to), d.lane);
+            Log::Write("traffic: car at (%.1f, %.1f, %.1f) is steering for (%.1f, %.1f) [read from "
+                       "the vehicle at +0x3EC]; it is aiming at node %d, which this module puts at "
+                       "(%.1f, %.1f, %.1f) and whose lane point is (%.1f, %.1f). car->dest %.1f, "
+                       "car->node %.1f, dest->node %.1f. mission %d, straight-line %d, lane %d of "
+                       "%d, link %d->%d",
+                       p.x, p.y, p.z, dest[0], dest[1], d.to, node.x, node.y, node.z,
+                       lane.x, lane.y,
+                       sqrtf((dest[0] - p.x) * (dest[0] - p.x) + (dest[1] - p.y) * (dest[1] - p.y)),
+                       sqrtf((node.x - p.x) * (node.x - p.x) + (node.y - p.y) * (node.y - p.y)),
+                       sqrtf((dest[0] - node.x) * (dest[0] - node.x) +
+                             (dest[1] - node.y) * (dest[1] - node.y)),
+                       (int)pilot.m_nCarMission,
+                       (int)*((const unsigned char*)car + kAutoPilotStraightLineDistance),
+                       d.lane, (int)rs.nodes[d.to].lanes, d.from, d.to);
+        }
         rs.drivers[write++] = d;
     }
     rs.drivers.resize(write);
@@ -719,12 +772,12 @@ void ReportTally(const RegionState* here) {
                "%d in shot, %d crowded, %d no ground under the lane, %d placed; %d driving, "
                "%d vanished, %d handed back, %d taken away (furthest %.0f of %.0f, deepest fall "
                "%.1f), %d refused for landing somewhere else, %d tick(s) with no ground under "
-               "the player",
+               "the player; %d node(s) advanced",
                t.ticks, t.notReady, t.atBudget, t.waiting, t.poolFull, t.noModel, t.noNodes,
                t.attempts, t.deadEnd, t.onSaGround, t.tooNear, t.tooFar, t.inShot, t.crowded,
                t.noGround, t.placed, here ? (int)here->drivers.size() : 0, t.lost, t.gaveBack,
                t.tookAway, t.tookAwayFurthest, Settings::world.regionTrafficRadius * kCullMargin,
-               t.tookAwayDeepestFall, t.wentElsewhere, t.noPlayerGround);
+               t.tookAwayDeepestFall, t.wentElsewhere, t.noPlayerGround, t.advanced);
     Tally fresh{};
     fresh.nextReport = t.nextReport;
     t = fresh;
