@@ -1150,6 +1150,131 @@ def sa_stat_types(sa_dir):
     return names
 
 
+# ---------------------------------------------------------------- ped texture dictionaries
+
+# San Andreas' own peds - the 265 in player.img - are stored one way and one way only: platform 9,
+# an uncompressed 32-bit raster (rasterFormat 0x0600 X8R8G8B8, or 0x0500 A8R8G8B8 when it has an
+# alpha channel), a single mip level, rasterType 4, and no mipmap or palette flags. Verified by
+# parsing every raster in models/player.img: 394 of 394 are (platform 9, depth 32, mips 1, raw).
+#
+# The map path (import_city.convert_txd) instead restamps a donor raster's header in place and
+# copies its levels through untouched, so a Vice City ped's DXT1/DXT3-compressed, nine-mip-level
+# skin reaches San Andreas as a compressed, mipmapped platform-9 raster. That form is valid - San
+# Andreas' own gta3.img ships thousands of identical ones for the map - but a ped is a skinned model
+# uploaded through a different D3D9 path than the map, and the safe, evidence-backed thing to do is
+# to hand a ped exactly the texture form San Andreas' own peds use rather than a form only its map
+# textures are ever seen in. So a ped's dictionary is not restamped: every raster in it is decoded
+# to pixels and re-emitted as a plain 32-bit BGRA texture, the player.img format.
+#
+# The decoders are import_city's own (decode_dxt, decode_raw) - the same ones that already turn a
+# donor raster into the PNGs and radar tiles - so this reimplements no pixel handling.
+
+def _decode_native_level0(body):
+    """(width, height, has_alpha, rgba) for the base level of a III/VC native-texture struct.
+
+    Handles every raster form the two donors actually carry: D3D8 DXT1/DXT3, D3D8 8-bit PAL8, and
+    D3D8 uncompressed 16/24/32-bit. Returns None for anything else (PAL4, DXT2/4/5) so the caller
+    can fall back rather than emit a guess.
+    """
+    if len(body) < 88:
+        return None
+    platform = struct.unpack_from("<I", body, 0)[0]
+    raster_format, d3d_or_alpha = struct.unpack_from("<II", body, 72)
+    width, height, depth, _mips, _rtype, flag = struct.unpack_from("<HHBBBB", body, 80)
+    at = 88
+    palette = None
+    if raster_format & 0x2000:            # PAL8
+        palette = [tuple(body[at + i * 4:at + i * 4 + 4]) for i in range(256)]
+        at += 1024
+    elif raster_format & 0x4000:          # PAL4 - neither donor has one; let the caller fall back
+        return None
+    at += 4                               # the level-0 <u32 size>, then its pixels
+    if platform == 9:
+        fourcc = struct.pack("<I", d3d_or_alpha)
+        if flag & 0x08 and fourcc in (b"DXT1", b"DXT3"):
+            return width, height, None, ic.decode_dxt(body, at, width, height, fourcc == b"DXT3")
+        if flag & 0x08:
+            return None
+    elif platform == 8:
+        if flag in (1, 2, 3, 4, 5):       # D3D8 dxtCompression; only DXT1/DXT3 are decodable here
+            if flag not in (1, 3):
+                return None
+            return width, height, None, ic.decode_dxt(body, at, width, height, flag == 3)
+    else:
+        return None                       # PS2/Xbox rasters carry different pixel data entirely
+    return width, height, None, ic.decode_raw(body, at, width, height, depth, raster_format, palette)
+
+
+def ped_texture_native(body):
+    """A III/VC native-texture struct re-emitted as San Andreas' own ped texture form.
+
+    Platform 9, a single uncompressed 32-bit level in D3D's BGRA order, rasterType 4, alpha only
+    when the decoded pixels actually carry it, and no mipmap or palette flags - the player.img
+    format. Returns None if the raster cannot be decoded, so the caller falls back to the map path's
+    header-restamp rather than dropping the texture.
+    """
+    decoded = _decode_native_level0(body)
+    if decoded is None:
+        return None
+    width, height, _ha, rgba = decoded
+    if len(rgba) < width * height * 4:
+        return None
+    has_alpha = any(rgba[i * 4 + 3] != 0xFF for i in range(width * height))
+    bgra = bytearray(width * height * 4)
+    for i in range(width * height):
+        r, g, b, a = rgba[i * 4:i * 4 + 4]
+        bgra[i * 4:i * 4 + 4] = bytes((b, g, r, a))
+    raster_format = 0x0500 if has_alpha else 0x0600      # 8888 / 888, no mipmap or palette bit
+    d3d_format = 21 if has_alpha else 22                 # A8R8G8B8 / X8R8G8B8
+    out = bytearray(body[:88])
+    struct.pack_into("<I", out, 0, 9)                    # platformId -> D3D9
+    struct.pack_into("<II", out, 72, raster_format, d3d_format)
+    struct.pack_into("<HH", out, 80, width, height)
+    out[84] = 32                                         # depth
+    out[85] = 1                                          # numLevels: one, no mip chain
+    out[86] = 4                                          # rasterType rwRASTERTYPETEXTURE
+    out[87] = 1 if has_alpha else 0                      # flags: bit0 alpha; no cube/automip/compress
+    return bytes(out) + struct.pack("<I", len(bgra)) + bytes(bgra)
+
+
+def convert_ped_txd(data):
+    """A III/VC ped texture dictionary rebuilt in San Andreas' player.img texture form.
+
+    Returns (bytes, converted, failed) like import_city.convert_txd, but decodes each raster to a
+    plain 32-bit texture instead of restamping its header - see the note above. A raster that cannot
+    be decoded falls back to the map path's restamp so it is never lost.
+    """
+    dictionary = None
+    for kind, s, e in ic.rw_sections(data, 0, len(data)):
+        if kind == ic.RW_TEX_DICTIONARY:
+            dictionary = (s, e)
+            break
+    if dictionary is None:
+        return data, 0, 0
+    chunks, converted, failed = [], 0, 0
+    for kind, s, e in ic.rw_sections(data, *dictionary):
+        if kind != ic.RW_TEXTURE_NATIVE:
+            continue
+        for k2, s2, e2 in ic.rw_sections(data, s, e):
+            if k2 != ic.RW_STRUCT:
+                continue
+            body = ped_texture_native(data[s2:e2])
+            if body is None:                             # undecodable: keep it via the map restamp
+                body = ic.convert_texture_native(data[s2:e2])
+            if body is None:
+                failed += 1
+            else:
+                converted += 1
+                name = body[8:40].split(b"\0")[0].decode("ascii", "replace")
+                chunks.append((name, ic.rw_chunk(ic.RW_TEXTURE_NATIVE,
+                                                 ic.rw_chunk(ic.RW_STRUCT, body)
+                                                 + ic.rw_chunk(ic.RW_EXTENSION, b""))))
+            break
+    if not chunks:
+        return data, converted, failed
+    return ic.build_txd(chunks), converted, failed
+
+
 # ---------------------------------------------------------------- driving it
 
 REGIONS = {"vicecity": ("v_", convert_vc_ped), "libertycity": ("l_", convert_iii_ped)}
@@ -1339,7 +1464,7 @@ def main():
             continue
         seen_txd.add(name)
         try:
-            blob, converted, failed = ic.convert_txd(blobs["txd"][stem])
+            blob, converted, failed = convert_ped_txd(blobs["txd"][stem])
             files.append((name + ".txd", blob))
             if failed:
                 notes.append("%-14s -> %-16s %d texture(s), %d that would not convert"
