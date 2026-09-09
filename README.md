@@ -63,7 +63,9 @@ address, registers and stack even in a normal build.
 
 With `[World] Debug=1` the log becomes verbose and `F8` in game prints your SA coordinates and logs
 them together with the equivalent region-local coordinates and the zone the game resolves there —
-handy for placing an origin against a known landmark. Leave it off for normal play.
+handy for placing an origin against a known landmark. `F6` drops you straight through the world
+where you stand, which is the only practical way to try the fall recovery deliberately — a real fall
+needs a hole in the collision to be found first. Leave it off for normal play.
 
 ## Configuration
 
@@ -119,6 +121,7 @@ SA x 4171..6963, y −778..2626).
 | `RegionWeapons` | 1 | master switch for every region's `Weapons` file. Skipped under SA-MP. |
 | `RegionWeaponMode` | `Add` | `Add` gives the region's guns weapon types of their own and leaves San Andreas' forty-seven exactly as they were (ten new types is the hard limit); `Replace` writes them over the nearest San Andreas weapon, which changes that weapon for the whole game |
 | `RegionPickups` | 1 | master switch for every region's `Pickups` file. Skipped under SA-MP. |
+| `FallRecovery` | 1 | fall out of the world inside a region and you come back on that region's own ground rather than on San Andreas' path graph — and once you are over a region the answer always comes from that region, never from the mainland. Falls outside a region are left to the game. Skipped under SA-MP. |
 | `PickupReserve` | 200 | how many free pickup slots to leave SA's own script once a region has taken what it wants. Counted into the enlarged array's size rather than deducted from SA's 620 |
 | `Debug` | 0 | verbose log, F8 diagnostics, water render statistics |
 
@@ -306,6 +309,8 @@ All run in throwaway containers; nothing is installed on the host.
   `CWaterLevel::BlockHit` (0x6E6CA0) collected from the camera frustum this frame. Retargeting that
   one call is enough to render arbitrary water out there without touching the block grid.
 - Path nodes (`nodes*.dat`) are `int16 / 8` at ~490 inline sites: traffic and ped paths cannot be extended past ±4096 without a rewrite. Irrelevant under SA-MP.
+- Col slot 0 is never unloaded, so a region's collision is permanently resident: `CColStore::RemoveAllCollision` (0x410E00) and `LoadAllCollision` (0x410E60) both start their loop at index 1 (`mov edi, 1` at 0x410E09 and 0x410E69). What the streamer *does* move it chooses from the player's own position plus 20× their velocity (`CColStore::LoadCollision`, 0x410870–0x4108CD) — the camera is not part of it. Nor is it part of `CWorld::ProcessVerticalLineSectorList` (0x5632B0), which skips an entity only for its scan code, its `m_bUsesCollision` bit, or `CWorld::pIgnoreEntity`.
+- Falling out of the world is `CWorld::RemoveFallenPeds` (0x565CB0) and `CWorld::RemoveFallenCars` (0x565E80), run from the tail of `CWorld::Process` on the frames where `CTimer::m_FrameCounter & 7` is 1 and 5. Below z −100 (the float at 0x859014) an ordinary ped or car is deleted and the player, their vehicle and mission entities are moved to `CPathFind::FindNodeClosestToCoors` with a distance limit of 999999.875 — i.e. no limit, the whole graph. Nothing about it is a restart point, and outside ±4096 there are no nodes, so it reaches back into San Andreas. `src/region/FallRecovery.cpp` answers that first for a fall over a region.
 - Audio zone boxes and occluders are also `int16 / 8` and stay limited to ±4096.
 - Every streamable resource shares one id space: DFF 0 (20000), TXD 20000 (5000), COL 25000 (255), IPL 25255 (256), DAT 25511 (64), IFP 25575 (180), RRR 25755 (475), SCM 26230 (82), plus 4 list-head sentinels — 26316 `CStreamingInfo` entries. `ModelIdLimit` shifts every base above the DFF range and reallocates the three arrays that size with it (`ms_aInfoForModel`, `ms_modelInfoPtrs`, `ms_atomicModelInfoStore`); the streaming lists link entries with `int16` indices, hence the 26400 ceiling. The other model-info stores keep their vanilla capacities (damage 70, time 169, weapon 51, clump 92, vehicle 212, ped 278, 2dfx 100) and none of them is bounds-checked.
 

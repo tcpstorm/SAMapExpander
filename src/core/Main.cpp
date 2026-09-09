@@ -21,6 +21,7 @@
 #include "Gxt.h"
 #include "Zones.h"
 #include "Interiors.h"
+#include "FallRecovery.h"
 #include "ModelLimits.h"
 #include "RegionWeapons.h"
 #include "RegionPickups.h"
@@ -54,6 +55,7 @@ public:
                 WorldSectors::Install();
                 MapWindow::Install();
             Interiors::Install();
+            FallRecovery::Install();
         }
         // After WorldSectors, which decides the cell size the near-field streaming pass was
         // silently measuring its radius in; outside the region block, because an explicit
