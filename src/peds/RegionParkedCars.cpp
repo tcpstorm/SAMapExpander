@@ -358,7 +358,7 @@ bool BaySpawnPoint(const RegionState& rs, const Bay& b, CVector& out) {
 bool CreateParkedCar(RegionState& rs, Bay& b, int model) {
     CVector at;
     if (!BaySpawnPoint(rs, b, at)) { Counts().noGround++; return false; }
-    CVehicle* car = CCarCtrl::CreateCarForScript(model, at, false);
+    CVehicle* car = VehicleSpawn::Create(model, at, false);
     if (!car) return false;
     // Did it go where we asked? The traffic found a car of ours 6455 units from the player - the
     // distance between an imported city and San Andreas - and a car left standing in Los Santos

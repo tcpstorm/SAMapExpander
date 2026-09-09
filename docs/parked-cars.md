@@ -462,11 +462,57 @@ percentile **3.4**, and a maximum of 21.5 across 237 samples — one outlier, no
 now prints every surface under the player's feet with `Ground::Describe`, so the question "what is
 he actually standing on" is one keypress instead of an inference.
 
-### 9c. Read back where a thing actually went, every time
+### 9c. A `CVector` passed by value never arrives, and this is why nothing ever appeared
+
+**This is the bug. Everything else in this section is the search for it.**
+
+`CCarCtrl::CreateCarForScript` takes its position **by value**, and plugin-sdk's wrapper declares it
+that way:
+
+```cpp
+CVehicle* CreateCarForScript(int modelid, CVector posn, unsigned char MissionCleanUpFlag)
+```
+
+`gta_sa.exe` was built with MSVC, which pushes the twelve bytes of the vector onto the stack. clang
+building for i686 follows the GCC ABI, which passes any class with a user-declared copy constructor
+by **invisible reference** — and plugin-sdk's `CVector` declares one. So the call pushes a *pointer*
+where the game reads x, the mission-cleanup flag where it reads y, and whatever was next on the
+stack where it reads z.
+
+`src/debug/Teleport.cpp` documents exactly this for `CEntity::Teleport`, having been caught by it
+first, and `src/region/FallRecovery.cpp` avoids it the same way. **Nobody carried the lesson across
+to the vehicles**, so every car this project has ever created — traffic and parked alike, since the
+day each was written — was made somewhere other than where it was asked for.
+
+The read-back guard printed it three times running:
+
+```
+asked for a car at (6471.8, 940.6, 3.5) and got one at (0.0, 0.0, 6472.8)
+```
+
+and every part of that is the ABI, not a car that moved:
+
+| printed | what it really is |
+|---|---|
+| x `0.0` | a stack **address** reinterpreted as a float — a denormal, which prints as zero |
+| y `0.0` | the `false` we passed for `missionCleanup` |
+| z `6472.8` | our own **x**, which happened to be the next word on the stack, plus the 1 unit `CreateCarForScript` adds for the model's centre-to-base distance |
+
+`VehicleSpawn::Create` now puts a bare three-float struct on the wire — trivially copyable, and
+passed the way the game expects — and calls 0x431F80 directly, next to the byte check that was
+already guarding that address.
+
+**The audit that goes with it.** This was the *only* by-value class argument either spawner makes.
+`CPopulation::AddPed` takes `CVector const&` — which is why the pedestrians always worked.
+`TheCamera::IsSphereVisible` takes `CVector const&`. `CPedPlacement::FindZCoorForPed` takes a
+pointer. `CPlaceable::GetPosition` returns a **reference**, so reading a position back was never
+affected and every distance measured with it was real. **Check the signature, not the call site**:
+the call site looks identical either way.
+
+### 9d. Read back where a thing actually went, every time
 
 A car of ours turned up **6455 units** from the player, with a fall of 0.0 — sitting exactly where
-it had been put, six and a half thousand units away. That is the distance between an imported city
-and San Andreas.
+it had been put, six and a half thousand units away.
 
 What that one number explains, all at once:
 
