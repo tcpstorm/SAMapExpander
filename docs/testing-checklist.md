@@ -1,11 +1,11 @@
 # Testing checklist
 
-Four bodies of work are finished and none has been run in a game. Nothing in this project is tested
+Five bodies of work are finished and none has been run in a game. Nothing in this project is tested
 by the people who write it — the plugin cannot be exercised without launching San Andreas, and that
 is done by hand. This is the list, in the order that finds the most with the least driving.
 
 Set `[World] Debug = 1` first. Debug keys: **F6** drops you under the world on purpose, **F7** cycles
-to the next region, **F8** prints position, zone and subsystem counts, **F9** gives the imported
+to the next region, **F8** prints position, zone, subsystem counts and where a death or an arrest would put you, **F9** gives the imported
 weapons. `MapExpander.log` is the other half of every check below — most failures announce themselves
 there rather than on screen.
 
@@ -15,6 +15,7 @@ The branches, and what each needs:
 |---|---|---|
 | `feature/sector-grid-fps` | grid fitted to real building extents | low — nothing moves |
 | `feature/fall-recovery` | recovery when you fall through the world | low — inert outside a region |
+| `feature/region-restart-points` | death and arrest wake you in the imported city | low — a plain forward outside a region |
 | `feature/peds-and-police` | pedestrians, police, and now vehicles | medium — touches population |
 | (same branch) `PathScale` | widened path encoding | **off by default; leave it off for now** |
 
@@ -111,8 +112,65 @@ junctions on an arc. Neither is reachable without the link data.
 
 ---
 
+## 5. Dying and being arrested in an imported city
+
+This one is cheap to check and the failure is unmistakable, so do it early. It needs a re-import (or
+the `restarts.dat` that shipped with this branch already in place) — the region folder has to have a
+`restarts.dat` and its `region.ini` a `Restarts =` line, or nothing at all changes.
+
+- **Read the log at start-up.** It should say, once per region,
+  `[vicecity] restarts: 4 hospital and 4 police point(s) of its own; San Andreas' own arrays are not
+  touched and the savegame is unchanged`, and 3 and 3 for Liberty City.
+- **F7 to Vice City, then F8.** Before dying at all, the read-out says
+  `restart points: [vicecity] die here -> (x, y, z) heading h; arrested here -> (x, y, z) heading h`.
+  Both should be Vice City coordinates — x between 3998 and 7998 with the shipped origin — not
+  San Andreas ones. This is the whole check without the driving.
+- **Die.** Walk into the sea, or shoot the ground with a rocket. You should wake outside a Vice City
+  hospital, facing the way that game faced you, with the usual hospital fee and weapon loss. The log
+  writes one line: `[vicecity] restarts: death at (...) answered with the region's own hospital at
+  (...) heading ...  # BEACH3 @0x328a9`.
+- **Get arrested.** Raise a wanted level in Vice City and stand still. You should come out of a Vice
+  City police station, not a Los Santos one.
+- **Do both again in Liberty City.** Its Portland police station is the one whose height comes from
+  the ground rather than from the script, so it is the one worth watching: you should be standing on
+  the street outside, not sunk into it and not on a roof.
+- **Now the control: die and get arrested in San Andreas.** Los Santos, then somewhere in the
+  countryside. You must get exactly the vanilla behaviour — All Saints, the LS police station, the
+  nearest hospital to wherever you were — and **no** `restarts:` line in the log at all. This is the
+  case that must not have changed, and silence in the log is the proof.
+- **F8 in San Andreas** should say `restart points: outside every region - San Andreas answers death
+  and arrest here, as it always did`.
+- **Save the game in Vice City, then load it.** The save must load normally, and a save made before
+  this branch must still load after it. Nothing of a region's ever enters the block `CRestart::Save`
+  writes, so a save is byte for byte what vanilla writes — if that stopped being true, loading is
+  where it would show, as garbage in the blocks *after* the restart one (pickups in the wrong place,
+  car generators, radar blips).
+
+**Failures.**
+
+- *No `restarts:` line at all at start-up* — it never installed. Either the region has no
+  `restarts.dat` (re-import), `RegionRestartPoints` is 0, or this is SA-MP; the log says which.
+- *Start-up says the two searches do not start with the bytes San Andreas 1.0 US ships* — another mod
+  owns `CRestart::FindClosestHospitalRestartPoint` or `FindClosestPoliceRestartPoint` and nothing was
+  patched, deliberately. Both are left vanilla or neither is hooked.
+- *You still wake in All Saints* — read the log line for that death. If there is none, the hook did
+  not fire, which means the position the game searched from was not inside the region's tile grid.
+  F8 where you died and compare.
+- *You wake in the right city but underground, or on a roof* — that is a point whose height came from
+  the ground search. The log names it; the fix is a real z in `restarts.dat` for that line.
+- *`the %s point at (...) asks for the ground and the region's collision has none there`* — the
+  region's `.col` did not cover that spot. You will be put at the region's floor plus 20, which is at
+  least the right city.
+- *`this region has no police point, so its hospital point is used instead`* — the mine found only one
+  kind. Neither shipped region should ever say this; if one does, its `restarts.dat` is truncated.
+- *San Andreas' own deaths changed in any way* — stop and report it. Nothing outside a region is
+  supposed to be touched, and the hook is a plain forward there.
+
+---
+
 ## What a clean run looks like
 
 San Andreas plays exactly as it always did — same traffic, same frame rate, same everything — and the
 imported cities have people on the pavements, cars on the roads, police that respond, and a fall
-through the world puts you back on the street you fell through rather than in Los Santos.
+through the world puts you back on the street you fell through rather than in Los Santos — and so
+does dying in one, at that city’s own hospital.
