@@ -385,34 +385,251 @@ the specific things to watch for:
 
 ---
 
-## What is still to do, and it is not in `tools/`
+---
 
-Two things stand between these archives and people walking around an imported city, and both are on
-the loader side.
+## Loading them: what `LoadPedObject` actually needs
 
-**1. `CityLoader` skips `peds` sections.** `src/region/CityLoader.cpp` sends IDE lines to
-`CFileLoader::LoadObjectTypes` (0x5B8400) after rewriting them, and explicitly drops `peds`, `cars`
-and `hier` (the `IdeSection::Skip` branch). A ped line has to be let through and given a model id
-from the same allocator `objs` lines use. San Andreas parses one in `CFileLoader::LoadPedObject`
-(0x5B7420), which builds a `CPedModelInfo` - a different and larger structure than the
-`CBaseModelInfo` an `objs` line makes, so `ModelLimits`' slot accounting has to know the difference.
-`docs/asset-namespacing.md` already notes that the `peds` columns are never renamed although their
-assets are packed; that is the same gap seen from the other side.
+`CFileLoader::LoadObjectTypes` sends a `peds` section to `CFileLoader::LoadPedObject` (0x5B7420)
+from one site, 0x5B8654, with no validation of any kind on the way in.
 
-**2. `pedgrp.dat`'s pairing has to be pointed at the imports.** This is the easy half, and it is what
-the whole `DONOR/SAMODEL` design was for. Each line already reads
+### It is a different model info, out of a different store
+
+This is the whole of why `peds` sections were skipped, and it is not what "the atomic store has to
+know a ped is bigger" would suggest. A ped does not come out of the atomic store at all.
+
+`CModelInfo::AddPedModel` (0x4C67A0) is six instructions:
 
 ```
-group 3  DOWNTOWN  WMYST/WMYST  BFYST/BFYST  ...
+mov  eax, [0xB478F8]        ; ms_pedModelInfoStore.m_nCount
+imul esi, eax, 0x44         ; sizeof(CPedModelInfo) - against a CAtomicModelInfo's 0x20
+add  esi, 0xB478FC          ; ms_pedModelInfoStore.m_aObjects
+inc  eax
+mov  [0xB478F8], eax
+...  mov [ecx*4 + 0xA9B0C8], esi
 ```
 
-and the right-hand side becomes `v_wmyst`, `v_bfyst` and so on. `tools/import_city.py`'s
-`build_ped_map` is where that changes: instead of `map_vc_ped` choosing a San Andreas stand-in, the
-pair's right-hand side is the imported name whenever `convert_peds` produced one, and falls back to
-the stand-in when it did not. Nothing in `src/peds/` changes at all - which was the point of putting
-the indirection in a data file.
+`CStore<CPedModelInfo, 278>`: the count is compared to nothing, and the array physically ends at
+`0xB478FC + 278 * 0x44 = 0xB4C2D4`, with the next store's count word at `0xB4C2D8`. **San Andreas'
+own `data/peds.ide` declares 276 of the 278.** Two spare. Entry 279 onwards writes over the
+neighbouring store.
 
-Until (1) is done, `peds.img` and `peds.ide` are written and correct but nothing loads them.
+So `ModelLimits` moves it, the way `RegionWeapons` moves the weapon store: eight instructions in the
+first `.text` name it, all eight byte-checked first, and the objects built by `CPedModelInfo`'s own
+constructor (0x4C57A0 - base constructor, vtable 0x85BDC0, `+0x34 = 0`, nothing outside the object)
+because the plugin loads before the executable's static initialisers. The CRT's vector constructor
+at 0x84BCF0 and its atexit destructor at 0x8562B0 are left alone; they build the original static
+block, which goes unused.
+
+### Fourteen columns, and it does not check that it got them
+
+```
+%d %s %s %s %s %s %x %x %s %d %d %s %s %s
+
+id  model  txd  pedType  statType  animGroup  carMask  flags  animFile  radio1 radio2
+    audioPedType  voice1  voice2
+```
+
+`LoadPedObject` never looks at `sscanf`'s return value, so a short line leaves uninitialised stack in
+the buffers it did not fill and those go straight into `CKeyGen::GetUppercaseKey` and
+`CTxdStore::FindTxdSlot`. The column count is checked in the loader.
+
+### Two of the columns have a "not found" answer that is out of range
+
+| column | looked up by | not found gives | what it indexes |
+|---|---|---|---|
+| ped type | `CPedType::FindPedType` 0x608790 | **32** (0x608825, `add eax, 0x20`) | `ms_apPedType`, 32 entries; `GetPedFlag` guards, the acquaintance getters do not |
+| animation group | inlined loop at 0x5B7515 | **the table's count** (seeded at 0x5B7432) | `ms_aAnimAssocGroups`, exactly `ms_numAnimAssocDefinitions` entries on the heap (0x4D3A40) |
+
+Both are checked in the loader against the game's own tables, and a line that fails is one
+pedestrian named in the log rather than a region.
+
+The animation table has two halves and only the second holds what a `peds` line asks for: 118 static
+definitions at 0x8AA5A8 (`default`, `door`, `bikes`, `colt45`, `uzi` - weapon and vehicle groups),
+and then `CAnimManager::Initialise` calls `ReadAnimAssociationDefinitions` (0x5BC910) on
+`DATA\ANIMGRP.DAT` and appends its 21 (`man`, `woman`, `shuffle`, `skate`). All of that is in
+`CGame::Init1`, so the table holds both halves by the time any `peds.ide` is parsed.
+
+The other three lookups are safe and were checked rather than assumed: `CPedStats::GetPedStatType`
+(0x6088D0) answers 16 for an unknown name, `FindPedRaceFromName` (0x5B6D40) answers 0, and
+`CAEPedSpeechAudioEntity::GetAudioPedType` (0x4E3C60) answers -1, which is a ped that never speaks.
+
+### Where an imported ped may live
+
+Nowhere in San Andreas is anything indexed by a ped's model id. What it does reserve, it reserves by
+value and far below our range:
+
+- **290 upwards** - `CStreaming::RequestSpecialChar` and its neighbours (0x40B450, 0x40B470,
+  0x40B490) hardcode `add reg, 0x122`.
+- **300..319** - `CCutsceneMgr::CreateCutsceneObject` (0x5B02C0) gates on that range and indexes a
+  20-entry table of 48 bytes at 0x968A30 by `(id - 300)`.
+
+`FreeModelIdStart` is 18631, so neither is reachable. Ped ids in `CPopulation`'s groups are `int16`
+read back with `movzx` (0xC0F358, 21 per group), with 2000 as the "empty slot" sentinel;
+`CStreaming::ms_pedsLoaded` holds eight full dwords; `CStreaming::RemoveModel` decides a model is a
+ped from its vtable (`cmp al, 7`) rather than its number. The one real width limit is
+`CEntity::m_nModelIndex` at +0x22, read **sign-extended** everywhere - 32767, and `ModelIdLimit`
+stops at 26400.
+
+---
+
+## The bug this walked into, and how it was routed around
+
+`import_city.convert_extension` restamps a plugin's header and copies its body. The **skin plugin's
+layout** differs between the donors' RenderWare and San Andreas', not only its version stamp - see
+"The skin plugin, byte for byte" above - so every skinned model the map import packed went in as a
+3.3 body wearing a 3.6 label. Measured on the already-imported `vicecity.img`: `v_wmyst`, `v_bfyst`
+and `v_hmyst` hold a chunk whose length only adds up as the 68-byte stride with no used-bone list.
+
+It was harmless only because `peds` sections were skipped. It stops being harmless the moment they
+are not, because the converter writes its correct model under the **same** namespaced name, and
+`CStreaming::LoadCdDirectory` keeps the FIRST archive entry it binds to a name (0x5B6449).
+
+Routed around in three places:
+
+1. **A model carrying a skin plugin is left out of the region archive.** 275 of Vice City's 6043
+   entries and 18 of GTA III's 3856 - its 107 `peds` models, its 168 cutscene cast and GTA III's 18
+   cutscene heads. None of the cutscene models is referenced by any section the importer emits.
+2. **`convert_extension` drops the chunk** rather than copying it, so no route through that file can
+   put a 3.3 skin in a San Andreas model again. Neither caller loses anything: the map path no
+   longer sees a skinned model, and `convert_peds` writes its own rebuilt skin over the top
+   (`replace_skin` appends when there is nothing to replace).
+3. **`convert_peds` merges into the region's archive, replacing by name.** That is what fixes a
+   region imported before (1): over the existing `vicecity.img` it replaces 210 entries and adds 1.
+
+### And it goes in the region's own archive, because there is no room for another
+
+`CStreaming::ms_files` is 8 x 0x30 at 0x8E48D8. San Andreas has spent five before a region is
+registered - `gta3`, `gta_int`, and `carrec`, `script` and `cutscene` from `gta.dat` - with
+`player.img` still to come in `CGame::Init2`. A real run's log says `7/8 slots used` with the two
+cities' map archives in. There is no eighth. (A third city could not register a map archive either;
+that is a separate limit worth raising one day, and `CStreaming::AddImageToList` being behind a
+HOODLUM thunk at 0x407610 is why it was not raised here.)
+
+---
+
+## Using them: what to run
+
+```
+tools\import-city.ps1 "<Vice City dir>" "<SA dir>"                      # if not already imported
+docker run --rm -v "<VC dir>:/src:ro" -v "<SA dir>:/sa" -v "<repo>\tools:/tools:ro" ^
+    python:3-slim python /tools/convert_peds.py /src /sa --region=vicecity
+```
+
+and the same with the GTA III directory and `--region=libertycity`. `convert_peds.py` writes into
+`<SA dir>\MapExpander\<Region>\`: it merges the models into the region's archive, writes `peds.ide`,
+writes `peds.txt`, and repoints `pedgrp.dat`'s `DONOR/SAMODEL` pairs at the imported names.
+
+Then add one line to each region's `region.ini` (a fresh import writes it for you):
+
+```
+PedIde       = MapExpander\vicecity\peds.ide
+```
+
+Nothing in `src/peds/` changes. The plugin reads only the right-hand side of a `pedgrp.dat` pair and
+looks it up by name through `CModelInfo::GetModelInfo`, which is exactly what the pairing was for.
+
+### What the numbers should be
+
+Over the retail files, held against the loader's own acceptance rules offline:
+
+| | Vice City | Liberty City |
+|---|---|---|
+| `peds.ide` lines | 105 | 78 |
+| accepted by `CityLoader`'s checks | **105** | **78** |
+| `pedgrp.dat` pairs repointed | 1072 | 248 |
+| archive entries replaced / added | 210 / 1 | - |
+
+Two bugs were found by running those rules rather than by reading: **`EMERGENCY` is not a San
+Andreas ped type** (both donors' `medic` declares it, and it was going out as ped type 32), and
+**`PED_TYPE_COP` and `PED_TYPE_MEDIC` are not audio ped types** (there are six, at 0x8C8108, and
+police, paramedics and firemen are all `PED_TYPE_EMG`). Both are fixed in `ide_line`.
+
+---
+
+## Checking it in the game
+
+In the style of `docs/testing-checklist.md`, and belonging in it as its own section when these
+branches meet. Set `[World] Debug = 1` first. **The log is more than half of this** - everything up
+to point 3 is settled there before anything is looked at.
+
+### 1. Start-up, before going anywhere
+
+Three lines say whether this worked, in `MapExpander.log`:
+
+- `ped model store moved to the heap: 790 entries of 68 bytes at 0x... (vanilla 278, of which San
+  Andreas' own data/peds.ide takes 276)`
+- `models: ... store headroom atomic ..., ped 514` on the `models:` line - the ped figure is what is
+  left after San Andreas' own peds.
+- `[vicecity] peds: 105 model(s) registered, 0 refused here (...)` and the same for
+  `[libertycity] peds: 78`.
+- `[vicecity] peds: all 105 registered model(s) have both a .dff and a .txd bound`.
+
+**Then walk a Vice City street.** The crowd should be Vice City's own - its shirts, its shorts, its
+haircuts - and not San Andreas' people standing in. That is the whole visible test of this work.
+
+### 2. Failures, and what each one looks like
+
+- ***`ERROR: the ped model store was not moved: 0x4C67A0 holds ...`*** - another mod patched
+  `CModelInfo`. Nothing was written; the store stays at 278 and every ped after the second is
+  dropped with the "store full" line below. San Andreas is untouched.
+- ***`peds: N dropped (ped model store full)`*** - the store was not moved (see above), or
+  `ModelIdLimit` is at the vanilla 20000 so `ModelLimits` never ran.
+- ***`peds: ...ide is missing or empty`*** - `convert_peds.py` has not been run for that region.
+  The region keeps San Andreas' peds; nothing else is affected.
+- ***`peds: N refused here (... unknown animation group)` for every line*** - with the extra line
+  `CAnimManager has no animation groups yet`, the loader ran before `CGame::Init1`, which it should
+  not; without it, the region's `peds.ide` names groups `data/animgrp.dat` does not declare and
+  `convert_peds.py` should have mapped them.
+- ***`peds: N refused here (... name already used)`*** - a ped name collides with a model that
+  already exists. Two regions using the same tag would do it, or a hand-written `peds` section
+  naming San Andreas' own `wmyst`. Refusing is the point: two model infos sharing a key make every
+  later lookup by name a coin toss.
+- ***`peds: of 105 registered, N have no .dff`*** - `convert_peds.py` did not merge into the archive
+  the region's `Img` names, or `Img` names a different one. **Do not play in this state**: a request
+  for a model with no archive entry hangs the streamer.
+- ***`peds: ... N no .txd`*** - the model streams but has no dictionary, so the ped walks with white
+  skin. That is this, not a conversion fault.
+- ***`img: ... NOT registered - CStreaming::ms_files is full`*** - you added a `PedImg`. Remove it;
+  the peds belong in the region's own archive.
+- ***San Andreas' own crowd changed*** - would mean a ped model info landed on one of San Andreas'
+  ids. Nothing should be able to do that (the ids come from the same checked allocator the buildings
+  use, and only an empty `ms_modelInfoPtrs` slot is ever handed out), so report it with the log.
+
+### 3. Savegames: this adds exposure, and here is exactly how much
+
+`docs/save-compatibility.md`'s hazard 2 is index drift: our ids are handed out in load order, so a
+save resolves a stored model id against whatever the layout was when it was written. Peds are
+entities and a saved `CPed` carries its model id, so **turning a region's peds on or off changes
+what an existing save's peds resolve to.** That is new exposure and it is worth saying plainly.
+
+Two things were done to keep it to the minimum:
+
+- **Peds load after every region's map models**, not interleaved with them. So switching peds on
+  appends 183 ids and moves **nothing** that was already assigned - a save written without peds
+  still resolves every building, every pickup model and every garage car correctly.
+- **The save's Streaming block is a byte per model slot** and its size is fixed by
+  `ms_aInfoForModel`, which `ModelIdLimit` already set. Peds change nothing there.
+
+What is *not* fixed, and is the ledger's job rather than this work's: removing a region still shifts
+everything assigned after it, peds included. And a save written with a region's peds, loaded without
+them, resolves those ped ids to whatever now sits at those numbers.
+
+### 4. The free id range is now tight, and worth watching
+
+The two regions' map IDEs claim 4143 and 2912 distinct source ids; the peds add 183. That is 7238
+against the 7769 ids in `18631..26399`. **A third region will not fit**, and neither will a second
+pass of anything large. The line to read is `models: N free id(s) in 18631..26399` at start-up, and
+the failure is loud: `models: the free id range ... ran out`.
+
+---
+
+## What only running the game can settle
+
+Everything above the game section is structural or was read out of the executable. Loading is now
+offline-verifiable end to end - the archives parse, the lines pass the same checks the loader
+applies, the store has room - but **none of that says a ped animates, holds a gun or stands on the
+ground.** The seven things listed under "What only running the game can settle" earlier in this
+document are all still open, and this work has not narrowed any of them.
 
 ---
 
@@ -422,6 +639,5 @@ Until (1) is done, `peds.img` and `peds.ide` are written and correct but nothing
 sixteen-line table written by hand for GTA III and none for Vice City. It runs in a few seconds per
 region.
 
-The residual work is not per-ped either: it is the two loader-side items above, and - if GTA III's
-rigid joints look bad enough to matter - one change to how the converter assigns weights near a
-joint, applied to all 78 at once.
+The residual work is not per-ped either: if GTA III's rigid joints look bad enough to matter, that
+is one change to how the converter assigns weights near a joint, applied to all 78 at once.
