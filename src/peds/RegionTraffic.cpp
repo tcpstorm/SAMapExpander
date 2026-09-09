@@ -234,7 +234,24 @@ struct Driver {
     int ref;            // CPools vehicle handle: slot plus re-use counter
     int model;          // what it was created as; half of the proof that it is still ours
     int from, to;
+    // The node AFTER `to`, chosen once when the destination is set and kept.
+    //
+    // It used to be re-rolled: SetDestination called NextNode to decide which way the car would
+    // leave `to`, used that to work out which side of the road its destination sat on - and then
+    // ManageDrivers called NextNode AGAIN on arrival and got a different answer. So the lane offset
+    // a car spent the whole leg driving towards was computed for a continuation it then did not
+    // take. Deciding once and remembering is the whole fix.
+    int next;
     int lane;
+    // Where the car is actually steering: the lane point, not the node.
+    //
+    // This is here because the arrival test used to measure the distance to the NODE while the car
+    // drove at a point (lane + 0.5) * 5.4 units to one side of it. On a single-lane road that is
+    // 2.7 units, so once the arrival radius came down to a sensible fraction of the leg the car
+    // could reach its destination exactly and still never be "within 2.5 of the node" - it had
+    // arrived at a point it was never being measured against. Judge arrival against the thing the
+    // car is driving at.
+    CVector target;
 };
 
 struct RegionState {
@@ -509,10 +526,13 @@ int ChooseLoadedCar() {
 // STRAIGHT is the variant that steers for the destination rather than following a route, which is
 // exactly what a car with no route needs; the node addresses are set to the game's own empty value
 // so that anything which does look at them sees "none" rather than a stale area index.
-void SetDestination(CVehicle* car, const RegionState& rs, const Driver& d) {
-    CVector target = LanePoint(rs, d.to, NextNode(rs, d.from, d.to), d.lane);
+void SetDestination(CVehicle* car, const RegionState& rs, Driver& d) {
+    // Choose the continuation ONCE and keep both it and the point it implies. Everything after
+    // this - the arrival test, the stray test, the next leg - reads them rather than re-rolling.
+    d.next = NextNode(rs, d.from, d.to);
+    d.target = LanePoint(rs, d.to, d.next, d.lane);
     CAutoPilot& pilot = car->m_autoPilot;
-    pilot.m_vecDestinationCoors = target;
+    pilot.m_vecDestinationCoors = d.target;
     pilot.m_nCarMission = (eCarMission)kMissionGotoCoordsStraight;
     pilot.m_nPathFindNodesCount = 0;
     pilot.m_currentAddress.Clear();
@@ -599,7 +619,7 @@ CVehicle* CreateCar(RegionState& rs, int from, int to, int lane, int model) {
     CVector b = NodeWorld(rs, to);
     car->SetHeading(atan2f(-(b.x - at.x), b.y - at.y));
     CPopulation::AddPedInCar(car, true, -1, 0, true, false);
-    rs.drivers.push_back(Driver{ CPools::GetVehicleRef(car), model, from, to, lane });
+    rs.drivers.push_back(Driver{ CPools::GetVehicleRef(car), model, from, to, -1, lane, CVector() });
     SetDestination(car, rs, rs.drivers.back());
     return car;
 }
@@ -729,8 +749,8 @@ void ManageDrivers(RegionState& rs, const CVector& player) {
             continue;
         }
 
-        CVector goal = NodeWorld(rs, d.to);
-        float gx = goal.x - p.x, gy = goal.y - p.y;
+        // Against the point the car is steering at, not against the node beside it. See Driver.
+        float gx = d.target.x - p.x, gy = d.target.y - p.y;
         float toGoal = gx * gx + gy * gy;
         if (toGoal > kStrayDistance * kStrayDistance) {
             // Shunted off its road, most likely by the player. Rather than drag it back across a
@@ -748,18 +768,18 @@ void ManageDrivers(RegionState& rs, const CVector& player) {
             // twenty. `anchor` is where the car actually is, so the test is against the distance
             // it will have to drive, not against the length of one link in a chain of short ones.
             int from = d.to;
-            int next = NextNode(rs, d.from, d.to);
+            int to = d.next;              // decided when this leg was handed out, not re-rolled
             for (int hop = 0; hop < kMaxLegHops; hop++) {
-                CVector target = NodeWorld(rs, next);
-                float lx = target.x - p.x, ly = target.y - p.y;
+                CVector step = NodeWorld(rs, to);
+                float lx = step.x - p.x, ly = step.y - p.y;
                 if (lx * lx + ly * ly >= kMinLegLength * kMinLegLength) break;
-                int after = NextNode(rs, from, next);
-                if (after == next || after == from) break;   // a dead end, or straight back
-                from = next;
-                next = after;
+                int after = NextNode(rs, from, to);
+                if (after == to || after == from) break;   // a dead end, or straight back
+                from = to;
+                to = after;
             }
             d.from = from;
-            d.to = next;
+            d.to = to;
             if (d.lane >= rs.nodes[d.to].lanes) d.lane = rs.nodes[d.to].lanes - 1;
             SetDestination(car, rs, d);
         }
@@ -792,7 +812,7 @@ void ManageDrivers(RegionState& rs, const CVector& player) {
         if (ReportOneDriver()) {
             const float* dest = (const float*)((const char*)car + kAutoPilotDestination);
             CVector node = NodeWorld(rs, d.to);
-            CVector lane = LanePoint(rs, d.to, NextNode(rs, d.from, d.to), d.lane);
+            CVector lane = d.target;
             Log::Write("traffic: car at (%.1f, %.1f, %.1f) is steering for (%.1f, %.1f) [read from "
                        "the vehicle at +0x3EC]; it is aiming at node %d, which this module puts at "
                        "(%.1f, %.1f, %.1f) and whose lane point is (%.1f, %.1f). car->dest %.1f, "
