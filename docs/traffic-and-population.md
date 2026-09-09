@@ -23,7 +23,7 @@ range:
 | police on foot | same graph | as above | `CTaskComplexKillPedOnFoot` |
 | vehicles | donor `carnodes.dat` | `CCarCtrl` creation path | `MISSION_GOTOCOORDS_STRAIGHT` |
 
-The importer writes both graphs: Vice City 7967 car nodes / 8408 links and 3789 ped nodes, Liberty
+The importer writes both graphs. Earlier figures here had Vice City at 7967 car nodes to 3789 ped, which was the two graphs swapped (see the note on path types in tools/import_city.py); Liberty
 City 3233 / 3343 and 5198, with median carriageway width and lane counts each way.
 
 Settings are `RegionTraffic` (default 1), `RegionTrafficDensity` (1.0, a multiplier on the car budget
