@@ -21,4 +21,10 @@ namespace RegionTraffic {
     // make one out of", which is how the traffic failed silently once already.
     int Budget();
     int LoadedModelCount(int* outOf);
+
+    // For F8: how far the nearest carriageway node is from a point, and how far that point is from
+    // the region's own zero. Those two numbers together are the only way to tell a graph that is
+    // SCALED from one that is merely offset - a scale error is small near the origin and grows
+    // with distance from it, and a module driving on its own graph cannot see its own scale.
+    void DescribeNearestNode(const CVector& at, char* out, unsigned size);
 }

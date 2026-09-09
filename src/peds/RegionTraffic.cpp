@@ -882,6 +882,46 @@ int Count() {
 
 int Budget() { return CarBudget(); }
 
+// Stand on a road and this says how far the carriageway graph thinks the nearest road is - and how
+// far you are from the region's own zero.
+//
+// One reading proves nothing. Two do: take one near the region origin and one at the far edge of
+// the city. If the nearest node is a few units away in both, the graph is on the roads and the
+// cars are driving badly for some other reason. If it is a few units near the origin and tens of
+// units at the edge, the graph is a SCALED copy of the city rather than a displaced one - which is
+// a fault no amount of instrumenting the driving can find, because the module computes both the
+// route and the destination from the same graph and is perfectly consistent with itself while
+// being wrong about the world.
+void DescribeNearestNode(const CVector& at, char* out, unsigned size) {
+    for (const RegionState& rs : Regions()) {
+        if (!PlayerOver(rs, at, Settings::world.regionTrafficRadius)) continue;
+        int best = -1;
+        float bestD = 0.0f;
+        std::vector<int> nearby;
+        NodesNear(rs, at, 200.0f, nearby);
+        for (int n : nearby) {
+            CVector p = NodeWorld(rs, n);
+            float d = (p.x - at.x) * (p.x - at.x) + (p.y - at.y) * (p.y - at.y);
+            if (best < 0 || d < bestD) { best = n; bestD = d; }
+        }
+        float localX = at.x - rs.region->originX, localY = at.y - rs.region->originY;
+        float radius = sqrtf(localX * localX + localY * localY);
+        if (best < 0) {
+            snprintf(out, size, "[%s] no carriageway node within 200 units; %.0f units from the "
+                     "region's own zero", rs.region->name.c_str(), radius);
+            return;
+        }
+        CVector p = NodeWorld(rs, best);
+        snprintf(out, size, "[%s] nearest carriageway node %d is %.1f units away, at local "
+                 "(%.1f, %.1f, %.1f); you are %.0f units from the region's own zero",
+                 rs.region->name.c_str(), best, sqrtf(bestD),
+                 p.x - rs.region->originX, p.y - rs.region->originY, p.z - rs.region->originZ,
+                 radius);
+        return;
+    }
+    snprintf(out, size, "not over any region's carriageways");
+}
+
 int LoadedModelCount(int* outOf) {
     const int count = (int)(sizeof(kPlaceholderCars) / sizeof(int));
     if (outOf) *outOf = count;
