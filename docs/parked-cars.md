@@ -628,6 +628,54 @@ off at 664 from the origin, 6.1 at 1706, and one reading of 14.7 that was **take
 beside a terminal roof** and is worthless. A 0.85% scale error would have put that last grounded
 sample 14–15 units out; it was 6.1.
 
+### 9g-ii. The cars are not driving on the pavements — checked, because the counts look wrong
+
+A good hypothesis, raised from watching the overlay: the cars seemed to be following pavement lines,
+and the node counts point the same way.
+
+| | ped nodes | car nodes |
+|---|---|---|
+| Liberty City | 5198 | 3233 |
+| **Vice City** | 3789 | **7967** |
+
+Liberty City has more pavement than road, which is what a city should have. **Vice City is
+inverted.** That is what a carriageway set which had absorbed its pedestrian paths would look like.
+
+**It is not what happened, and the check is conclusive.** Vice City keeps its whole network in one
+file, `data/maps/paths.ipl`, as 1957 groups of twelve slots each, every group headed by a two-field
+line whose first field is the path type. Tracing every imported node back to the source coordinate
+it came from:
+
+| | from source type 0 | from type 1 | from a coordinate both types share | unmatched |
+|---|---|---|---|---|
+| `carnodes.dat` (7967) | **7824** | 0 | 116 | 27 |
+| `pednodes.dat` (3789) | 0 | **3653** | 115 | 21 |
+
+Type 0 goes to the cars, type 1 to the pedestrians, and nothing crosses over. The ~116 in both
+columns are points where Vice City itself put a car node and a ped node at the *same coordinate* —
+a crossing or a kerb — so they are ambiguous to a test that matches by position, not to the
+importer, which reads the type. Liberty City has none at all.
+
+And the types are what they look like:
+
+| type | nodes | median distance to the nearest type-0 node | reading |
+|---|---|---|---|
+| 0 | 9514 | — | roads |
+| 1 | 4588 | **8.0** (10% at 2.3, 90% at 24.2) | pavements, flanking the roads by half a road width |
+| 2 | 630 | **75.9** | boats, out on the water — correctly imported into neither file |
+
+**So the inverted counts are real, and they are Vice City's own.** That city describes its *roads*
+more finely than its pavements; Liberty City does the reverse. Which is not a curiosity — it is the
+cause of §9g: it is exactly why 36.5% of Vice City's carriageway links are shorter than the old
+eight-unit arrival distance and only 19.2% of Liberty City's are.
+
+**And the observation was still right about the appearance.** A car that arrives early and aims one
+or two nodes ahead cuts the corner, and a corner cut off a Vice City road lands about where its
+pavement is — the ped paths sit a median of eight units from the road nodes, and the cars were
+running wide by about that. So the user was seeing cars on the pavement; they were simply not
+*following* the pavement. The proportional arrival distance is the fix for that and is not
+compensating for contaminated data: there is none.
+
 ### 9h. A reading should carry its own validity
 
 Three F8 samples in one evening were taken from a jetpack, from under the map, and from the air by
