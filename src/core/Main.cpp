@@ -17,6 +17,7 @@
 #include "Teleport.h"
 #include "Watchdog.h"
 #include "TxdProbe.h"
+#include "PathLoadProbe.h"
 #include "RenderGuard.h"
 #include "Gxt.h"
 #include "Zones.h"
@@ -98,6 +99,7 @@ public:
         Teleport::Install();
         Watchdog::Install();
         TxdProbe::Install();
+        PathLoadProbe::Install();
         RenderGuard::Install();
 
         Log::Write("MapExpander initialised: %u region(s)", (unsigned)Settings::regions.size());
