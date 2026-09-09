@@ -20,6 +20,7 @@
 #include "RegionWeapons.h"
 #include "Interiors.h"
 #include "FallRecovery.h"
+#include "RegionRestarts.h"
 #include "Gxt.h"
 #include "Watchdog.h"
 #include "Log.h"
@@ -137,6 +138,9 @@ static void OnFrame() {
     std::string fall;
     FallRecovery::Describe(fall);
     Log::Write("    fall recovery: %s", fall.c_str());
+    std::string restarts;
+    RegionRestarts::Describe(restarts);
+    Log::Write("    restart points: %s", restarts.c_str());
     Zones::LogPlayerZone(pos.x, pos.y, pos.z);
 }
 

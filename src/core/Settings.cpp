@@ -402,6 +402,7 @@ namespace Settings {
         world.regionPickups = true;
         world.pickupReserve = 200;
         world.fallRecovery = true;
+        world.regionRestarts = true;
 
         IniFile ini;
         if (!ini.Load(PLUGIN_PATH("MapExpander.ini"))) {
@@ -453,6 +454,7 @@ namespace Settings {
             world.regionPickups = w->GetBool("RegionPickups", true);
             world.pickupReserve = w->GetInt("PickupReserve", 200);
             world.fallRecovery = w->GetBool("FallRecovery", true);
+            world.regionRestarts = w->GetBool("RegionRestartPoints", true);
             for (const std::string& s : SplitPaths(w->GetString("DebugSkipModels", ""))) world.skipRenderModels.push_back(atoi(s.c_str()));
             if (world.compressedPositionScale <= 0.0f) world.compressedPositionScale = 4.0f;
             world.gxtFiles = SplitPaths(w->GetString("Gxt", ""));
@@ -526,6 +528,7 @@ namespace Settings {
             if (s.Has("ZoneNames")) r.zoneNamesFile = ResolveGamePath(s.GetString("ZoneNames", ""));
             if (s.Has("Weapons")) r.weaponFile = ResolveGamePath(s.GetString("Weapons", ""));
             if (s.Has("Pickups")) r.pickupFile = ResolveGamePath(s.GetString("Pickups", ""));
+            if (s.Has("Restarts")) r.restartFile = ResolveGamePath(s.GetString("Restarts", ""));
             r.zoneInfoLabel = s.GetString("ZoneInfoLabel", "SAN_AND");
             r.regionName = s.GetString("RegionName", "");
 

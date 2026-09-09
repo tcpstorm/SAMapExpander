@@ -2302,6 +2302,7 @@ VC_WEAPON_MAP = [
      "Vice City Colt 45 - literally San Andreas' pistol: same model name, same clip, same damage"),
 ]
 
+
 # The fire types CWeaponInfo::FindWeaponFireType (0x5BCF30) knows. A name outside this set makes it
 # answer INSTANT_HIT without saying so, so anything else is written as "keep San Andreas' own".
 SA_FIRE_TYPES = ("MELEE", "INSTANT_HIT", "PROJECTILE", "AREA_EFFECT", "CAMERA", "USE_3RD_PERSON_AIM")
@@ -2312,6 +2313,247 @@ SA_FIRE_TYPES = ("MELEE", "INSTANT_HIT", "PROJECTILE", "AREA_EFFECT", "CAMERA", 
 VC_COL = dict(name=0, fire=1, range=2, ammo=5, damage=6, speed=7, radius=8, lifespan=9, spread=10,
               offx=11, offy=12, offz=13, anim=14, model=22, model2=23, flags=24, slot=25)
 VC_COLUMNS = 26
+
+
+# ---------------------------------------------------------------- restart points
+#
+# Where the source game puts the player back after they die or are arrested.
+#
+# Neither donor records this in a data file: both register their hospitals and police stations from
+# main.scm, with ADD_HOSPITAL_RESTART and ADD_POLICE_RESTART and literal coordinates, exactly the
+# way San Andreas does. So the script is walked here, once per import, the same way the world
+# pickups were mined - and with the same rule, that a candidate has to earn its place rather than
+# be believed because two bytes matched.
+#
+# THE OPCODES, established rather than assumed. Sweeping both donors' scripts for every 16-bit value
+# under 0x0400 that is followed by exactly four type-tagged float parameters holding plausible map
+# coordinates finds 0x016C and 0x016D in both games, and the same pair is what San Andreas' own
+# main.scm uses - so the numbering did not move between the three games, only the parameter list
+# did: III and Vice City take (x, y, z, heading), San Andreas takes a fifth int, the town.
+#
+# WHAT MAKES A HIT REAL. A raw byte match is worth little: 0x016C occurs 35 times in III's main.scm
+# and only 3 of those are instructions. Four things are checked, and all four have to hold.
+#
+#   * The parameter list decodes exactly. Four parameters, every one carrying the float tag 0x06,
+#     and no fifth float behind them. (A III float is a signed 16-bit value over 16; a Vice City
+#     float is a 32-bit IEEE one. Reading either game the other way gives coordinates nowhere near
+#     its map, which is its own check.)
+#   * The hit CHAINS with another. Every kept instruction either ends exactly where another kept
+#     one begins, or begins exactly where another ends. A misaligned read inside some unrelated
+#     stream does not produce two of these back to back at exact instruction lengths, and the games
+#     register their points in runs: III writes a hospital immediately followed by a police station,
+#     three times - once per island - and Vice City writes four in a row, twice.
+#   * The coordinates are on the map and the heading is an angle.
+#   * The point stands inside one of the region's own zone boxes, read out of the same .zon file
+#     the region ships. This is the check that turns a plausible number into a verified one, and in
+#     GTA III it is emphatic: the Portland pair lands inside the zones III itself named HOSPI_1 and
+#     COPS_1, and the Staunton hospital inside HOSPI_2.
+#
+# The counts that come out are 3 hospital and 3 police for GTA III - Portland, Staunton, Shoreside
+# Vale, one of each per island - and 4 and 4 for Vice City. Running the same walk over San Andreas'
+# own main.scm gives 8 and 7, which is what the executable's own arrays hold, so the decoder agrees
+# with the game.
+#
+# THE HEIGHT SENTINEL. A z of -100 or below does not mean "a hundred units under the sea": it is the
+# script convention for "put it on the ground here", and San Andreas' own handler for 0x016C
+# implements it at 0x47C869 - `fcom [0x859014]`, which is the -100.0 the fall floor uses - by
+# replacing z with CWorld::FindGroundZForCoord(x, y). GTA III uses it for the Portland police
+# station. It is written through to the .dat as it stands and resolved by the plugin at the moment
+# it is needed, when the region's collision is in memory and can answer.
+#
+# THE TOWN COLUMN is not written. San Andreas' fifth parameter gates a point behind an island being
+# unlocked (CRestart::FindClosestHospitalRestartPoint skips a point whose town is above
+# CStats::GetStatValue(0xB5) at 0x460973), and a region has no such progression - the whole imported
+# city is walkable from the first frame - so every mined point is live from the start. The donors'
+# own island gating is in the script, not in these instructions: III registers its three pairs as
+# the islands open, and all three are written here.
+
+SCM_RESTART_OPCODES = {0x016C: "hospital", 0x016D: "police"}
+# Below this a script coordinate means "find the ground", not a height. See the note above.
+SCM_GROUND_Z = -100.0
+
+
+def scm_code_segment(blob):
+    """Offset of the first instruction after a III/VC main.scm's three header segments.
+
+    Each of the three begins with GOTO (opcode 0002) and one int32 parameter (tag 01) holding the
+    offset of the next; the third jump lands on the main code. Anything else is not one of these
+    two games' scripts, and saying so is better than walking a file that is not what we think.
+    """
+    at = 0
+    for _ in range(3):
+        if blob[at:at + 3] != b"\x02\x00\x01":
+            return None
+        nxt = struct.unpack_from("<I", blob, at + 3)[0]
+        if not (at < nxt < len(blob)):
+            return None
+        at = nxt
+    return at
+
+
+def scm_read_float(blob, at, prefix):
+    """The value of a type-06 float parameter at `at`, and the offset just past it."""
+    if prefix == "iii_":
+        return struct.unpack_from("<h", blob, at + 1)[0] / 16.0, at + 3
+    return struct.unpack_from("<f", blob, at + 1)[0], at + 5
+
+
+def zon_boxes(text):
+    """(name, x1, y1, x2, y2) of every zone box in a .zon file, normalised.
+
+    The same nine-or-ten column lines zon_labels reads; only the footprint is wanted here, because
+    a restart point's own height is the thing being checked against the map rather than with it.
+    """
+    boxes, section = [], None
+    for line in text.splitlines():
+        clean = line.split("#")[0].strip()
+        if not clean:
+            continue
+        tok = [t for t in re.split(r"[,\s]+", clean) if t]
+        if len(tok) == 1:
+            section = None if tok[0].lower() == "end" else tok[0].lower()
+            continue
+        if section not in (None, "zone") or len(tok) < 9:
+            continue
+        try:
+            x1, y1, _z1, x2, y2, _z2 = (float(t) for t in tok[2:8])
+        except ValueError:
+            continue
+        boxes.append((tok[0].upper(), min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2)))
+    return boxes
+
+
+def zone_at(boxes, x, y):
+    """The name of the smallest zone box containing (x, y), or None."""
+    best, area = None, None
+    for name, x1, y1, x2, y2 in boxes:
+        if x1 <= x <= x2 and y1 <= y <= y2:
+            a = (x2 - x1) * (y2 - y1)
+            if area is None or a < area:
+                best, area = name, a
+    return best
+
+
+def scm_restart_points(scm_path, prefix, zone_text=""):
+    """Every hospital and police restart point the source main.scm registers, and what was rejected.
+
+    Returns (points, notes). A point is a dict of kind, x, y, z, heading, zone and at (the byte
+    offset in the script, so any line of the emitted file can be gone back to).
+    """
+    with open(scm_path, "rb") as f:
+        blob = f.read()
+    code = scm_code_segment(blob)
+    if code is None:
+        return [], ["%s does not begin with three segment jumps, so it is not a III/VC main.scm; "
+                    "no restart points mined" % os.path.basename(scm_path)]
+    boxes = zon_boxes(zone_text)
+    notes = []
+
+    # Every offset whose two bytes read as one of the opcodes AND whose next bytes decode as four
+    # float parameters and no fifth. Deliberately every byte offset, not every instruction: walking
+    # the script properly would need the parameter count of all 800-odd opcodes, and the chain test
+    # below establishes the instruction boundaries far more cheaply.
+    raw, at, end = [], code, len(blob)
+    while at < end - 2:
+        op = struct.unpack_from("<H", blob, at)[0]
+        if op in SCM_RESTART_OPCODES:
+            p, vals = at + 2, []
+            while len(vals) < 4 and p < end and blob[p] == 0x06:
+                v, p = scm_read_float(blob, p, prefix)
+                vals.append(v)
+            if len(vals) == 4 and (p >= end or blob[p] != 0x06):
+                raw.append((at, p, op, vals))
+        at += 1
+
+    starts = {r[0] for r in raw}
+    ends = {r[1] for r in raw}
+    points, dropped = [], collections.OrderedDict(
+        [("not part of a run of restart instructions", 0),
+         ("off the map or not an angle", 0),
+         ("outside every zone the region ships", 0)])
+    for at, stop, op, (x, y, z, heading) in raw:
+        if at not in ends and stop not in starts:
+            dropped["not part of a run of restart instructions"] += 1
+            continue
+        if not (-4000.0 <= x <= 4000.0 and -4000.0 <= y <= 4000.0
+                and -200.0 <= z <= 500.0 and -360.0 <= heading <= 360.0):
+            dropped["off the map or not an angle"] += 1
+            continue
+        zone = zone_at(boxes, x, y) if boxes else None
+        if boxes and zone is None:
+            dropped["outside every zone the region ships"] += 1
+            continue
+        points.append({"kind": SCM_RESTART_OPCODES[op], "x": x, "y": y, "z": z,
+                       "heading": heading, "zone": zone, "at": at})
+    if not boxes:
+        notes.append("no zone file to check the points against; they were taken on the decode and "
+                     "the chain test alone")
+    for why, n in dropped.items():
+        if n:
+            notes.append("%d byte match(es) rejected: %s" % (n, why))
+    return points, notes
+
+
+def write_restarts(out, src, prefix, region_title, zone_text):
+    """restarts.dat for the region, mined from the source game's own main.scm. Its name, or None."""
+    scm = find_file(src, "data/main.scm")
+    if not scm:
+        print("  data/main.scm not found - the region gets no restart points, so dying inside it "
+              "will still wake you in San Andreas")
+        return None
+    points, notes = scm_restart_points(scm, prefix, zone_text)
+    for note in notes:
+        print("  restarts.dat: %s" % note)
+    if not points:
+        print("  restarts.dat: nothing mined out of data/main.scm; not written")
+        return None
+
+    hospitals = sum(1 for p in points if p["kind"] == "hospital")
+    text = [
+        "# %s restart points, mined from %s data/main.scm" % (region_title, region_title),
+        "#",
+        "# Where this city puts you back after you die (hospital) or are arrested (police).",
+        "# Nothing of this goes into San Andreas' own restart arrays: the plugin hooks",
+        "# CRestart::FindClosestHospitalRestartPoint and FindClosestPoliceRestartPoint and answers",
+        "# from this table while the player is inside the region, so a save game stays byte for",
+        "# byte what vanilla San Andreas writes.",
+        "#",
+        "# Source opcodes, verified against the script stream rather than assumed:",
+        "#   0x016C ADD_HOSPITAL_RESTART   (x, y, z, heading)",
+        "#   0x016D ADD_POLICE_RESTART     (x, y, z, heading)",
+        "# Parameters are type-tagged: 01=int32 02=global 03=local 04=int8 05=int16 06=float.",
+        "# A float is a 32-bit IEEE value in Vice City and a signed 16-bit one over 16 in GTA III.",
+        "# Every line below decoded as four floats, chains with another restart instruction at an",
+        "# exact instruction boundary, and stands inside one of this region's own zone boxes - the",
+        "# zone it landed in is named at the end of the line.",
+        "#",
+        "# A z of %.0f or below is the script's \"put it on the ground here\" sentinel, not a" % SCM_GROUND_Z,
+        "# height - San Andreas' own handler for 0x016C resolves it with CWorld::FindGroundZForCoord",
+        "# at 0x47C869 - and the plugin resolves it the same way, once the region's collision is in",
+        "# memory. GTA III uses it for the Portland police station.",
+        "#",
+        "# There is no town column. San Andreas' fifth parameter holds back a restart point until an",
+        "# island is unlocked; an imported city is open from the first frame, so every point here is",
+        "# live from the start.",
+        "#",
+        "# Columns: kind, x, y, z, heading",
+        "#   kind      `hospital` (where you wake after dying) or `police` (after being arrested)",
+        "#   x, y, z   %s's own coordinates; the region origin is NOT applied" % region_title,
+        "#   heading   degrees, the way the source game's script writes them",
+        "#",
+        "# %d hospital and %d police point(s), in the order the script registers them."
+        % (hospitals, len(points) - hospitals),
+    ]
+    for p in points:
+        text.append("%-9s %9.3f, %9.3f, %8.3f, %7.3f   # %s%s @%#x"
+                    % (p["kind"] + ",", p["x"], p["y"], p["z"], p["heading"],
+                       p["zone"] or "no zone file", " (height from the ground)"
+                       if p["z"] <= SCM_GROUND_Z else "", p["at"]))
+    with open(os.path.join(out, "restarts.dat"), "w", encoding="latin-1") as f:
+        f.write("\n".join(text) + "\n")
+    print("restarts.dat: %d hospital and %d police point(s) mined from %s"
+          % (hospitals, len(points) - hospitals, scm))
+    return "restarts.dat"
 
 
 def read_source_weapons(root):
@@ -3244,6 +3486,24 @@ def main():
         print("no %s beside this script; the region gets no pickups.dat" % os.path.basename(mined))
     if pickups_out:
         lines.append("Pickups      = %s%s" % (base, pickups_out))
+
+    # The city's own hospitals and police stations, mined out of the source main.scm the same way -
+    # see the block above scm_restart_points. Checked against the zone boxes the region is about to
+    # ship, which is why this is done here and not with the pickups: the .zon file has been copied
+    # and renamed by now, but the ORIGINAL is what the points have to be measured against, since
+    # renaming only touches the label columns and never the boxes. Either file would do; the source
+    # one is read so that a --no-rename run and a renamed run mine exactly the same table.
+    restart_zone_text = ""
+    for dst in zone_out:
+        p = find_file(src, "data/%s" % dst)
+        if p:
+            with open(p, "r", encoding="latin-1") as f:
+                restart_zone_text += f.read() + "\n"
+    restarts_out = write_restarts(out, src, prefix,
+                                  "Vice City" if prefix == "vc_" else "Liberty City",
+                                  restart_zone_text)
+    if restarts_out:
+        lines.append("Restarts     = %s%s" % (base, restarts_out))
     if not lite:
         lines += ["Img          = %s%s.img" % (base, region),
                   "Ide          = " + ", ".join(base + "ide\\" + n for n in ide_out),
