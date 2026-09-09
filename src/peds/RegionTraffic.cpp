@@ -556,7 +556,8 @@ bool ShouldYield(const RegionState& rs, const Driver& me, const CVector& myPos) 
 struct Tally {
     int ticks, notReady, atBudget, waiting, poolFull, noModel, noNodes;
     int attempts, deadEnd, onSaGround, tooNear, tooFar, inShot, crowded, noGround, madeNothing, placed;
-    int lost, gaveBack, tookAway;
+    int lost, gaveBack, tookAway, noPlayerGround;
+    float tookAwayFurthest, tookAwayDeepestFall;
     unsigned nextReport;
 };
 Tally& Counts() { static Tally t{}; return t; }
@@ -604,9 +605,17 @@ void ManageDrivers(RegionState& rs, const CVector& player) {
         if (!car) { Counts().lost++; continue; }
         CVector p = car->GetPosition();
         float dx = p.x - player.x, dy = p.y - player.y;
-        if (dx * dx + dy * dy > cull * cull && !TheCamera.IsSphereVisible(p, 4.0f)) {
+        float away = sqrtf(dx * dx + dy * dy);
+        if (away > cull && !TheCamera.IsSphereVisible(p, 4.0f)) {
             VehicleSpawn::Remove(car);
             Counts().tookAway++;
+            // How far it had got, and how far it had fallen. A car that drove out of range and one
+            // that was thrown out of range by physics both read as "taken away", and the two are
+            // different bugs: 160 units from a 157-unit cull is a car that drove; 400 is a car
+            // that was ejected, and a big drop in z says it was ejected out of the ground.
+            if (away > Counts().tookAwayFurthest) Counts().tookAwayFurthest = away;
+            float fell = NodeWorld(rs, d.from).z - p.z;
+            if (fell > Counts().tookAwayDeepestFall) Counts().tookAwayDeepestFall = fell;
             continue;
         }
         // Once the player is driving it, it is the player's car and none of this module's
@@ -670,11 +679,13 @@ void ReportTally(const RegionState* here) {
                "interval, %d pool full, %d no model in memory, %d no node in range; %d attempt(s) "
                "-> %d dead end, %d on San Andreas' own ground, %d too near, %d past the radius, "
                "%d in shot, %d crowded, %d no ground under the lane, %d placed; %d driving, "
-               "%d vanished, %d handed back, %d taken away",
+               "%d vanished, %d handed back, %d taken away (furthest %.0f of %.0f, deepest fall "
+               "%.1f), %d tick(s) with no ground under the player",
                t.ticks, t.notReady, t.atBudget, t.waiting, t.poolFull, t.noModel, t.noNodes,
                t.attempts, t.deadEnd, t.onSaGround, t.tooNear, t.tooFar, t.inShot, t.crowded,
                t.noGround, t.placed, here ? (int)here->drivers.size() : 0, t.lost, t.gaveBack,
-               t.tookAway);
+               t.tookAway, t.tookAwayFurthest, Settings::world.regionTrafficRadius * kCullMargin,
+               t.tookAwayDeepestFall, t.noPlayerGround);
     Tally fresh{};
     fresh.nextReport = t.nextReport;
     t = fresh;
@@ -737,7 +748,7 @@ void SpawnSome(RegionState& rs, const CVector& player, int wanted) {
 
 namespace RegionTraffic {
 
-void Tick(const CVector& playerPosition) {
+void Tick(const CVector& playerPosition, bool playerHasGround) {
     if (!Settings::world.regionTraffic) return;
     // Every region every frame, and only then the one the player is standing over. The loop used
     // to stop at the first region it found the player over, which meant a region they had LEFT was
@@ -759,7 +770,11 @@ void Tick(const CVector& playerPosition) {
     }
     if (!here) { ReportTally(nullptr); return; }
     ManageDrivers(*here, playerPosition);
-    SpawnSome(*here, playerPosition, CarBudget());
+    // Cars still get tidied away when the player is under the world; they just do not get made.
+    // Following the player down there is what a spawner that only knows about distance does, and
+    // it is not what anybody wants to see - see Ground::BeneathEverything.
+    if (playerHasGround) SpawnSome(*here, playerPosition, CarBudget());
+    else Counts().noPlayerGround++;
     ReportTally(here);
 }
 

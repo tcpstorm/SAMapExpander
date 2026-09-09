@@ -19,6 +19,7 @@
 #include "RegionTraffic.h"
 #include "RegionParkedCars.h"
 #include "StreamedModels.h"
+#include "Ground.h"
 #include "WeaponTypes.h"
 #include "RegionWeapons.h"
 #include "Interiors.h"
@@ -124,6 +125,15 @@ static void OnFrame() {
     for (auto& r : Settings::regions)
         Log::Write("    [%s] local (%.1f, %.1f, %.1f)", r.name.c_str(),
                    pos.x - r.originX, pos.y - r.originY, pos.z - r.originZ);
+    // Every surface under the player's own feet, highest first, from well above their head.
+    //
+    // This is the one measurement that tells "the ped is under the map" apart from "the ped is on
+    // the only floor there is". If the player is standing on a street and the list has two entries
+    // twenty units apart, the spawners are choosing the wrong one; if it has one, they are choosing
+    // the only one and the fault is elsewhere. Press F8 standing where the peds come out wrong.
+    char surfaces[256] = {};
+    Ground::Describe(pos.x, pos.y, pos.z + 300.0f, surfaces, sizeof(surfaces));
+    Log::Write("    ground under the player: %s (the player's own z is %.2f)", surfaces, pos.z);
     // The local coordinates above are the ones an Interior<N> box is written in, so F8 in a corner
     // of a room is how you find the numbers for one.
     std::string interior;

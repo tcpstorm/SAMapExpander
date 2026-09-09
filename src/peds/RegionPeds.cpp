@@ -533,7 +533,7 @@ constexpr int kPedPoolReserve = 8;
 // Three rounds of reasoning from counts got the wrong answer; this says which it is.
 struct Tally {
     int ticks, attempts, tooNear, inShot, crowded, noModel, poolFull, madeNothing, placed;
-    int noGround, offDatum;
+    int noGround, offDatum, noPlayerGround;
     int lost, culled, kept;
     unsigned nextReport;
 };
@@ -663,10 +663,11 @@ void ReportTally() {
     Log::Write("peds/sec: %d tick(s), %d attempt(s) -> %d too near, %d in shot, %d on top of "
                "somebody, %d no model in memory, %d pool full, %d no ground under the node, "
                "%d AddPed said no, %d placed (%d of them off the graph's own height); "
-               "%d kept, %d vanished, %d taken back; %d model(s) still asked for",
+               "%d kept, %d vanished, %d taken back; %d tick(s) with no ground under the player; "
+               "%d model(s) still asked for",
                t.ticks, t.attempts, t.tooNear, t.inShot, t.crowded, t.noModel, t.poolFull,
                t.noGround, t.madeNothing, t.placed, t.offDatum, t.kept, t.lost, t.culled,
-               StreamedModels::Held());
+               t.noPlayerGround, StreamedModels::Held());
     Tally fresh{};
     fresh.nextReport = t.nextReport;
     t = fresh;
@@ -724,13 +725,20 @@ void __cdecl UpdateHook(bool generatePeds) {
     // the first region the player is standing over and does nothing at all when they are over
     // none - which is exactly when a car standing at a Vice City kerb needs taking away, because
     // the player has just driven out of Vice City.
-    RegionParkedCars::Tick(at);
+    // Is there a floor under the player at all? Asked once a frame and handed to everything that
+    // creates something, because a crowd that follows the player is right and a crowd that follows
+    // one flying a jetpack beneath the map is not - and the second is what the first does unless
+    // somebody decides otherwise. Standing in a tunnel, under a bridge or inside a building all
+    // still count as having ground; see Ground::BeneathEverything.
+    const bool playerHasGround = !Ground::BeneathEverything(at.x, at.y, at.z);
+
+    RegionParkedCars::Tick(at, playerHasGround);
     // The traffic is ticked from out here too, and for the same reason the parked cars are: it
     // owns vehicles that have to be handed back when the player leaves the city, and this loop
     // does nothing at all when they are over no region. It used to be called from inside the
     // loop, which meant a car of ours was only ever tidied away while the player was still
     // standing over a PEDESTRIAN graph - two graphs that do not cover the same ground.
-    RegionTraffic::Tick(at);
+    RegionTraffic::Tick(at, playerHasGround);
 
     RegionState* here = nullptr;
     for (RegionState& rs : Regions()) {
@@ -749,7 +757,8 @@ void __cdecl UpdateHook(bool generatePeds) {
         return;
     }
     ManageWalkers(*here, at);
-    if (generatePeds) SpawnSome(*here, at, LivePedBudget());
+    if (generatePeds && playerHasGround) SpawnSome(*here, at, LivePedBudget());
+    else if (generatePeds) Counts().noPlayerGround++;
     ReportTally();
     // The police ride on this graph too, and on nothing else, so they are driven from here rather
     // than from a hook of their own: one region under the player, one tick.
