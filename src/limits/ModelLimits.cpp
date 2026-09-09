@@ -71,7 +71,12 @@ constexpr uintptr_t kArrayBasePtr = 0x9654B4;  // CStreamingInfo::ms_pArrayBase,
 constexpr uintptr_t kAtomicStore = 0xAAE950;
 constexpr unsigned kAtomicElem = 0x20;
 constexpr int kVanillaAtomicCapacity = 14000;
-constexpr int kAtomicHeadroom = 1000;
+// The store is sized at one entry per model id rather than at "vanilla plus the ids we added",
+// because the ids a region gets are no longer only the ones above 20000: CityLoader also draws on
+// the 3799 free ids San Andreas leaves inside its own range. Every model id has at most one model
+// info and only some of those are atomic - peds, vehicles, timed and clump models have stores of
+// their own - so a store with one entry per id can never be the thing that runs out. It costs
+// 0x20 bytes an id, which is 845KB at the ceiling.
 constexpr uint32_t kAtomicVTable = 0x85BBF0;   // written by CAtomicModelInfo's constructor, 0x4C5540
 
 // CStore<CTimeModelInfo, 169>: what every tobj line becomes. Vanilla San Andreas fills it exactly,
@@ -104,7 +109,9 @@ constexpr uintptr_t kPedStoreCount = 0xB478F8;
 constexpr uintptr_t kPedStoreObjects = 0xB478FC;
 constexpr unsigned kPedElem = 0x44;
 constexpr int kVanillaPedCapacity = 278;
-constexpr int kPedHeadroom = 512;   // Vice City's 105 and Liberty City's 78, with room for a third
+// Vice City's 105 and Liberty City's 78, and room for three more cities of that size. A slot is
+// 0x44 bytes, so the whole store is 57KB.
+constexpr int kPedHeadroom = 1024;
 constexpr uintptr_t kPedModelInfoCtor = 0x4C57A0;   // __thiscall: base ctor, vtable 0x85BDC0, +0x34 = 0
 
 struct StoreSite {
@@ -161,11 +168,50 @@ uint32_t ShiftedIndex(uint32_t index) {
     return index >= (uint32_t)kVanillaModelCount ? index + Shift() : index;
 }
 
+// THE TWO SITES THAT MUST NOT MOVE WITH THE ARRAY, and the reason PickupSlots.cpp exists.
+//
+// CStreaming::Save (0x5D29A0) and CStreaming::Load (0x5D29E0) walk ms_aInfoForModel writing and
+// reading ONE BYTE PER SLOT straight into the savegame:
+//
+//     mov esi, 0x8E4CC6            ; &ms_aInfoForModel[0].m_nFlags
+//     ...  write 1 byte  ...       ; 0xFF, or the flags if the slot is loaded
+//     add esi, 0x14
+//     cmp esi, 0x9654B6            ; &ms_aInfoForModel[26316].m_nFlags
+//     jl  loop
+//
+// 26316 bytes, and San Andreas' savegame has no framing of any kind - no block tag, no length, no
+// offset table (docs/save-compatibility.md). A block that changes size does not fail; it silently
+// shifts every block after it, and there are nine of them behind this one.
+//
+// The end operand names element 26316, which is inside the shifted range, so the general rule
+// would repoint it at element 26316 + Shift and the block would grow by exactly the number of ids
+// added - 6400 bytes at ModelIdLimit 26400. A save written that way is unreadable by anything with
+// a different limit, and a save written by vanilla San Andreas is misread from PedType onwards.
+//
+// So these two get the new BASE and keep the vanilla COUNT, exactly as CPickups::Save and
+// CPickups::Load do. The block stays 26316 bytes, in the same order, from the same offsets, and
+// every block after it lines up.
+//
+// What that costs: the block now carries the flags of the relocated array's first 26316 slots -
+// DFF ids 0..26315 - rather than the vanilla mixture of 20000 models and 6316 dictionaries,
+// collision files and IPLs. Under one configuration Save and Load are symmetric, so it round-trips
+// exactly. Across configurations, and in vanilla San Andreas, the bytes land on slots that mean
+// something else; but that is a flags byte whose worst effect is a model held in memory that need
+// not have been, and it was already true of every id above 20000. The alternative - hooking both
+// functions so the bytes keep their vanilla meaning as well as their vanilla count - is available
+// and is written down in docs/region-limits.md, and is only worth doing if that flag loss ever
+// shows.
+bool IsSaveBlockEnd(uintptr_t address) {
+    return address == 0x5D29D3 || address == 0x5D2A0A;
+}
+
 uint32_t NewValue(const ModelLimits::Site& s) {
     switch (s.kind) {
         case ModelLimits::kInfoArray: {
             uint32_t offset = s.oldValue - kInfoArray;
             uint32_t index = offset / kInfoElem, field = offset % kInfoElem;
+            if (IsSaveBlockEnd(s.address))
+                return (uint32_t)(uintptr_t)gInfo + index * kInfoElem + field;
             return (uint32_t)(uintptr_t)gInfo + ShiftedIndex(index) * kInfoElem + field;
         }
         case ModelLimits::kPtrArray:
@@ -243,7 +289,7 @@ void RelocatePedStore() {
 
 bool Allocate() {
     int total = kVanillaTotal + Shift();
-    int atomicCapacity = kVanillaAtomicCapacity + Shift() + kAtomicHeadroom;
+    int atomicCapacity = gModelCount;   // one per model id: see kVanillaAtomicCapacity
 
     gInfo = (uint8_t*)calloc((size_t)total, kInfoElem);
     gPtrs = (uint8_t*)calloc((size_t)gModelCount, 4);
@@ -309,7 +355,7 @@ uintptr_t TimeStore() { return gActive ? (uintptr_t)gTimeStore : kTimeStore; }
 int TimeCapacity() { return gActive ? kVanillaTimeCapacity + kTimeHeadroom : kVanillaTimeCapacity; }
 uintptr_t PedStore() { return gPedStore ? (uintptr_t)gPedStore : kPedStoreCount; }
 int PedCapacity() { return gPedCapacity; }
-int AtomicCapacity() { return gActive ? kVanillaAtomicCapacity + Shift() + kAtomicHeadroom : kVanillaAtomicCapacity; }
+int AtomicCapacity() { return gActive ? gModelCount : kVanillaAtomicCapacity; }
 
 void Install() {
     int wanted = Settings::world.modelIdLimit;
@@ -362,6 +408,13 @@ void Install() {
         return;
     }
     patch::SetUInt(kArrayBasePtr, (uintptr_t)gInfo);
+
+    // Say it out loud, because it is the one thing here that a user's existing saves depend on and
+    // the one thing a future change to the site table could quietly undo.
+    Log::Write("model id limit: the savegame's Streaming block still spans exactly %d slot(s), one "
+               "byte each, because CStreaming::Save and CStreaming::Load keep the vanilla count "
+               "while taking the new base - the block is the same size vanilla San Andreas writes, "
+               "so every block after it lines up", kVanillaTotal);
 
     // After the id limit is settled, not before: a rolled-back id limit must leave the ped store
     // where it was too, so the game is either wholly patched or wholly vanilla.
