@@ -208,15 +208,21 @@ distance, and those want different handling: a position needs the scale and the 
 needs the scale alone. Getting either wrong is silent.
 
 Every instruction in the executable that names one of the four constants was enumerated and matched
-against the 604 entries in `SectorGridSites.h`: 1036 references, 604 repointed. The 432 that are
+against the entries in `SectorGridSites.h`: 1036 references, 612 repointed. The 424 that are
 not were then narrowed to the 65 functions that either contain a repointed site or address one of
 the world-sector arrays. **Six of those 65 contain a reference that was left alone**, and every one
 is accounted for below.
 
+> This table was written by hand before `tools/verify_sector_sites.py` had ever been run. The sweep
+> has since been run and agrees with it, with two corrections, both folded in below: the
+> `Camera::Process_Editor` loop bodies are now repointed rather than left alone, and the hand
+> enumeration missed a ninth reference in that same function, 0x50F4A7, which the sweep found.
+
 | function | site(s) | verdict |
 |---|---|---|
 | `CStreaming::AddModelsToRequestList` 0x40D3F0 | 0x40D444 `fmul` fine scale | **the bug.** A distance conversion the scan could not see because it has no centre. Fixed above. |
-| `Camera::Process_Editor` 0x50F3F0 | 0x50F746, 0x50F786, 0x50F7D6, 0x50F826 `fld` fine scale, and 0x50F74E, 0x50F78E, 0x50F7DE, 0x50F82E `fadd` fine centre | **a real miss, from the instruction shape rather than the kind.** Four `while` loops that step a coordinate by 1.0 until its sector index leaves 5..115, keeping the editor camera inside the grid. The loop's entry test is written `fmul [scale]; fadd [centre]` and is repointed; the loop body is written `fld [scale]; fmul st(1); fadd [centre]` and is not, because the scan only looks for `fmul` of the scale. The body therefore clamps against vanilla's grid, confining the editor camera to about +/-2750 whatever the world covers. Bounded, so it cannot hang, and it is the debug editor camera rather than anything reachable in play — but the scan's pattern is one shape short and that should be written down. |
+| `Camera::Process_Editor` 0x50F3F0 | 0x50F746, 0x50F786, 0x50F7D6, 0x50F826 `fld` fine scale, and 0x50F74E, 0x50F78E, 0x50F7DE, 0x50F82E `fadd` fine centre | **a real miss, from the instruction shape rather than the kind — now fixed.** Four `while` loops that step a coordinate by 1.0 until its sector index leaves 5..115, keeping the editor camera inside the grid. The loop's entry test is written `fmul [scale]; fadd [centre]` and was repointed; the loop body is written `fld [scale]; fmul st(1); fadd [centre]` and was not, because the scan only looked for `fmul` of the scale. That left each loop testing one grid and correcting against another: the entry test would decide the camera was outside our grid and the body would then drag it all the way back to vanilla's +/-2750, a teleport rather than a wall. `scan_sector_sites.py` now recognises both shapes; the eight operands are in the table and the loops clamp coherently. An exhaustive sweep finds the `fld`-then-`fmul` shape in this function and nowhere else in the executable. |
+| `Camera::Process_Editor` 0x50F3F0 | 0x50F4A7 `fmul` fine scale | **correctly left alone; the hand audit above missed it and `verify_sector_sites.py` found it.** `fild [esp+0x30]; fmul [0x8595EC = pi/180]; fmul 0.02; fadd [esi+0xAC]; fstp [esi+0xAC]` — a mouse delta turned into an angle and accumulated into a camera field. 0.02 is the editor camera's sensitivity and the addend is a camera member, not the sector centre, so the pairing the scan looks for never forms. Repointing it would change how fast the editor camera turns. |
 | `Entity::ProcessShiftSectorList` 0x546670 | 0x546B20, 0x546B31 `fld` coarse scale | **correctly left alone.** `fld 0.005; fcomp` and `fld 0.005; fstp` — 0.005 as an epsilon and a floor on a shift amount. Not a sector conversion; it happens to share the pooled constant. |
 | `CPlayerInfo::Process` 0x56F8D0 | eleven `fmul` fine scale, 0x56F9DB..0x570044 | **correctly left alone.** `fld [global]; fmul 0.02; fmul [scale]; ftol; add [esi+N]` eleven times over — distance-travelled statistics accumulating at 2% a step. Not a sector conversion. |
 | `CEntityScanner::ScanForEntitiesInRange` 0x5FFA20 | 0x5FFDFF `fcom` coarse centre, 0x5FFE0E `fld` coarse centre | **correctly left alone, and this is the confusion in the other direction.** `fild` an integer, clamp it to 15.0, `ftol` back: it is `min(count, 15)`, the last index of the scanner's 16-entry insertion sort at `[ebx + esi*4 + 0xc]`, `cmp esi, 0x10`. 15.0 is an array bound that happens to be the pooled constant the coarse grid uses as its centre. Repointing it would have written a grid coordinate into an array index. The scan avoids it only because it insists on the `fmul`-then-`fadd` pairing. |
@@ -233,24 +239,48 @@ touches the world-sector grid.
   independent as written.
 - **The renderer** — `CRenderer::ScanWorld` 0x554FE0, `GetObjectsInFrustum` 0x554C60,
   `RequestObjectsInFrustum` 0x555960 — converts frustum corners in world space to sector indices and
-  has no distance conversion. All of its references are repointed.
+  has no distance conversion. All of its references are repointed. It does not floor them itself:
+  each function builds a polygon of vertices in sector space on the stack (ScanWorld a 5-gon for the
+  fine grid and another for the coarse, the other two a triangle each) and hands it to
+  `CRenderer::ScanSectorPoly` 0x72CAE0, which floors the vertices, walks every cell the polygon
+  covers, and calls a per-sector callback — `ScanSectorList` 0x554840,
+  `ScanSectorList_ListModels` 0x5535D0, `ScanSectorList_ListModelsVisible` 0x553650 or
+  `ScanSectorList_RequestModels` 0x555900. `ScanSectorPoly` is a general grid rasteriser rather than
+  a world-sector one: its fifth caller, `ScanThroughBlocks` 0x6E6D10, feeds it a polygon in a third
+  grid entirely (0.002 / 6.0 — 12 x 12 blocks of 500 units), which is not ours and is untouched.
 - **The collision camera cache and the ped scanners** are among the 65 functions and have no
   un-repointed reference other than the `CEntityScanner` array bound above, which is not a grid
   constant in use.
 
-### Not resolved
+### Resolved: the sweep has been run
 
-`tools/verify_sector_sites.py` is the check that closes this off, and it has not been run. It walks
-the executable once and reports two things: sites in the table whose result never reaches the
-float-to-int helper — an unrelated 0.02 that happened to sit within ten instructions of an unrelated
-60.0, which repointing would break — and references outside the table, inside a function that
-touches the grid, that are not one of the fourteen accounted for above. It should print `OK`. The
-Docker container carrying the disassembler died partway through the session that wrote it, so what
-stands behind the audit above is the per-function enumeration (1036 references, 604 repointed, 65
-grid functions, 6 with anything left alone) plus hand disassembly of each of those six, which is
-enough to place every site but is not the same as the sweep having been run end to end.
+`tools/verify_sector_sites.py` is the check that closes this off, and it now runs end to end and
+prints `OK`. It walks the executable once and reports two things: sites in the table whose result is
+never used as a grid coordinate — an unrelated 0.02 that happened to sit within ten instructions of
+an unrelated 60.0, which repointing would break — and references outside the table, inside a
+function that touches the grid, that are not one of the ones accounted for above.
 
-    ./tools/dis.sh verify_sector_sites.py     # or run it against gta_sa.exe however you disassemble
+    docker run --rm -v "<gamedir>:/game:ro" -v "<repo>:/work:ro" python:3-slim \
+      sh -c "pip install -q capstone && \
+             python /work/tools/verify_sector_sites.py /game/gta_sa.exe /work/src/limits/SectorGridSites.h"
+
+The first run was not clean, and both of its complaints are settled above. Neither was a bad site in
+the table: nothing that has ever shipped repointed an operand that was not a sector conversion.
+
+What the first run got wrong was its own test for a genuine site. It asked whether the result
+reached `_ftol` within a dozen instructions, and 36 real conversions do not, because a conversion
+can end three ways rather than one:
+
+| ending | sites | what happens to the result |
+|---|---|---|
+| index | 258 | reaches `_ftol` / `floor` — the ordinary `(int)(coord * SCALE + CENTRE)` |
+| polygon | 32 | becomes a vertex of a sector-space polygon handed to `ScanSectorPoly`, which floors it in the callee |
+| bound | 8 | is compared against a float sector index, exactly, and never floored — `Camera::Process_Editor`'s step loops |
+
+The checker knows all three now, and its exception list holds only the eighteen references, in the
+six functions above, that really are not conversions. That matters more than the count: a check
+nobody trusts is one nobody runs, and 36 findings a reader has to remember to ignore is the same as
+no check at all.
 
 ## `DropUnlinkedLods` — ruled out as the cause, with one latent bug found
 

@@ -67,7 +67,7 @@ worth making speculatively.
 
 San Andreas files every static entity into a grid that is a fixed **120 × 120 sectors**, whatever
 ground it covers. This plugin can move and stretch that grid — it repoints the scale and centre
-across 604 sites — but not make it finer, so the further the maps are spread, the larger every
+across 612 sites — but not make it finer, so the further the maps are spread, the larger every
 cell, and every collision and render query walks a cell's worth of entities.
 
 **What that actually costs, measured.** `tools/sector_cost.py` reads San Andreas' own 45884 `inst`
