@@ -65,11 +65,13 @@
 // The +/-3000 clamps in CEntity::Add and CEntity::Remove - the only two places that clamp a
 // coordinate before converting it - move to the new bounds to match.
 #include <plugin.h>
+#include <windows.h>
 #include <cstdint>
 #include <cstring>
 #include <iterator>
 #include "WorldSectors.h"
 #include "SectorGridSites.h"
+#include "StreamRange.h"
 #include "Settings.h"
 #include "Log.h"
 
@@ -128,6 +130,88 @@ uint32_t AsBits(float f) {
     return bits;
 }
 
+// ------------------------------------------------------------- somebody else owning the grid
+//
+// This plugin cannot change how many sectors there are, only how much ground they cover, because
+// every index reaches the array through `cmp reg, imm8` and no number above 127 fits in a byte.
+// That is not the same as saying nobody can. fastman92's limit adjuster does it: it allocates a
+// bigger CWorld::ms_aSectors, rewrites the base displacement of all 74 indexed accesses and the
+// row-stride multiply of all 71, patches the clamps that can be patched, and for the ones that
+// cannot - the imm8 sites - replaces the whole routine with hand-written assembly that reads the
+// dimension from a variable (CWorld::GetIsLineOfSightClear and CRenderer's sector scan among
+// them). Its [MAP LIMITS] section is three keys:
+//
+//     World map size      = 24000     ; +/-12000 instead of +/-3000
+//     World sector size   = 50        ; leave this alone - it is the cell, and 50 is vanilla's
+//     World LOD sector size = 200
+//
+// and the count falls out as map size / sector size, so 24000 / 50 is 480 x 480 sectors of exactly
+// the ground a vanilla one covers. That is how GTA Underground carries Vice City, Liberty City,
+// Carcer City, Bullworth and Cottonmouth over a world of +/-24000 without the cell growing, and it
+// is the only shipped answer to this problem that anyone has.
+//
+// The trap in it is that fastman92's own example ini raises the sector size along with the map
+// size, which is exactly what this file does and exactly what costs the frame rate. Anyone reading
+// this log should be told the sector size is the one to leave alone.
+//
+// So: if the conversions no longer read San Andreas' own pooled constants, something else has
+// already fitted the grid, and writing ours over the top would set 120 cells of our choosing while
+// its array, its clamps and its row strides still say something else - a hole in the world at
+// best. Stand down instead, say what cell size it chose, and leave it to do its job.
+bool Readable(uintptr_t address, size_t bytes) {
+    MEMORY_BASIC_INFORMATION info;
+    if (!VirtualQuery((LPCVOID)address, &info, sizeof(info))) return false;
+    if (info.State != MEM_COMMIT) return false;
+    const DWORD readable = PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY |
+                           PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
+    if (!(info.Protect & readable) || (info.Protect & PAGE_GUARD)) return false;
+    return address + bytes <= (uintptr_t)info.BaseAddress + info.RegionSize;
+}
+
+// The cell another mod has set, or 0 if the grid is still San Andreas' own. Established from the
+// fine-scale conversions alone: they all read one pooled 0.02 in a stock executable, so if they
+// have been repointed they will agree on wherever they were repointed to, and the float there is
+// one over the cell size.
+float ForeignCellSize() {
+    uint32_t candidate = 0;
+    int agree = 0, total = 0;
+    for (const WorldSectors::Site& s : WorldSectors::kSites) {
+        if (s.kind != WorldSectors::kFineScale) continue;
+        total++;
+        const uint32_t now = patch::GetUInt(s.operand);
+        if (now == s.oldValue) continue;
+        if (!candidate) candidate = now;
+        if (now == candidate) agree++;
+    }
+    // A handful of odd sites is a build mismatch or a stray patch, not another world grid; the
+    // whole set moving together is. Nine in ten is the line, so that a mod that leaves one or two
+    // conversions alone is still recognised.
+    if (!candidate || total == 0 || agree * 10 < total * 9) return 0.0f;
+    if (!Readable(candidate, sizeof(float))) return -1.0f;   // owned, but the value is unreadable
+    float scale = 0.0f;
+    memcpy(&scale, (const void*)(uintptr_t)candidate, sizeof(scale));
+    if (!(scale > 0.0f) || scale > 1.0f) return -1.0f;
+    return 1.0f / scale;
+}
+
+// What to put in fastman92limitAdjuster_GTASA.ini to get vanilla-sized cells over this world.
+// Its map size is centred on zero, so it has to reach whichever edge is furthest out either way.
+void SuggestLimitAdjuster(float lo, float hi) {
+    const float reach = (lo < 0.0f ? -lo : lo) > hi ? (lo < 0.0f ? -lo : lo) : hi;
+    int mapSize = (int)(2.0f * reach + 49.0f);
+    mapSize -= mapSize % 50;
+    Log::Write("note: a sector of vanilla's 50 units over this world needs %d x %d of them, and "
+               "the grid cannot be grown here - every index is clamped with a three-byte "
+               "`cmp reg, imm8` and 127 is the largest number that encodes. fastman92's limit "
+               "adjuster does grow it, by relocating the array and rewriting the routines the "
+               "clamps are in; with [MAP LIMITS] \"World map size = %d\" and \"World sector size\" "
+               "left at its vanilla 50 it gives %d x %d cells of 50 units. Raising its sector size "
+               "along with its map size - which its own example ini does - costs exactly what this "
+               "note is about, so leave that one alone",
+               (int)((hi - lo) / 50.0f + 1.0f), (int)((hi - lo) / 50.0f + 1.0f),
+               mapSize, mapSize / 50, mapSize / 50);
+}
+
 void WidenStoreQuadTrees() {
     float minX, maxX, minY, maxY;
     Settings::WorldExtent(minX, maxX, minY, maxY);
@@ -146,6 +230,33 @@ void WidenStoreQuadTrees() {
     Log::Write("col/ipl store quad trees widened to (%.0f, %.0f)-(%.0f, %.0f); the per-frame "
                "AddCollisionNeededAtPosn and AddIplsNeededAtPosn lookups can address the region now",
                minX, minY, maxX, maxY);
+}
+
+// Set by Install once the whole table has been written; nothing may move the grid unless it is.
+bool gOwns = false;
+float gFitLo = -3000.0f, gFitHi = 3000.0f;
+
+// The six numbers that place both grids. SCALE says how much ground a cell covers, CENTRE says
+// where index 0 begins, and the two bounds are what CEntity::Add and CEntity::Remove clamp a
+// coordinate to before converting it. The conversion sites read the first four through a pointer,
+// so those are stores; the bounds appear twice each - once as a pointer to a float and once as an
+// immediate inside the two functions - so the immediates have to be written into the code.
+void SetFit(float lo, float hi) {
+    const float span = hi - lo;
+    const float cell = span / 120.0f;
+    gFineScale = 120.0f / span;
+    gCoarseScale = 30.0f / span;
+    gFineCentre = -lo * gFineScale;
+    gCoarseCentre = -lo * gCoarseScale;
+    gLowBound = lo;
+    gHighBound = hi;
+    // The clamp stores a value one hundredth of a cell inside the top edge, so that the coordinate
+    // it writes converts to the last index rather than one past it - the same margin vanilla keeps
+    // by storing 2999.5 against a bound of 3000.
+    gLowImmediateBits = AsBits(lo);
+    gHighImmediateBits = AsBits(hi - cell * 0.01f);
+    gFitLo = lo;
+    gFitHi = hi;
 }
 
 uint32_t NewValue(const WorldSectors::Site& s) {
@@ -173,6 +284,29 @@ void Install() {
     Settings::RegionExtent(minX, maxX, minY, maxY);
     const float lo = minX < minY ? minX : minY;
     const float hi = maxX > maxY ? maxX : maxY;
+
+    // Before anything else, in case another mod got here first: it will have repointed the same
+    // conversions, and our values written over its would leave 120 cells of our choosing addressing
+    // an array that is no longer that shape.
+    const float foreign = ForeignCellSize();
+    if (foreign != 0.0f) {
+        if (foreign < 0.0f)
+            Log::Write("world sectors left alone: the coordinate-to-sector conversions have been "
+                       "repointed by something other than this plugin - a limit adjuster, most "
+                       "likely - and its cell size could not be read. It owns the grid now");
+        else
+            Log::Write("world sectors left alone: another mod has already fitted them, to cells of "
+                       "%.1f units (vanilla is 50). It owns the grid, including how many cells "
+                       "there are, so nothing here is written", foreign);
+        if (foreign > 60.0f)
+            Log::Write("note: that is a larger cell than San Andreas' own 50, and the per-frame "
+                       "collision and render scans cost the cell's ground. If that is fastman92's "
+                       "limit adjuster, [MAP LIMITS] \"World sector size\" is the key to put back "
+                       "to 50 - raise \"World map size\" alone and the count grows instead of the "
+                       "cell");
+        WidenStoreQuadTrees();
+        return;
+    }
 
     if (lo >= -3000.0f && hi <= 3000.0f) {
         Log::Write("world sectors left as they are: everything is inside the vanilla +/-3000, "
@@ -203,23 +337,14 @@ void Install() {
         return;
     }
 
-    gFineScale = 120.0f / span;
-    gCoarseScale = 30.0f / span;
-    gFineCentre = -lo * gFineScale;
-    gCoarseCentre = -lo * gCoarseScale;
-    gLowBound = lo;
-    gHighBound = hi;
-    // The clamp stores a value one hundredth of a cell inside the top edge, so that the coordinate
-    // it writes converts to the last index rather than one past it - the same margin vanilla keeps
-    // by storing 2999.5 against a bound of 3000.
-    gLowImmediateBits = AsBits(lo);
-    gHighImmediateBits = AsBits(hi - cell * 0.01f);
+    SetFit(lo, hi);
 
     int patched[kSiteKindCount] = {};
     for (const Site& s : kSites) {
         patch::SetUInt(s.operand, NewValue(s));
         patched[s.kind]++;
     }
+    gOwns = true;
 
     const float ratio = (cell / 50.0f) * (cell / 50.0f);
     Log::Write("world sectors fitted to %.0f..%.0f: 120x120 sectors of %.0f units and 30x30 of "
@@ -229,21 +354,50 @@ void Install() {
                    patched[kFineCentre] + patched[kCoarseCentre],
                patched[kLowBound] + patched[kHighBound] +
                    patched[kLowImmediate] + patched[kHighImmediate]);
-    Log::Write("note: a sector covers %.1f times a vanilla one's ground, so every per-frame scan "
-               "over it - the renderer's, the streamer's, and CCollision's camera cache - walks "
-               "that much more of the world; the grids are the same size as before and savegames "
-               "are unaffected", ratio);
+    Log::Write("note: a sector covers %.1f times a vanilla one's ground, so the per-frame scans "
+               "that walk a fixed number of cells round the camera - the renderer's and "
+               "CCollision's camera cache - walk that much more of the world; the grids are the "
+               "same size as before and savegames are unaffected", ratio);
+    // The streamer's near-field pass used to be on that list and is not any more. It walks the
+    // sectors touching a box measured in world units, so the entities it visits depend on the
+    // distance asked for and not at all on how big a cell is - see StreamRange.cpp. Shrinking the
+    // cell makes it touch more sector headers for the same entities, which is a small cost rather
+    // than a saving; the saving is in the two scans above.
     // The cell is the world span over 120 and 120 is not negotiable - the index that reaches the
     // array is clamped with a three-byte `cmp reg, imm8` at every one of the 136 sites that do it,
     // so no index above 127 can be expressed. Say so once, here, rather than leaving the next
     // person to wonder why the arrays were not simply made bigger.
-    if (ratio > 1.5f)
-        Log::Write("note: the only way to a smaller sector is a smaller world, because the grid is "
-                   "a fixed 120x120 and cannot be grown past 128 (see tools/sector_array_sites.txt "
-                   "for why). Placing the regions against the map instead of where their ini puts "
-                   "them is what shrinks the span - [World] PackRegions");
+    if (ratio > 1.5f) {
+        Log::Write("note: the only way to a smaller sector from here is a smaller world, because "
+                   "this plugin cannot grow the grid past 128 a side (see "
+                   "tools/sector_array_sites.txt for why). Placing the regions in each other's "
+                   "corners instead of where their ini puts them is what shrinks the span - "
+                   "[World] PackRegions - and it costs the same whether there are two maps or "
+                   "five");
+        SuggestLimitAdjuster(lo, hi);
+    }
 
     WidenStoreQuadTrees();
+}
+
+bool Owns() { return gOwns; }
+
+void CurrentFit(float& lo, float& hi) { lo = gFitLo; hi = gFitHi; }
+
+void Refit(float lo, float hi) {
+    if (!gOwns || !(hi > lo)) return;
+    SetFit(lo, hi);
+    // The four conversion constants are read through a pointer and so are already live; only the
+    // two clamp bounds are baked into CEntity::Add and CEntity::Remove as immediates and have to
+    // be written again. Seven sites, and they were verified against their vanilla values before
+    // Install wrote them the first time.
+    for (const Site& s : kSites)
+        if (s.kind == kLowImmediate || s.kind == kHighImmediate)
+            patch::SetUInt(s.operand, NewValue(s));
+    // The cell has just changed size, and the near-field streaming pass converts its radius into a
+    // count of cells. Left alone that count would be wrong for the new grid - which is the whole
+    // reason StreamRange exists.
+    StreamRange::GridChanged();
 }
 
 }  // namespace WorldSectors
