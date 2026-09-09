@@ -1,4 +1,6 @@
-// F8 and F9, with [World] Debug=1. F8 logs the player's SA position, the equivalent region-local
+// F6, F8 and F9, with [World] Debug=1. F6 drops the player through the world where they stand, so
+// the fall recovery can be tried without hunting for a hole in the collision. F8 logs the player's
+// SA position, the equivalent region-local
 // coordinates (used to calibrate WorldOriginX/Y against a known landmark), and which zone the
 // game's own lookups resolve there. The per-frame hook here also drives the GXT table check.
 //
@@ -22,6 +24,7 @@
 #include "WeaponTypes.h"
 #include "RegionWeapons.h"
 #include "Interiors.h"
+#include "FallRecovery.h"
 #include "Gxt.h"
 #include "Watchdog.h"
 #include "Log.h"
@@ -35,6 +38,7 @@ constexpr uintptr_t kTimerUpdate = 0x561B10;  // CTimer::Update, once per frame 
 static SafetyHookInline& FrameHook() { static SafetyHookInline h; return h; }
 static bool gWasDown = false;
 static bool gGiveWasDown = false;
+static bool gDropWasDown = false;
 
 // CPed::GiveWeapon(type, ammo, flag). The flag is what the game passes when a weapon is meant to
 // become the one in the ped's hands rather than merely sit in the inventory.
@@ -103,6 +107,12 @@ static void GiveRegionWeapons() {
 static void OnFrame() {
     if (!Settings::world.debug) return;
 
+    // F6 drops the player through the world where they stand, which is the only practical way to
+    // try the fall recovery on purpose: a real fall needs a hole in the collision to be found first.
+    bool dropDown = (GetAsyncKeyState(VK_F6) & 0x8000) != 0;
+    if (dropDown && !gDropWasDown) FallRecovery::DebugDrop();
+    gDropWasDown = dropDown;
+
     bool giveDown = (GetAsyncKeyState(VK_F9) & 0x8000) != 0;
     if (giveDown && !gGiveWasDown) GiveRegionWeapons();
     gGiveWasDown = giveDown;
@@ -129,6 +139,9 @@ static void OnFrame() {
     std::string interior;
     Interiors::Describe(interior);
     Log::Write("    interior: %s", interior.c_str());
+    std::string fall;
+    FallRecovery::Describe(fall);
+    Log::Write("    fall recovery: %s", fall.c_str());
     Zones::LogPlayerZone(pos.x, pos.y, pos.z);
     // The population, which is the one thing that cannot be checked by looking at the log on
     // start-up: it says nothing until somebody is actually standing there.

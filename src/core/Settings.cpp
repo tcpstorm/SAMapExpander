@@ -415,6 +415,7 @@ namespace Settings {
         world.regionPaths = false;         // see MapExpander.ini: this is the untested half
         world.widenPathNodes = true;
         world.pathNodeScale = 0.0f;        // derive from the world the regions actually make
+        world.fallRecovery = true;
 
         IniFile ini;
         if (!ini.Load(PLUGIN_PATH("MapExpander.ini"))) {
@@ -479,6 +480,7 @@ namespace Settings {
             world.regionPaths = w->GetBool("RegionPaths", false);
             world.widenPathNodes = w->GetBool("WidenPathNodes", true);
             world.pathNodeScale = w->GetFloat("PathNodeScale", 0.0f);
+            world.fallRecovery = w->GetBool("FallRecovery", true);
             for (const std::string& s : SplitPaths(w->GetString("DebugSkipModels", ""))) world.skipRenderModels.push_back(atoi(s.c_str()));
             if (world.compressedPositionScale <= 0.0f) world.compressedPositionScale = 4.0f;
             world.gxtFiles = SplitPaths(w->GetString("Gxt", ""));

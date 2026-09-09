@@ -115,6 +115,7 @@ struct WorldSettings {
     bool regionWeapons;                    // let a region's weapons.dat give San Andreas its guns
     int regionWeaponMode;                  // 0 Add: new weapon types, SA's own untouched; 1 Replace: written over SA's
     bool regionPickups;                    // place the world pickups a region's pickups.dat lists
+    bool fallRecovery;                     // a player who falls out of a region is put back on that region's own ground, not on San Andreas' path graph
     int pickupReserve;                     // CPickup slots left for San Andreas' own script, of its 620
     bool regionPeds;                       // walk pedestrians on a region's own pednodes.dat graph
     float regionPedDensity;                // multiplier on how many of them, 1.0 being San Andreas' own

@@ -21,6 +21,7 @@
 #include "Gxt.h"
 #include "Zones.h"
 #include "Interiors.h"
+#include "FallRecovery.h"
 #include "ModelLimits.h"
 #include "PathScale.h"
 #include "Fla.h"
@@ -84,6 +85,7 @@ public:
             RegionTraffic::Install();
             RegionParkedCars::Install();
             RegionPeds::Install();
+            FallRecovery::Install();
         }
         // After WorldSectors, which decides the cell size the near-field streaming pass was
         // silently measuring its radius in; outside the region block, because an explicit
