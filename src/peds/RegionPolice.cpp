@@ -194,6 +194,8 @@ void Tick(const CVector& playerPosition) {
     CPed* cop = CPopulation::AddPed(PED_TYPE_COP, (unsigned)model, at, false);
     if (!cop) return;
     cop->SetCharCreatedBy(kPedCreatedByGame);
+    // Same grace as the walkers get, for the same reason - see RegionPeds::CreateWalker.
+    cop->m_nTimeTillWeNeedThisPed = CTimer::m_snTimeInMilliseconds + 15000;
     cop->GiveWeapon((eWeaponType)kCopWeapon, kCopAmmo, true);
     cop->SetCurrentWeapon((eWeaponType)kCopWeapon);
     SendAfterPlayer(cop, FindPlayerPed());

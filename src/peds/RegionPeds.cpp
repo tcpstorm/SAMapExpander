@@ -125,6 +125,8 @@ constexpr float kMinPedSeparation = 2.5f;
 
 constexpr int kTaskPrimaryDefault = 4;   // ePrimaryTasks::TASK_PRIMARY_DEFAULT
 constexpr unsigned char kPedCreatedByGame = 1;
+// How long a new walker is safe from CPopulation::ManagePed's off-screen removal; see CreateWalker.
+constexpr unsigned kGraceMs = 15000;
 
 // The pedestrian graph, as pednodes.dat writes it. Links are held in one flat array because a
 // vector per node for several thousand nodes is a great deal of allocation for two or three
@@ -593,6 +595,15 @@ CPed* CreateWalker(RegionState& rs, int node, int modelId, bool walk) {
     // responsible for taking them away again, so they are culled on exactly the same terms as San
     // Andreas' own and no separate lifetime is invented here.
     ped->SetCharCreatedBy(kPedCreatedByGame);
+    // Give them the grace period San Andreas' own spawner gives its peds, or the game removes them
+    // on the very next frame. CPopulation::ManagePed (0x611FC0) deletes a game-created ped that is
+    // off screen and more than 25 units out - 54.5 for one it has flagged - the moment the clock
+    // passes m_nTimeTillWeNeedThisPed, and a new ped has that at zero. Every walker here is made
+    // off screen, by design, between 22 and 55 units away; so without this stamp the whole crowd
+    // was made and deleted again within a frame, 175 a second, and the sixteen that were ever
+    // alive at once were the ones made in the last few frames. On screen the game restamps it
+    // four seconds ahead itself, at 0x6121E4, so this only has to cover the walk into view.
+    ped->m_nTimeTillWeNeedThisPed = CTimer::m_snTimeInMilliseconds + kGraceMs;
     rs.walkers.push_back(Walker{ CPools::GetPedRef(ped), node });
     if (walk) GiveWalkTask(ped, NodeWorld(rs, NextNode(rs, node)));
     return ped;
