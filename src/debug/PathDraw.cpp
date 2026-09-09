@@ -213,7 +213,8 @@ void Frame() {
     if (CTimer::m_snTimeInMilliseconds >= gNextReport) {
         gNextReport = CTimer::m_snTimeInMilliseconds + 1000;
         Log::Debug("path overlay: %d line(s) within %.0f units of the camera%s", gDrawn, kRadius,
-                   gClipped ? " - BUDGET REACHED, the picture is truncated; fly closer" : "");
+                   gClipped ? " - BUDGET REACHED, the picture is truncated. The cull is a fixed "
+                              "radius, so moving will not help: turn a layer off" : "");
     }
 }
 

@@ -159,7 +159,9 @@ Press **Ctrl+F2**.
 
 Every line is one draw call, because `CLines::RenderLineWithClipping` issues its own
 `RwIm3DTransform`/`RwIm3DEnd` pair per segment. The budget is **1500 lines a frame**; past that the
-picture truncates and, with `Debug = 1`, the log says
-`path overlay: N line(s) ... BUDGET REACHED, the picture is truncated; fly closer` once a second.
-Turning F2 on in a dense district with every layer lit will cost frames. That is the trade: this is
-an instrument, not a feature.
+picture truncates and, with `Debug = 1`, the log says `path overlay: N line(s) ... BUDGET REACHED`
+once a second. The cull is a fixed radius, so moving does not help when it bites — turn a layer
+off. In an ordinary Vice City street with F2 and F4 on, expect somewhere around 700 lines.
+
+Turning every layer on in a dense district will cost frames. That is the trade: this is an
+instrument, not a feature.
