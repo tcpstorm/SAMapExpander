@@ -305,6 +305,7 @@ struct RegionState {
     int pedsNoStore = 0;
     int pedsShortLine = 0;      // fewer than the 14 columns LoadPedObject's sscanf reads
     int pedsNameTaken = 0;      // a model of that name already exists; loading it would shadow one
+    int pedsBadPedType = 0;     // a PED_TYPE CPedType::FindPedType answers 32 to
     int pedsBadAnimGroup = 0;   // an animation group San Andreas does not declare
     std::string pedsRefusedNames;
 };
@@ -424,6 +425,19 @@ std::string SafeName(const std::string& s) {
 
 // Only ids with an empty ms_modelInfoPtrs slot are handed out, so the configured range is checked
 // against what SA's own IDEs actually claimed rather than trusted.
+//
+// A pedestrian is given an id out of exactly the same range as a building, and the ranges San
+// Andreas does reserve for peds by value are all far below it: CStreaming::RequestSpecialChar and
+// its neighbours (0x40B450, 0x40B470, 0x40B490) hardcode `add reg, 0x122` so a special character is
+// always ids 290 upwards, and CCutsceneMgr (0x5B02C0) gates on 300..319 and indexes a 20-entry
+// table by (id - 300). FreeModelIdStart defaults to 18631, so nothing here can reach either.
+//
+// Otherwise nothing in San Andreas indexes anything by a ped's model id: CPopulation's ped groups
+// hold ids as int16 read back with movzx (0xC0F358, 21 per group, with 2000 as the "empty slot"
+// sentinel), CStreaming::ms_pedsLoaded holds eight full dwords, and CStreaming::RemoveModel decides
+// a model is a ped from its vtable rather than its number. The one real width limit is
+// CEntity::m_nModelIndex at +0x22, which is read sign-extended everywhere (0x5E48AE in
+// CPed::SetModelIndex among them) - so 32767, and ModelIdLimit stops at 26400 anyway.
 int AllocateModelId() {
     int end = FreeIdEnd();
     while (gNextFreeId <= end) {
@@ -475,14 +489,29 @@ bool ObjsIsDamageable(const std::string& line) {
 // in the buffers it did not fill, and those go straight into CKeyGen::GetUppercaseKey and
 // CTxdStore::FindTxdSlot. So the column count is checked here rather than hoped for.
 //
-// The animation group is the other thing that has to be checked. LoadPedObject seeds its index with
-// CAnimManager::ms_numAnimAssocDefinitions (0x5B7432, `mov ebx, [0xB4EA28]`), walks the table
-// comparing names, and writes whatever ebx holds into CPedModelInfo + 0x24 (0x5B755F). A name the
-// table does not hold therefore leaves the COUNT there - one past the end - and every animation the
-// ped is ever given reads a definition that is not one. tools/convert_peds.py already maps a donor
-// group onto one San Andreas declares; this is the check that says so out loud.
+// Two of the columns are looked up in a table by name, and BOTH of those lookups answer an unknown
+// name with a number that is one past the end of the array it indexes. Neither is checked by the
+// game, and neither goes wrong until much later and somewhere else, so both are checked here.
+//
+//   Animation group. LoadPedObject seeds the index with CAnimManager::ms_numAnimAssocDefinitions
+//   (0x5B7432, `mov ebx, [0xB4EA28]` - 118, set by Animation::Initialise at 0x5BF6C1), walks the
+//   table comparing names, and writes whatever ebx still holds into CPedModelInfo + 0x24 (0x5B755F).
+//   An unknown group therefore leaves 118 there, and CPed::SetModelIndex (0x5E498B) hands that
+//   straight to CAnimManager::GetAnimAssocGroup, whose array is exactly 118 entries of 0x14 bytes
+//   on the heap (0x4D3A40). Entry 118 is past the allocation.
+//
+//   Ped type. CPedType::FindPedType (0x608790) walks 32 names and, for anything it does not know
+//   that is not "PLAYER_NETWORK" or "PLAYER_UNUSED", returns 32 (0x608825, `add eax, 0x20`) into
+//   CPedModelInfo + 0x28. CPedType::ms_apPedType holds 32; GetPedFlag guards the index but the
+//   acquaintance getters (0x6089B0 and its neighbours) do not.
+//
+// tools/convert_peds.py already maps a donor's group onto one animgrp.dat declares and whitelists
+// the ped type against San Andreas' 26 names. These are the checks that say so out loud, and that
+// hold for a peds.ide written by hand.
 constexpr uintptr_t kAnimGroupCount = 0xB4EA28;     // CAnimManager::ms_numAnimAssocDefinitions
 constexpr uintptr_t kGetAnimGroupName = 0x4D3A20;   // the name of definition n, as LoadPedObject reads it
+constexpr uintptr_t kFindPedType = 0x608790;        // CPedType::FindPedType, __cdecl
+constexpr int kPedTypeCount = 32;                   // CPedType::ms_apPedType
 constexpr int kPedIdeColumns = 14;
 
 bool AnimGroupDeclared(const std::string& name) {
@@ -492,7 +521,12 @@ bool AnimGroupDeclared(const std::string& name) {
         const char* have = reinterpret_cast<GetNameFn>(kGetAnimGroupName)(i);
         if (have && _stricmp(have, name.c_str()) == 0) return true;
     }
-    return false;
+    return false;   // including a table that is not up yet, which is reported once by the caller
+}
+
+bool PedTypeKnown(const std::string& name) {
+    typedef int(__cdecl* FindPedTypeFn)(const char*);
+    return reinterpret_cast<FindPedTypeFn>(kFindPedType)(name.c_str()) < kPedTypeCount;
 }
 
 // CModelInfo::GetModelInfo (0x4C5940) hashes the name and scans ms_modelInfoPtrs for the key; its
@@ -630,6 +664,7 @@ std::string TranslateIde(RegionState& rs, const std::string& source, bool pedFil
             const char* refusal = nullptr;
             if ((int)col.size() < kPedIdeColumns) { rs.pedsShortLine++; refusal = "short line"; }
             else if (NameAlreadyTaken(col[1])) { rs.pedsNameTaken++; refusal = "name already used"; }
+            else if (!PedTypeKnown(col[3])) { rs.pedsBadPedType++; refusal = "no such ped type"; }
             else if (!AnimGroupDeclared(col[5])) { rs.pedsBadAnimGroup++; refusal = "no such animation group"; }
             if (refusal) {
                 if (rs.pedsRefusedNames.size() < 400)
@@ -1060,6 +1095,16 @@ void LoadModelDefinitions() {
     // Adding or removing a region's peds this way moves nothing that was already assigned; it only
     // appends. Removing a whole region still moves everything after it, which is the ledger's job
     // and not fixed here.
+    // Both name checks below need the game's own tables. The animation definitions are the one that
+    // could plausibly not be up - Animation::Initialise fills ms_numAnimAssocDefinitions - and if
+    // they are not, every ped is refused for a reason that is not its own, so say which it is.
+    bool anyPeds = false;
+    for (RegionState& rs : Regions()) anyPeds = anyPeds || !rs.region->pedIdeFiles.empty();
+    if (anyPeds && (int)patch::GetUInt(kAnimGroupCount) <= 0)
+        Log::Write("peds: CAnimManager has no animation groups yet, so every ped line will be "
+                   "refused for an unknown group - this is the loader running earlier than "
+                   "Animation::Initialise, not a fault in the region's peds.ide");
+
     for (RegionState& rs : Regions()) {
         if (rs.region->pedIdeFiles.empty()) continue;
         for (const std::string& source : rs.region->pedIdeFiles)
@@ -1077,11 +1122,12 @@ void LoadModelDefinitions() {
         }
 
         Log::Write("[%s] peds: %d model(s) registered, %d refused here (%d short line, %d name "
-                   "already used, %d unknown animation group), %d dropped (ped model store full), "
-                   "%d dropped (no free id), %d rejected by the game's own IDE parser",
+                   "already used, %d unknown ped type, %d unknown animation group), %d dropped "
+                   "(ped model store full), %d dropped (no free id), %d rejected by the game's own "
+                   "IDE parser",
                    rs.region->name.c_str(), rs.pedsAdded,
-                   rs.pedsShortLine + rs.pedsNameTaken + rs.pedsBadAnimGroup,
-                   rs.pedsShortLine, rs.pedsNameTaken, rs.pedsBadAnimGroup,
+                   rs.pedsShortLine + rs.pedsNameTaken + rs.pedsBadPedType + rs.pedsBadAnimGroup,
+                   rs.pedsShortLine, rs.pedsNameTaken, rs.pedsBadPedType, rs.pedsBadAnimGroup,
                    rs.pedsNoStore, rs.pedsNoId, refusedByGame);
         if (!rs.pedsRefusedNames.empty())
             Log::Write("[%s] peds: refused - %s", rs.region->name.c_str(), rs.pedsRefusedNames.c_str());
