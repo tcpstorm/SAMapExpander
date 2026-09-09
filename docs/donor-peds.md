@@ -496,14 +496,22 @@ Routed around in three places:
 3. **`convert_peds` merges into the region's archive, replacing by name.** That is what fixes a
    region imported before (1): over the existing `vicecity.img` it replaces 210 entries and adds 1.
 
-### And it goes in the region's own archive, because there is no room for another
+### And it goes in the region's own archive, which used to be the only place for it
 
 `CStreaming::ms_files` is 8 x 0x30 at 0x8E48D8. San Andreas has spent five before a region is
 registered - `gta3`, `gta_int`, and `carrec`, `script` and `cutscene` from `gta.dat` - with
-`player.img` still to come in `CGame::Init2`. A real run's log says `7/8 slots used` with the two
-cities' map archives in. There is no eighth. (A third city could not register a map archive either;
-that is a separate limit worth raising one day, and `CStreaming::AddImageToList` being behind a
-HOODLUM thunk at 0x407610 is why it was not raised here.)
+`player.img` still to come in `CGame::Init2`. A real run's log said `7/8 slots used` with the two
+cities' map archives in, and there was no eighth: a ped archive of its own had nowhere to go, and a
+third city could not have registered a map archive either.
+
+`src/limits/ArchiveSlots.cpp` moves that table to **32** slots, which is where `CdStream`'s own
+32-entry file table stops. `CStreaming::AddImageToList` sitting behind a HOODLUM thunk at 0x407610
+turned out not to be an obstacle - the thunk is `jmp 0x1567B90` and the function is in ordinary
+readable code there. See `docs/region-limits.md`.
+
+So the converter's models could now go in an archive of their own, and `PedImg` exists for that.
+They still default to the region's map archive, because one archive is one directory scan and one
+open file handle - not because there is nowhere else to put them.
 
 ---
 
