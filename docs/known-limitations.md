@@ -216,38 +216,127 @@ worth making speculatively.
 ## A map placed far from San Andreas costs frame rate
 
 San Andreas files every static entity into a grid that is a fixed **120 × 120 sectors**, whatever
-ground it covers. The plugin can move and stretch that grid — it repoints the scale and centre across
-588 sites — but not make it finer, so the further apart the maps are, the larger every cell:
+ground it covers. This plugin can move and stretch that grid — it repoints the scale and centre
+across 604 sites — but not make it finer, so the further the maps are spread, the larger every
+cell, and every collision and render query walks a cell's worth of entities.
 
-| placement | span | cell | ground per scan |
+**What that actually costs, measured.** `tools/sector_cost.py` reads San Andreas' own 45884 `inst`
+placements out of `gta3.img` and `data/maps`, bins them into the grid a given span produces, and
+reports how many entities sit in the cell a player standing on the map is in. That is the number
+the frame time cares about — not the cell's area, which overstates it, because a bigger cell also
+picks up more empty ground:
+
+| span | cell | entities in the cell you are in | vs vanilla |
 |---|---|---|---|
-| vanilla San Andreas | 6000 | 50 | 1× |
-| Vice City east, Liberty City north (shipped) | 11000 | 92 | 3.4× |
-| Vice City east, Liberty City west | 15348 | 128 | 6.5× |
+| 6000 (vanilla San Andreas) | 50.0 | 12.2 | 1.00× |
+| 9936 (packed, any number of maps) | 82.8 | 27.4 | 2.24× |
+| 10282 (shipped two cities, grid fitted to the buildings) | 85.7 | 28.3 | 2.32× |
+| 11000 (shipped two cities, grid fitted to the radar tiles) | 91.7 | 31.7 | 2.59× |
+| 13936 (five maps packed against a side) | 116.1 | 46.7 | 3.81× |
+| 15348 (two cities, opposite coasts) | 127.9 | 55.3 | 4.52× |
+| 19500 (five maps, the old placement) | 162.5 | 83.0 | 6.79× |
 
-Every collision query — the camera cache, the vertical line, the sphere test, the line of sight —
-builds a box a few units across, far smaller than one cell, and a query smaller than a cell always
-walks the whole cell. The cost is therefore the cell's area.
-
-**Why the grid cannot simply be enlarged.** Every index into it is clamped, and the upper half of
+**Why the grid cannot be enlarged here.** Every index into it is clamped, and the upper half of
 every clamp is a three-byte `cmp reg, imm8` with a sign-extended immediate — at all 136 fine and 13
-coarse sites, without exception. The largest value that encodes is **127**, so the grid can never
-exceed 128 a side. Widening one to a four-byte immediate needs six bytes and the three it would take
-are the branch that reads its result; a trampoline does not help either, because only 103 of the 149
-clamps are the contiguous compare-and-assign, the rest split the two or jump over a block with
-targets landing inside the sequence. 128 against the 307 a side that 50-unit cells would need is
-6.7 per cent, for about 350 patch sites.
+coarse sites, without exception. The largest value that encodes is **127**, so a grid patched in
+place can never exceed 128 a side. Widening one to a four-byte immediate needs six bytes and the
+three it would take are the branch that reads its result; a trampoline does not help either,
+because only 103 of the 149 clamps are the contiguous compare-and-assign, the rest split the two or
+jump over a block with targets landing inside the sequence.
 
-**What is shipped instead.** `PackRegions` moves each region against ground already in use, on
-whichever side leaves the world squarest, which takes the west-coast case from 128-unit cells to
-87.5 — less than half the scan cost. It is **off by default**, because moving a map moves things that
-remember where they were: savegame pickups, parked cars, teleport coordinates, screenshots. The log
-prints what packing would save whether it is on or off.
+**It can be enlarged, though — by replacing the routines rather than the operands.** fastman92's
+limit adjuster does exactly that: it allocates a bigger `CWorld::ms_aSectors`, rewrites the base
+displacement of all 74 indexed accesses and the row-stride multiply of all 71, patches the clamps
+that can be patched, and for the ones that cannot — these imm8 sites — replaces the whole function
+with hand-written assembly that reads the dimension from a variable
+(`CWorld::GetIsLineOfSightClear` and `CRenderer`'s sector scan among them). Its `[MAP LIMITS]`
+section has *separate* keys for the world size and the sector size, and the count falls out of the
+division:
 
-**The route to real 50-unit cells**, if anyone wants it: fit the 120 cells to the ground the player is
-standing on and re-file every static entity when they cross between maps. No new binary sites at all,
-but a Remove-all/change-constants/Add-all pass over the building, dummy, object, ped and vehicle
-pools that must be exactly symmetric or it leaves dangling pointers in sector lists.
+```
+World map size        = 24000    ; +/-12000 instead of +/-3000
+World sector size     = 50       ; leave this alone - 50 is vanilla's cell
+World LOD sector size = 200
+```
+
+which is 480 × 480 sectors of exactly the ground a vanilla one covers. That is how **GTA
+Underground** carries Vice City, Liberty City, Carcer City, Bullworth and Cottonmouth over a world
+of ±24000 without the cell growing, and how **GTA Mixed / SAxVCxLC** adds Liberty City and Vice
+City beside a San Andreas that stays fully playable. The trap is that fastman92's own example ini
+raises the sector size along with the map size, which is precisely what costs the frame rate.
+
+This plugin now **stands aside when something else owns the grid**: the fine-scale conversions all
+read one pooled constant in a stock executable, so a set of them that has moved together has moved
+for a reason. It reads the cell size that mod chose, says so, and writes nothing. When it does own
+the grid and the cell has grown, the log prints the `[MAP LIMITS]` values that would give 50-unit
+cells over the same world.
+
+(For the record, **GTA United** is not evidence either way: it *replaces* the San Andreas map
+rather than adding beside it, and says so — "the map of GTA San Andreas gets replaced". Its own
+history gives the reason, which is this problem: it started out meaning to add Vice City next to
+the default map, hit "parts of the map are not rendered when they are mapped outside of a fixed
+boundary", and gave up on it.)
+
+**What is shipped here instead.**
+
+- **`FitSectorsToContent`** (on by default) fits the grid to where a region's `inst` lines actually
+  stand rather than to the radar tile grid its ini declares. Vice City declares 4000 × 4000 of
+  radar and occupies 3436 × 3681 of it. On the two shipped cities that is 92-unit sectors down to
+  86, for no map movement at all.
+
+- **`PackRegions`** (off by default) puts each region in a *corner* of the ground already in use
+  and keeps whichever placement leaves the smallest square, trying every ordering while that is
+  cheap. Corners rather than sides is the whole of it: San Andreas is 6000 square and Vice City is
+  3436 wide, so the moment Vice City goes east the world is 9936 a side and an entire 3436 × 9936
+  column and 6000 × 3436 strip inside that square are empty. Liberty City, Carcer City, Bullworth
+  and a Warriors level all fit in there **without the square growing at all** — five maps cost what
+  one costs. `tools/pack_test.cpp` checks that offline. It stays off by default because moving a
+  map moves things that remember where they were: savegame pickups, parked cars, teleport
+  coordinates, screenshots.
+
+  There is no room *inside* San Andreas, before anyone asks: over its own 45884 placements the
+  largest square of ±3000 containing no static entity at all is **400 units** on a side. 46 per
+  cent of its 14400 cells are empty but they are the scattered fringes of the coast, not a bay you
+  could hide a city in.
+
+- **`MapWindow`** (off by default, experimental) is the route to genuinely vanilla-sized cells with
+  no new instruction sites: fit the 120 cells to the one map the player is standing on and re-file
+  the world when they cross to another. The removal has to be exactly symmetric or it leaves a
+  pointer in a sector list that outlives the entity, so it does not guess — the set of filed
+  entities is read out of the sector lists themselves and removed with the game's own
+  `CEntity::Remove` while the old constants are still in place, and afterwards every one of the
+  14400 sectors, 900 LOD lists and 256 repeat sectors must be empty. If one is not, it says so and
+  freezes the window rather than risking another crossing. **Whether that check ever fires is the
+  one thing here that has not been run**, which is why it is off.
+
+  Two things limit it. A crossing costs a frame — forty thousand entities out and back in. And
+  there is one scale and one centre for the whole grid rather than one per axis, so the window is
+  the square that holds *both* of a map's projections: Vice City is 3436 × 3681 but sits at
+  x 3846..7282, y −914..2767, and the range holding both is 8196. A map out on the diagonal from
+  San Andreas gets a window its own size; one out along an axis does not. `PackRegions` therefore
+  breaks its ties on that — among placements that leave the same square, the one whose own window
+  is narrowest — which costs the square nothing and takes the worst of five maps from a 10317-unit
+  window to 7617, i.e. from 86-unit sectors to 63. Splitting the 268 fine conversions into the ones
+  that convert an x and the ones that convert a y would end the constraint outright and give every
+  map a window its own size on each axis, but telling them apart needs dataflow analysis of each
+  site, and a site classified the wrong way round files its entities in transposed cells.
+
+**Where that leaves the numbers**, measured against San Andreas' own placements:
+
+| | span | cell | vs vanilla |
+|---|---|---|---|
+| two cities as the ini writes them, before this work | 11000 | 91.7 | 2.59× |
+| the same, grid fitted to the buildings (now the default) | 10432 | 86.9 | 2.38× |
+| the same, `PackRegions` | 10236 | 85.3 | 2.31× |
+| **five** maps, `PackRegions`, old four-sides placement | 14236 | 118.6 | 3.94× |
+| **five** maps, `PackRegions`, corners | 10236 | 85.3 | 2.31× |
+| five maps, `MapWindow`, worst map | 7617 | 63.5 | ~1.6× |
+| five maps, `MapWindow`, most maps | 6000 | 50.0 | 1.00× |
+| a limit adjuster with `World sector size = 50` | any | 50.0 | 1.00× |
+
+The thing the user asked for — several maps at a frame rate that does not degrade as more are
+added — is the fourth row against the fifth: adding a third, fourth and fifth map now costs
+nothing at all, where before each one widened the world.
 
 ---
 

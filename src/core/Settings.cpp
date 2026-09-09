@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <cstring>
 #include "Settings.h"
+#include "RegionPacking.h"
 #include "Ini.h"
 #include "Log.h"
 
@@ -127,46 +128,144 @@ namespace Settings {
         return true;
     }
 
+    // -------------------------------------------------------------- where a region's buildings are
+    //
+    // The world sector grid has to reach every static entity, and the only thing that told it how
+    // far was the region's radar tile grid. Those are not the same box. A radar tile grid is a
+    // whole number of 500-unit tiles centred on the city and it is routinely bigger than the city:
+    // Vice City declares 8 x 8 tiles - 4000 x 4000 - and its inst lines occupy 3436 x 3681 of it,
+    // 900 units of which is empty sea at the north. That slack is not free. One pair of constants
+    // stretches 120 cells over whatever the grid has to cover, so 900 units of declared-but-empty
+    // radar is six units on every sector edge, on both axes, for every scan of every frame.
+    //
+    // So measure it. Every inst line the region will place is in a text IPL this can read in a few
+    // milliseconds, and the box they occupy is exactly what CEntity::Add will file. The three inst
+    // dialects differ only in where x starts - GTA III has no interior column and Vice City has no
+    // LOD one - and the field count tells them apart, the same way CityLoader's parser does.
+    static bool MeasureContent(MapRegion& r) {
+        bool any = false;
+        float minX = 0.0f, maxX = 0.0f, minY = 0.0f, maxY = 0.0f;
+        int lines = 0;
+        for (const std::string& path : r.iplFiles) {
+            FILE* f = fopen(path.c_str(), "rb");
+            if (!f) continue;
+            char line[1024];
+            bool inInst = false;
+            while (fgets(line, sizeof(line), f)) {
+                char* hash = strchr(line, '#');
+                if (hash) *hash = '\0';
+                std::string s = line;
+                size_t a = s.find_first_not_of(" \t\r\n");
+                size_t b = s.find_last_not_of(" \t\r\n");
+                if (a == std::string::npos) continue;
+                s = s.substr(a, b - a + 1);
+                if (s.find(',') == std::string::npos) {
+                    // A section head, or its "end". Anything that is not a list of fields is one.
+                    inInst = _stricmp(s.c_str(), "inst") == 0;
+                    continue;
+                }
+                if (!inInst) continue;
+
+                std::vector<std::string> t;
+                size_t at = 0;
+                while (true) {
+                    size_t end = s.find(',', at);
+                    t.push_back(s.substr(at, end == std::string::npos ? std::string::npos : end - at));
+                    if (end == std::string::npos) break;
+                    at = end + 1;
+                }
+                // 11 fields: San Andreas (id, model, interior, x, y, z, rot x4, lod)
+                // 12 fields: GTA III     (id, model, x, y, z, scale x3, rot x4)  - no interior
+                // 13 fields: Vice City   (id, model, interior, x, y, z, scale x3, rot x4)
+                size_t pos = t.size() == 12 ? 2 : 3;
+                if (t.size() < pos + 3) continue;
+                const float x = (float)atof(t[pos].c_str());
+                const float y = (float)atof(t[pos + 1].c_str());
+                if (!any) { minX = maxX = x; minY = maxY = y; any = true; }
+                if (x < minX) minX = x;
+                if (x > maxX) maxX = x;
+                if (y < minY) minY = y;
+                if (y > maxY) maxY = y;
+                lines++;
+            }
+            fclose(f);
+        }
+        if (!any) return false;
+
+        // An inst line is a position, not a box: the model hangs off it by its own radius, and a
+        // big building's bound easily reaches a hundred units past where its origin stands. Being
+        // short here does not lose the entity - CEntity::Add clamps into the last cell, which is
+        // the cell it belongs in anyway - but it does mean the grid stops just inside the map, so
+        // pay a margin for the honesty of it.
+        const float m = world.sectorContentMargin < 0.0f ? 0.0f : world.sectorContentMargin;
+        r.contentMinX = minX - m;
+        r.contentMaxX = maxX + m;
+        r.contentMinY = minY - m;
+        r.contentMaxY = maxY + m;
+        r.hasContent = true;
+        Log::Write("[%s] %d inst line(s) occupy local x %.0f..%.0f y %.0f..%.0f (%.0f x %.0f, "
+                   "margin %.0f); the radar tile grid declares %.0f x %.0f",
+                   r.name.c_str(), lines, r.contentMinX, r.contentMaxX, r.contentMinY, r.contentMaxY,
+                   r.contentMaxX - r.contentMinX, r.contentMaxY - r.contentMinY, m,
+                   r.tilesX * r.tileSize, r.tilesY * r.tileSize);
+        return true;
+    }
+
     // ------------------------------------------------------------------ packing regions together
     //
-    // San Andreas files every static entity into a grid of exactly 120 x 120 sectors, and that
-    // count is fixed: the index that reaches the array is clamped with `cmp reg, imm8`, three bytes
-    // with a sign-extended immediate, at every one of the 136 sites that do it, so the largest
-    // index the code can express is 127 and the grid can never be more than 128 a side
-    // (tools/sector_array_sites.txt is the whole enumeration). What WorldSectors can do is stretch
-    // those 120 cells over whatever ground is in use - and the wider that ground, the bigger each
-    // cell, and the more entities every per-frame scan over a cell walks. The cost is the square of
-    // the cell: sectors of 128 units hold 6.5 times what a vanilla 50-unit one does.
+    // San Andreas files every static entity into a grid of exactly 120 x 120 sectors, and this
+    // plugin cannot change that count: the index that reaches the array is clamped with
+    // `cmp reg, imm8`, three bytes with a sign-extended immediate, at every one of the 136 sites
+    // that do it, so the largest index the code can express is 127 (tools/sector_array_sites.txt is
+    // the whole enumeration; docs/known-limitations.md says what it would take to get past it, and
+    // who has). What WorldSectors can do is stretch those 120 cells over whatever ground is in use
+    // - and the wider that ground, the bigger each cell, and the more entities every per-frame scan
+    // over a cell walks. Measured against San Andreas' own 45884 placements, the cell a player
+    // stands in holds 12.2 entities at vanilla's 50 units, 27.4 at 83 and 46.7 at 116.
     //
     // So the one thing left that decides the frame cost of a region is how far apart the maps are,
-    // and that is a placement question, not an engine one. This closes the gap: each region is
-    // moved up against the ground already in use, on whichever of the four sides leaves the world
-    // squarest, and the world grid then has less to cover.
+    // and that is a placement question, not an engine one.
     //
-    // Choosing the side is what earns the most. Liberty City off the west coast with Vice City to
-    // the east spreads the world over 15348 units on one axis and only 6052 on the other, and the
-    // grid is square because one pair of constants serves both, so it pays for the wider one twice:
-    // 128-unit sectors. The same city to the north sits alongside Vice City instead of opposite it
-    // and the world is 10500 a side - 88-unit sectors, less than half the scan cost, for a city
-    // that is exactly as far from Los Santos either way.
+    // What this used to do was walk the regions in order, putting each against whichever of the
+    // four sides of the ground already in use left the world squarest. That is fine for one region
+    // and wrong for five, because the used box only ever grows: the second map goes beside the
+    // first, the third beside both, and the span climbs roughly linearly with the number of maps.
+    // Five maps came out at 13936 units a side.
+    //
+    // A map does not have to go beside the used box, though - it has to go in a corner of it. San
+    // Andreas is 6000 square and Vice City is 3436 wide, so the moment Vice City is placed to the
+    // east the world is 9936 a side and there is an entire 3436 x 9936 column and a 6000 x 3436
+    // strip of nothing inside that square. Liberty City, Carcer City, Bullworth and a Warriors
+    // level all fit in there without the square growing at all. So: try every corner formed by
+    // every box already placed, keep whichever placement leaves the smallest square, and try the
+    // maps in every order for as long as that is cheap. Five maps then come out at 9936 units a
+    // side - exactly what one map costs, because the fifth map went in ground the first one had
+    // already paid for. The span grows as the square root of the total map area rather than the
+    // sum of the widths, which is the best a square grid can do.
     //
     // Off by default, because it moves the map out from under anything that remembers where it was:
     // pickups and parked cars in a savegame, screenshots, teleport coordinates, and an SA-MP
     // server's idea of where the region's buildings are. The log says what it would save so the
-    // choice can be made on a number.
+    // choice can be made on a number. It is deterministic - the same ini always produces the same
+    // world - so a savegame made with it on stays valid for as long as the region list does not
+    // change.
     void PackRegions(bool apply) {
         if (regions.empty()) return;
 
-        struct Box { float x0, x1, y0, y1; };
+        using RegionPacking::Box;
         auto boxOf = [](const MapRegion& r) {
-            return Box{ r.TileWest(0), r.TileWest(r.tilesX), r.TileNorth(r.tilesY), r.TileNorth(0) };
+            return Box{ r.ContentWest(), r.ContentEast(), r.ContentSouth(), r.ContentNorth() };
         };
 
-        // San Andreas' own map is the fixed centre everything else packs around.
-        Box used{ -3000.0f, 3000.0f, -3000.0f, 3000.0f };
-        Box loose = used;
+        // San Andreas' own map is the fixed centre everything else packs around. Nothing may go
+        // inside it: measured over its own 45884 inst lines, the largest square of +/-3000 with no
+        // static entity in it at all is 400 units on a side, so there is no sea to hide a city in.
+        const Box sanAndreas{ -3000.0f, 3000.0f, -3000.0f, 3000.0f };
+        Box loose = sanAndreas;
+        std::vector<Box> want;
         for (const MapRegion& r : regions) {
             Box b = boxOf(r);
+            want.push_back(b);
             loose.x0 = b.x0 < loose.x0 ? b.x0 : loose.x0;
             loose.x1 = b.x1 > loose.x1 ? b.x1 : loose.x1;
             loose.y0 = b.y0 < loose.y0 ? b.y0 : loose.y0;
@@ -174,66 +273,44 @@ namespace Settings {
         }
 
         const float gap = world.regionGap < 0.0f ? 0.0f : world.regionGap;
-        std::vector<std::pair<float, float>> moved;   // the packed origin of each region, in order
-        for (const MapRegion& r : regions) {
-            Box b = boxOf(r);
-            const float w = b.x1 - b.x0, h = b.y1 - b.y0;
 
-            // Already inside the ground in use: leave it alone. Someone who drops a small map into
-            // the middle of San Andreas means it.
-            if (b.x0 >= used.x0 && b.x1 <= used.x1 && b.y0 >= used.y0 && b.y1 <= used.y1) {
-                moved.push_back({ r.originX, r.originY });
-                continue;
-            }
+        // A region already inside San Andreas is left exactly where it is - someone who drops a
+        // small map into the middle of the map means it - and it joins the fixed ground the rest
+        // pack around.
+        std::vector<Box> fixed{ sanAndreas };
+        std::vector<size_t> movable;
+        for (size_t i = 0; i < want.size(); i++) {
+            if (want[i].x0 >= sanAndreas.x0 && want[i].x1 <= sanAndreas.x1 &&
+                want[i].y0 >= sanAndreas.y0 && want[i].y1 <= sanAndreas.y1)
+                fixed.push_back(want[i]);
+            else
+                movable.push_back(i);
+        }
 
-            // Which side of San Andreas the author put it on, by the largest overhang. Only used to
-            // break ties, so that a region that is already where packing would put it anyway stays
-            // pointing the way it was written.
-            const float over[4] = { b.x1 - 3000.0f, -3000.0f - b.x0, b.y1 - 3000.0f, -3000.0f - b.y0 };
-            int authorSide = 0;
-            for (int s = 1; s < 4; s++) if (over[s] > over[authorSide]) authorSide = s;
+        std::vector<Box> best;
+        std::vector<size_t> bestOrder;
+        if (!RegionPacking::Pack(want, movable, fixed, gap, best, bestOrder)) {
+            Log::Write("regions: nowhere to pack them to; left where their ini puts them");
+            return;
+        }
 
-            // Try all four sides and keep the one that leaves the smallest square, since the grid
-            // is square and pays for whichever axis is widest. Along the other axis the region is
-            // free to sit anywhere, so try two: centred on San Andreas, which keeps a city looking
-            // like it was put next to the map, and centred on everything placed so far, which is
-            // what packs tightest once there is more than one region out there.
-            float bestX = r.originX, bestY = r.originY, bestSpan = -1.0f;
-            int bestSide = 0, bestAlign = 0;
-            Box bestUsed = used;
-            const float centre[2][2] = { { 0.0f, 0.0f },
-                                         { (used.x0 + used.x1) * 0.5f, (used.y0 + used.y1) * 0.5f } };
-            for (int align = 0; align < 2; align++)
-            for (int side = 0; side < 4; side++) {
-                Box p = b;
-                switch (side) {
-                    case 0: p.x0 = used.x1 + gap; p.y0 = centre[align][1] - h * 0.5f; break;      // east
-                    case 1: p.x0 = used.x0 - gap - w; p.y0 = centre[align][1] - h * 0.5f; break;  // west
-                    case 2: p.y0 = used.y1 + gap; p.x0 = centre[align][0] - w * 0.5f; break;      // north
-                    default: p.y0 = used.y0 - gap - h; p.x0 = centre[align][0] - w * 0.5f; break; // south
-                }
-                p.x1 = p.x0 + w;
-                p.y1 = p.y0 + h;
-                Box u{ p.x0 < used.x0 ? p.x0 : used.x0, p.x1 > used.x1 ? p.x1 : used.x1,
-                       p.y0 < used.y0 ? p.y0 : used.y0, p.y1 > used.y1 ? p.y1 : used.y1 };
-                const float span = (u.x1 - u.x0) > (u.y1 - u.y0) ? (u.x1 - u.x0) : (u.y1 - u.y0);
-                // Ties: the author's side first, then the San Andreas alignment, then the fixed
-                // order east, west, north, south - so the same ini always produces the same world.
-                const bool better = bestSpan < 0.0f || span < bestSpan - 0.5f ||
-                    (span < bestSpan + 0.5f &&
-                     ((side == authorSide && bestSide != authorSide) ||
-                      (side == bestSide && align < bestAlign)));
-                if (better) {
-                    bestSpan = span;
-                    bestSide = side;
-                    bestAlign = align;
-                    bestX = r.originX + (p.x0 - b.x0);
-                    bestY = r.originY + (p.y0 - b.y0);
-                    bestUsed = u;
-                }
-            }
-            moved.push_back({ bestX, bestY });
-            used = bestUsed;
+        // PackOrder appends the movable regions to `fixed` in the order it was given, so the k'th
+        // box past San Andreas and the already-inside regions belongs to bestOrder[k].
+        std::vector<std::pair<float, float>> moved(regions.size());
+        for (size_t i = 0; i < regions.size(); i++) moved[i] = { regions[i].originX, regions[i].originY };
+        for (size_t k = 0; k < bestOrder.size(); k++) {
+            const size_t i = bestOrder[k];
+            const Box& p = best[fixed.size() + k];
+            moved[i] = { regions[i].originX + (p.x0 - want[i].x0),
+                         regions[i].originY + (p.y0 - want[i].y0) };
+        }
+
+        Box used{ best[0].x0, best[0].x1, best[0].y0, best[0].y1 };
+        for (const Box& b : best) {
+            used.x0 = b.x0 < used.x0 ? b.x0 : used.x0;
+            used.x1 = b.x1 > used.x1 ? b.x1 : used.x1;
+            used.y0 = b.y0 < used.y0 ? b.y0 : used.y0;
+            used.y1 = b.y1 > used.y1 ? b.y1 : used.y1;
         }
 
         const float looseSpan = (loose.x1 - loose.x0) > (loose.y1 - loose.y0)
@@ -258,8 +335,9 @@ namespace Settings {
         if (!apply) {
             Log::Write("regions: left where their ini puts them, which needs %.0f units of world a "
                        "side and so %.0f-unit sectors. Packed against the map they would need "
-                       "%.0f, giving %.0f-unit sectors and %.0f%% of the per-frame sector scan "
-                       "cost%s",
+                       "%.0f, giving %.0f-unit sectors and %.0f%% of the per-frame render and "
+                       "collision scan cost - and, since StreamDistance, none of it at the "
+                       "expense of how far the world draws%s",
                        looseSpan, looseCell, packedSpan, packedCell,
                        100.0f * (packedCell * packedCell) / (looseCell * looseCell),
                        world.packRegions ? "" : " ([World] PackRegions = 1 does it, and moves the "
@@ -278,7 +356,11 @@ namespace Settings {
         }
         Log::Write("regions: packed against the map - the world is %.0f units a side instead of "
                    "%.0f, so the fixed 120x120 sector grid gets %.0f-unit cells instead of %.0f "
-                   "and every per-frame sector scan walks %.0f%% of what it did",
+                   "and the renderer's scan and CCollision's camera cache - which walk a fixed "
+                   "number of cells - walk %.0f%% of what they did. The streamer's near-field "
+                   "pass is measured in world units and is unaffected either way, which it was "
+                   "not before StreamDistance: packing used to shorten the draw distance and now "
+                   "leaves it exactly where it is",
                    packedSpan, looseSpan, packedCell, looseCell,
                    100.0f * (packedCell * packedCell) / (looseCell * looseCell));
     }
@@ -305,8 +387,14 @@ namespace Settings {
         world.dummyPoolLimit = -1;         // vanilla 2500, same
         world.ptrNodePoolLimit = -1;       // vanilla 70000 plus what the regions need
         world.extendWorldSectors = true;
+        world.fitSectorsToContent = true;  // fit the grid to the buildings, not to the radar tiles
+        world.sectorContentMargin = 150.0f;
         world.packRegions = false;         // leave every region exactly where its ini puts it
         world.regionGap = 500.0f;
+        world.mapWindow = false;           // one grid over the whole world, not one per map
+        world.mapWindowMargin = 400.0f;
+        world.streamDistance = -1.0f;      // auto: leave San Andreas' 80 alone unless we stretched the grid
+        world.streamRefreshStep = -1.0f;   // auto: half the distance
         world.linkRegionLods = true;
         world.dropUnlinkedLods = true;
         world.regionWeapons = true;
@@ -359,8 +447,14 @@ namespace Settings {
             world.dummyPoolLimit = w->GetInt("DummyPoolLimit", -1);
             world.ptrNodePoolLimit = w->GetInt("PtrNodePoolLimit", -1);
             world.extendWorldSectors = w->GetBool("ExtendWorldSectors", true);
+            world.fitSectorsToContent = w->GetBool("FitSectorsToContent", true);
+            world.sectorContentMargin = w->GetFloat("SectorContentMargin", 150.0f);
             world.packRegions = w->GetBool("PackRegions", false);
             world.regionGap = w->GetFloat("RegionGap", 500.0f);
+            world.mapWindow = w->GetBool("MapWindow", false);
+            world.mapWindowMargin = w->GetFloat("MapWindowMargin", 400.0f);
+            world.streamDistance = w->GetFloat("StreamDistance", -1.0f);
+            world.streamRefreshStep = w->GetFloat("StreamRefreshStep", -1.0f);
             world.linkRegionLods = w->GetBool("LinkRegionLods", true);
             world.dropUnlinkedLods = w->GetBool("DropUnlinkedLods", true);
             world.regionWeapons = w->GetBool("RegionWeapons", true);
@@ -516,6 +610,28 @@ namespace Settings {
             Log::Write("[%s] origin=(%.1f, %.1f) tiles=%dx%d size=%.0f grid local x>=%.0f y<=%.0f folder=%s",
                        r.name.c_str(), r.originX, r.originY, r.tilesX, r.tilesY, r.tileSize,
                        r.gridMinX, r.gridMaxY, r.tileFolder.c_str());
+            // Before packing, which moves the region by the difference between where this box is
+            // and where it should be, and before RegionExtent, which is what the world grid fits.
+            // An explicit box in the ini wins over the measurement, for a region whose IPLs this
+            // cannot read - an SA-MP server's, say - or whose author knows better.
+            if (s.Has("ContentMinX") && s.Has("ContentMaxX") &&
+                s.Has("ContentMinY") && s.Has("ContentMaxY")) {
+                r.contentMinX = s.GetFloat("ContentMinX", 0.0f);
+                r.contentMaxX = s.GetFloat("ContentMaxX", 0.0f);
+                r.contentMinY = s.GetFloat("ContentMinY", 0.0f);
+                r.contentMaxY = s.GetFloat("ContentMaxY", 0.0f);
+                r.hasContent = r.contentMaxX > r.contentMinX && r.contentMaxY > r.contentMinY;
+                if (r.hasContent)
+                    Log::Write("[%s] content box taken from the ini: local x %.0f..%.0f y %.0f..%.0f",
+                               r.name.c_str(), r.contentMinX, r.contentMaxX,
+                               r.contentMinY, r.contentMaxY);
+            } else if (world.fitSectorsToContent) {
+                MeasureContent(r);
+            }
+            if (!r.hasContent && world.fitSectorsToContent)
+                Log::Write("[%s] no inst line could be read, so the world grid has to cover the "
+                           "whole %.0f x %.0f radar tile grid instead of just the buildings",
+                           r.name.c_str(), r.tilesX * r.tileSize, r.tilesY * r.tileSize);
             for (auto& f : r.iplFiles) Log::Write("[%s] ipl: %s", r.name.c_str(), f.c_str());
             regions.push_back(r);
         }
@@ -550,11 +666,55 @@ namespace Settings {
         return cached != 0;
     }
 
-    // The ground that has to be addressable: San Andreas' own +/-3000 and every region's tiles.
+    // The ground that has to be addressable: San Andreas' own +/-3000 and every region's entities.
     // Deliberately without the pause map's margin and without its custom bounds - those say what
     // the map screen scrolls over, and paying for them in the world grid costs cell size, which
-    // every sector scan pays for again on every frame.
+    // every sector scan pays for again on every frame. For the same reason it is the measured
+    // content box and not the declared radar tile grid: on the shipped two-city world that is the
+    // difference between 11000 units a side and 10282, and so between 92-unit sectors and 86.
     void RegionExtent(float& minX, float& maxX, float& minY, float& maxY) {
+        minX = -3000.0f; maxX = 3000.0f; minY = -3000.0f; maxY = 3000.0f;
+        for (auto& r : regions) {
+            // hasContent alone, not the setting: turning FitSectorsToContent off stops the
+            // measurement being taken, but a box written into the ini by hand is an instruction
+            // and is honoured either way.
+            const bool fit = r.hasContent;
+            const float west  = fit ? r.ContentWest()  : r.TileWest(0);
+            const float east  = fit ? r.ContentEast()  : r.TileWest(r.tilesX);
+            const float north = fit ? r.ContentNorth() : r.TileNorth(0);
+            const float south = fit ? r.ContentSouth() : r.TileNorth(r.tilesY);
+            if (west < minX) minX = west;
+            if (east > maxX) maxX = east;
+            if (north > maxY) maxY = north;
+            if (south < minY) minY = south;
+        }
+    }
+
+    // Every region plus San Andreas at index -1, as separate boxes rather than one union: this is
+    // what MapWindow needs, because a window is fitted to one map at a time.
+    int MapCount() { return (int)regions.size() + 1; }
+
+    void MapExtent(int index, float& minX, float& maxX, float& minY, float& maxY) {
+        if (index < 0 || index >= (int)regions.size()) {
+            minX = -3000.0f; maxX = 3000.0f; minY = -3000.0f; maxY = 3000.0f;
+            return;
+        }
+        const MapRegion& r = regions[index];
+        const bool fit = r.hasContent;
+        minX = fit ? r.ContentWest()  : r.TileWest(0);
+        maxX = fit ? r.ContentEast()  : r.TileWest(r.tilesX);
+        minY = fit ? r.ContentSouth() : r.TileNorth(r.tilesY);
+        maxY = fit ? r.ContentNorth() : r.TileNorth(0);
+    }
+
+    // What the map screen scrolls over. This one does keep the radar tile grids, because the tiles
+    // are what it draws, and it is not on any per-frame path so its size costs nothing.
+    void WorldExtent(float& minX, float& maxX, float& minY, float& maxY) {
+        if (world.pauseMapCustomBounds) {
+            minX = world.pauseMapMinX; maxX = world.pauseMapMaxX;
+            minY = world.pauseMapMinY; maxY = world.pauseMapMaxY;
+            return;
+        }
         minX = -3000.0f; maxX = 3000.0f; minY = -3000.0f; maxY = 3000.0f;
         for (auto& r : regions) {
             if (r.TileWest(0) < minX) minX = r.TileWest(0);
@@ -562,15 +722,6 @@ namespace Settings {
             if (r.TileNorth(0) > maxY) maxY = r.TileNorth(0);
             if (r.TileNorth(r.tilesY) < minY) minY = r.TileNorth(r.tilesY);
         }
-    }
-
-    void WorldExtent(float& minX, float& maxX, float& minY, float& maxY) {
-        if (world.pauseMapCustomBounds) {
-            minX = world.pauseMapMinX; maxX = world.pauseMapMaxX;
-            minY = world.pauseMapMinY; maxY = world.pauseMapMaxY;
-            return;
-        }
-        RegionExtent(minX, maxX, minY, maxY);
         minX -= world.pauseMapMargin; maxX += world.pauseMapMargin;
         minY -= world.pauseMapMargin; maxY += world.pauseMapMargin;
     }
