@@ -108,6 +108,13 @@ SA x 4171..6963, y −778..2626).
 | `PauseMapMargin` | 1500 | extra scrollable world units past the map and all regions |
 | `PauseMapMinX/MaxX/MinY/MaxY` | – | fix the scrollable area explicitly instead (all four) |
 | `ExtendWaterRendering` | 1 | draw region water beyond ±3000 instead of SA's flat ocean (see *Region data*); 2/3 are bisect modes for diagnosing rendering problems |
+| `ExtendWorldSectors` | 1 | fit San Andreas' 120×120 static-entity grid to the ground actually in use, so a region beyond ±3000 is filed where it really is. Skipped under SA-MP, and skipped when another mod (a limit adjuster) has already fitted the grid |
+| `FitSectorsToContent` | 1 | fit that grid to where a region's `inst` lines stand rather than to the radar tile grid its ini declares — Vice City declares 4000×4000 and occupies 3436×3681, which is 92-unit sectors against 86 for no map movement at all |
+| `SectorContentMargin` | 150 | slack round the measured box, since an `inst` line is a position and the model hangs off it by its own radius |
+| `PackRegions` | 0 | put each region in a *corner* of the ground already in use, keeping whichever placement leaves the smallest square. Five maps then need the same 9936 units a side that one does, so a fifth map is free. Off by default because moving a map moves savegame pickups, parked cars, teleport coordinates and screenshots with it; deterministic, so a save made with it on stays valid until the region list changes. Ignored under SA-MP. |
+| `RegionGap` | 500 | clear ground packing leaves between a region and its neighbour |
+| `MapWindow` | 0 | **experimental.** Fit the 120 cells to the one map the player is standing on and re-file the world when they cross to another — the only route to genuinely vanilla-sized sectors that needs no new instruction sites. The re-file is the one thing here that has not been run in the game; it checks itself and freezes rather than risk a second crossing if the check fails. See *Known limitations*. |
+| `MapWindowMargin` | 400 | how far past a map's edge the player goes before the window follows |
 | `Gxt` | – | comma list of GXT files (III/VC/SA format) merged into the game's text table; ours win on a shared key |
 | `GxtLogMisses` | 0 | diagnostic: hook `CText::Get` to log keys nobody provides (conflicts with SA-MP's own hook; keep off) |
 | `ModelIdLimit` | 25000 | number of DFF model ids; 20000 turns it off, 26400 is the ceiling. Skipped under SA-MP. Savegames are not compatible across a change. |
@@ -116,8 +123,10 @@ SA x 4171..6963, y −778..2626).
 | `RegionWeapons` | 1 | master switch for every region's `Weapons` file. Skipped under SA-MP. |
 | `RegionWeaponMode` | `Add` | `Add` gives the region's guns weapon types of their own and leaves San Andreas' forty-seven exactly as they were (ten new types is the hard limit); `Replace` writes them over the nearest San Andreas weapon, which changes that weapon for the whole game |
 | `RegionPickups` | 1 | master switch for every region's `Pickups` file. Skipped under SA-MP. |
-| `FallRecovery` | 1 | fall out of the world inside a region and you come back on that region's own ground rather than on San Andreas' path graph. Falls outside a region are left to the game. Skipped under SA-MP. |
+
+| `FallRecovery` | 1 | fall out of the world inside a region and you come back on that region's own ground rather than on San Andreas' path graph — and once you are over a region the answer always comes from that region, never from the mainland. Falls outside a region are left to the game. Skipped under SA-MP. |
 | `RegionRestartPoints` | 1 | die or get arrested inside a region and you wake at that region’s own hospital or police station, mined from the donor’s `main.scm` into its `restarts.dat`. Answered by hooking the two `CRestart` searches: nothing is added to San Andreas’ restart arrays, so the savegame stays byte for byte what vanilla writes. Outside a region the game answers, untouched. Skipped under SA-MP. |
+
 | `PickupReserve` | 200 | how many free pickup slots to leave SA's own script once a region has taken what it wants. Counted into the enlarged array's size rather than deducted from SA's 620 |
 | `Debug` | 0 | verbose log, F8 diagnostics, water render statistics |
 
@@ -284,9 +293,18 @@ All run in throwaway containers; nothing is installed on the host.
 - `tools/scan_model_limit_sites.py` → `tools/model_limit_sites.txt` → `tools/gen_model_limit_sites.py` → `src/ModelLimitSites.h` — the 1407 instructions `ModelIdLimit` rewrites, with the candidates it deliberately leaves alone and why. `tools/verify_model_limit_sites.py` re-reads every one of them out of `gta_sa.exe` and must pass 100% before the table ships.
 - `tools/verify_weapon_types.py` — the same idea for the added weapons: it simulates `WidenDispatch` and `RouteDispatch` out of `src/WeaponTypes.cpp` and asserts that every new weapon type resolves to exactly the address its donor resolves to, in all seven switches, and decodes the camera mode each one ends up with. The plugin makes the same comparison at load time and logs an error if it fails.
 
+- `tools/verify_sector_sites.py <gta_sa.exe>` — the other side of `scan_sector_sites.py`. The scan
+  recognises a coordinate-to-sector conversion by an `fmul` of the scale followed by an `fadd` of the
+  centre, which is a good rule with two holes: it cannot see a conversion of a *distance* (there is no
+  centre to add to a length) or one written `fld [scale]; fmul st(N)`, and it can be fooled by an
+  unrelated 0.02 sitting within ten instructions of an unrelated 60.0. This checks both directions —
+  every repointed scale must end at the float-to-int helper, and every un-repointed reference inside a
+  grid function must be one of the fourteen that are meant to stay put. See
+  [docs/streaming-distance.md](docs/streaming-distance.md).
+
 ## Engine facts worth knowing
 
-- SA's static world is 120×120 sectors of 50 units = ±3000; beyond that, sector lookups clamp into the edge sector (works, degrades). Fully enlarging the sector grid is fastman92 Limit Adjuster territory (~700 patch sites) and is not attempted here.
+- SA's static world is 120×120 sectors of 50 units = ±3000; beyond that, sector lookups clamp into the edge sector (works, degrades). The plugin moves and stretches those 120 cells instead, which keeps everything findable but makes the cell the world span over 120. Growing the *count* is fastman92 Limit Adjuster territory — it relocates the array and replaces whole routines in hand-written assembly for the index clamps, which are `cmp reg, imm8` and cannot hold a number above 127 in place — and is not attempted here; the plugin stands aside when it finds that already done. What is done here instead is to keep the span small: see `PackRegions` above and *Known limitations*.
 - Moving entities (peds, vehicles, objects) live in `ms_aRepeatSectors`, a 16×16 grid the game indexes by
   masking the 0..119 static sector index with 15 — so it wraps every 800 units and keeps working outside
   ±3000, as long as a caller masks the *raw* index instead of clamping it first. `CPhysical::Add`, `CWorld::FindObjectsInRange`
@@ -297,6 +315,7 @@ All run in throwaway containers; nothing is installed on the host.
   `CWaterLevel::BlockHit` (0x6E6CA0) collected from the camera frustum this frame. Retargeting that
   one call is enough to render arbitrary water out there without touching the block grid.
 - Path nodes (`nodes*.dat`) are `int16 / 8` at ~490 inline sites: traffic and ped paths cannot be extended past ±4096 without a rewrite. Irrelevant under SA-MP.
+- Col slot 0 is never unloaded, so a region's collision is permanently resident: `CColStore::RemoveAllCollision` (0x410E00) and `LoadAllCollision` (0x410E60) both start their loop at index 1 (`mov edi, 1` at 0x410E09 and 0x410E69). What the streamer *does* move it chooses from the player's own position plus 20× their velocity (`CColStore::LoadCollision`, 0x410870–0x4108CD) — the camera is not part of it. Nor is it part of `CWorld::ProcessVerticalLineSectorList` (0x5632B0), which skips an entity only for its scan code, its `m_bUsesCollision` bit, or `CWorld::pIgnoreEntity`.
 - Falling out of the world is `CWorld::RemoveFallenPeds` (0x565CB0) and `CWorld::RemoveFallenCars` (0x565E80), run from the tail of `CWorld::Process` on the frames where `CTimer::m_FrameCounter & 7` is 1 and 5. Below z −100 (the float at 0x859014) an ordinary ped or car is deleted and the player, their vehicle and mission entities are moved to `CPathFind::FindNodeClosestToCoors` with a distance limit of 999999.875 — i.e. no limit, the whole graph. Nothing about it is a restart point, and outside ±4096 there are no nodes, so it reaches back into San Andreas. `src/region/FallRecovery.cpp` answers that first for a fall over a region.
 - Death and arrest are `CGameLogic::Update` (0x442AD0) calling `CRestart::FindClosestHospitalRestartPoint` (0x460850) at +0x4A0 and `FindClosestPoliceRestartPoint` (0x460A50) at +0x84B and +0xAF6, then `RestorePlayerStuffDuringResurrection` (0x442060) — those three are the only callers in the executable. Both searches are `__cdecl (CVector where, CVector* outPos, float* outHeading)` over ten-entry arrays (counts 0xA4326C / 0xA43268, positions 0xA43318 / 0xA43390, headings 0xA432E8 / 0xA43298, town 0xA432C0 / 0xA43270), with no distance limit and no fallback, and a candidate in a different zone costs ×6.0 (0x858B44). `CRestart::Save` (0x5D3620) copies those counts and points into the savegame, so `src/region/RegionRestarts.cpp` hooks the searches instead of ever adding to the arrays.
 - Audio zone boxes and occluders are also `int16 / 8` and stay limited to ±4096.
@@ -416,6 +435,14 @@ traffic and pedestrians (path nodes cannot reach an imported city), the six Vice
 over San Andreas' own mesh ceiling, what a map placed far from San Andreas costs in frame rate and
 why the sector grid cannot be enlarged, and the rough edges left on the imported weapons. Each entry
 says how it was established and what a fix would take, so nobody rediscovers them the expensive way.
+
+[docs/streaming-distance.md](docs/streaming-distance.md) is the other one worth reading before
+touching the sector grid. The streamer's near-field radius used to follow the cell size, because
+`CStreaming::AddModelsToRequestList` converts its radius to a count of cells and that one
+conversion — a distance, not a position — was the single site the sector-grid scan could not see.
+Every improvement to the grid quietly shortened the streaming distance. `[World] StreamDistance`
+holds it at a fixed number of world units now; the file has the numbers, the audit of every other
+site where a distance and a position could have been confused, and what to check in game.
 
 ## Roadmap
 

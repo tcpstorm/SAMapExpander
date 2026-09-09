@@ -69,9 +69,47 @@
 // through again; a ring search around the fall point lands them on whatever is actually solid.
 //
 // Repeated falls are counted, and each one starts its search from a wider ring than the last, so a
-// spot that swallows the player twice is not offered a third time. After enough of them in quick
-// succession it gives up and lets the game do what it always did - being thrown to San Andreas is
-// bad, but it is an escape, and being pinned under the map for ever is worse.
+// spot that swallows the player twice is not offered a third time.
+//
+//
+// ONCE THE PLAYER IS OVER A REGION, THIS NEVER HANDS THEM BACK TO SAN ANDREAS
+//
+// The first version did, whenever every search failed - and that is the one thing the whole feature
+// exists to prevent. Handing back to the game is only ever right OUTSIDE a region, where the game's
+// own recovery is correct. Over a region the answer has to come from the region, so the chain now
+// ends in places that need nothing streamed and cannot fail:
+//
+//   1. the ring search, which needs the region's collision to answer;
+//   2. the last foothold - and a foothold is now recorded from PHYSICS as well as from a line test.
+//      If the player's vertical speed is nil and their height has not dropped between two samples,
+//      something is holding them up, whatever any line test says; the position they are standing at
+//      is then by definition a place they can stand, and putting them back on it asks nothing of
+//      the collision at all;
+//   3. the region's own origin, if the player has never had a foothold in it at all - they arrived
+//      and fell, or arrived already falling. It is a long way to be moved, but it is a completely
+//      different piece of the same city and may have collision where the corner they fell into
+//      does not;
+//   4. failing even that, they are held just above the floor over their own x and y rather than
+//      sent to another state, for a bounded number of tries, which is also as many chances for the
+//      collision to arrive. Only when a region has answered nothing at all, that many times
+//      running, does the game get the fall back - and the log says exactly that, because by then
+//      the region has no collision anywhere the player has been and a loop over it would be worse.
+//
+// One more thing is tried before believing "no ground here": the collision at the fall point is
+// forced into memory with CStreaming::LoadSceneCollision and the rings are walked once more. It
+// costs a disc hitch, so it happens once per run of falls and only after the free searches have
+// already failed - and whether it changes the answer is written to the log, because that is the
+// difference between "the collision was not resident" and "there is genuinely nothing there".
+//
+// For the record, what was checked when this was suspected of being a streaming problem: a region's
+// collision is loaded into col slot 0, and CColStore's loops all start at index 1 - `mov edi, 1` at
+// 0x410E09 in RemoveAllCollision and 0x410E69 in LoadAllCollision - so it is never unloaded. What
+// collision the streamer does move is chosen from the player's own position plus twenty times their
+// velocity (0x410870-0x4108CD in CColStore::LoadCollision), with no camera term anywhere in it, and
+// CWorld::ProcessVerticalLineSectorList (0x5632B0) skips an entity only for its scan code, its
+// m_bUsesCollision bit, or CWorld::pIgnoreEntity. So none of this should depend on where anyone is
+// looking. The forced load is kept anyway: it is free unless everything else has already failed,
+// and its log line is what will settle the question if it ever comes up again.
 //
 //
 // WHAT IT DOES NOT DO
@@ -85,6 +123,7 @@
 #include <plugin.h>
 #include <CWorld.h>
 #include <CTimer.h>
+#include <CStreaming.h>
 #include <CPlayerPed.h>
 #include <CVehicle.h>
 #include <CCutsceneMgr.h>
@@ -154,11 +193,30 @@ constexpr float kProbeHeight = 1000.0f;
 // remembering as the safety net.
 constexpr float kStandingClearance = 3.0f;
 
+// The physics half of "they are standing on something", for when no line test will answer. Speeds
+// here are per frame, not per second: a ped or a car at rest on the ground sits at nil vertical
+// speed because the collision cancels the gravity that was applied to it, and anything actually
+// falling is well past this by the time a check four frames later sees it.
+constexpr float kRestingSpeed = 0.04f;
+// And the second sample that confirms it: two checks in a row with no drop between them. One
+// sample cannot tell the top of a fall from standing still.
+constexpr float kRestingDrop = 0.05f;
+
 // A relocation this soon after the last one is the same fall happening again, so the next search
 // starts from a wider ring.
 constexpr unsigned kRepeatWindowMs = 6000;
-// And after this many in a row it stops trying and lets the game have it - see the note above.
-constexpr int kGiveUpAfter = 8;
+// Once every ring has been tried as a starting ring the search has nothing left to offer, so stop
+// paying for it and go straight to the foothold.
+constexpr int kRingsExhausted = kRings;
+// Where to hold the player when a region has answered nothing at all: over their own x and y, this
+// far above the floor the game tests against, which is another chance for its collision to arrive.
+// Deliberately a short drop rather than a high one - the hold has to come round again well inside
+// kRepeatWindowMs, or the run of falls would look like a new one every time and the count below
+// would never be reached.
+constexpr float kHoldHeight = 5.0f;
+// How many times running that may happen before the region is taken to have no collision near the
+// player at all and the game gets the fall back. This is the ONLY route out to San Andreas.
+constexpr int kHoldAttempts = 8;
 
 // A sanity bound on what GetDistanceFromCentreOfMassToBaseOfModel hands back, since a model whose
 // collision is not in memory can answer with anything.
@@ -174,14 +232,22 @@ bool gInstalled = false;
 // when the search finds nothing at all.
 struct SafeSpot {
     const MapRegion* region = nullptr;
-    float x = 0.0f, y = 0.0f, z = 0.0f;   // z is ground level, not the player's origin
+    float x = 0.0f, y = 0.0f, z = 0.0f;
+    // Whether z is ground level - from a line test, so the entity's own base offset still has to be
+    // added - or the entity origin itself, taken from physics, which goes back exactly as it is.
+    bool zIsGround = false;
 };
 SafeSpot gSafe;
 
+// The previous sample, so "they did not drop between two checks" can be asked.
+bool gHavePrev = false;
+float gPrevZ = 0.0f;
+
 int gRepeats = 0;                 // consecutive relocations inside kRepeatWindowMs of each other
+int gHeld = 0;                    // consecutive times a region answered nothing and we held them up
+bool gForcedCollision = false;    // the disc has already been hit once for this run of falls
 unsigned gLastRecoveryMs = 0;
 int gTotalRecoveries = 0;
-bool gGaveUpSaid = false;
 
 const MapRegion* RegionAt(float x, float y, float margin) {
     for (const MapRegion& r : Settings::regions) {
@@ -224,9 +290,12 @@ bool SearchGround(float x, float y, float fromZ, int firstRing,
     return false;
 }
 
-// Put `mover` on the ground at (x, groundZ), the way the game does it: through the entity's own
-// Teleport override, then with its speed zeroed.
-bool PlaceOnGround(CEntity* mover, float x, float y, float groundZ, bool resetRotation) {
+// Put `mover` at (x, y, z), the way the game does it: through the entity's own Teleport override,
+// then with its speed zeroed. `zIsGround` says whether z is ground level, in which case the
+// entity's own base offset is added, or already an entity origin, in which case it is not - a
+// foothold taken from physics is the second kind, and adding an offset to it would lift the player
+// a little further off the floor every time they used it.
+bool PlaceOnGround(CEntity* mover, float x, float y, float z, bool zIsGround, bool resetRotation) {
     void** vtable = *reinterpret_cast<void***>(mover);
     void* slot = vtable ? vtable[kTeleportSlot] : nullptr;
     uintptr_t slotAddr = reinterpret_cast<uintptr_t>(slot);
@@ -236,10 +305,13 @@ bool PlaceOnGround(CEntity* mover, float x, float y, float groundZ, bool resetRo
         return false;
     }
 
-    float base = CallDistanceToBaseOfModel(mover);
-    if (!(base >= 0.0f) || base > kMaxBaseOffset) base = 1.0f;   // also catches a NaN
+    float base = 0.0f;
+    if (zIsGround) {
+        base = CallDistanceToBaseOfModel(mover);
+        if (!(base >= 0.0f) || base > kMaxBaseOffset) base = 1.0f;   // also catches a NaN
+    }
 
-    RawVector at = { x, y, groundZ + base };
+    RawVector at = { x, y, z + base };
     reinterpret_cast<TeleportFn>(slot)(mover, at, resetRotation);
     static_cast<CPhysical*>(mover)->m_vecMoveSpeed = CVector(0.0f, 0.0f, 0.0f);
     return true;
@@ -248,19 +320,12 @@ bool PlaceOnGround(CEntity* mover, float x, float y, float groundZ, bool resetRo
 // Everything below the fall floor that is over a region. Returns true when the player was moved.
 bool Recover(CEntity* mover, CPlayerPed* player, const MapRegion& r, bool isVehicle) {
     unsigned now = CTimer::m_snTimeInMilliseconds;
-    if (gTotalRecoveries && now - gLastRecoveryMs <= kRepeatWindowMs) gRepeats++;
-    else { gRepeats = 0; gGaveUpSaid = false; }
-
-    if (gRepeats >= kGiveUpAfter) {
-        if (!gGaveUpSaid) {
-            gGaveUpSaid = true;
-            Log::Write("[%s] fall recovery: %d falls in a row and nothing to stand on within %.0f "
-                       "units of any of them; letting San Andreas take this one, which means being "
-                       "put back on the mainland. The region's collision is either not loaded here "
-                       "or genuinely has a hole this big.",
-                       r.name.c_str(), gRepeats, kRingRadius[kRings - 1]);
-        }
-        return false;
+    if (gTotalRecoveries && now - gLastRecoveryMs <= kRepeatWindowMs) {
+        gRepeats++;
+    } else {                            // a new run of falls: the disc may be hit again for it
+        gRepeats = 0;
+        gHeld = 0;
+        gForcedCollision = false;
     }
 
     CVector fell = mover->GetPosition();
@@ -271,36 +336,105 @@ bool Recover(CEntity* mover, CPlayerPed* player, const MapRegion& r, bool isVehi
     float referenceZ = gSafe.region == &r ? gSafe.z : r.originZ;
 
     // Each repeat of the same fall starts a ring wider than the last, so a hole that has already
-    // swallowed the player is not offered back to them - but never past the widest ring, or the
-    // search would stop happening at all before the give-up count is reached.
+    // swallowed the player is not offered back to them.
     int firstRing = gRepeats < kRings ? gRepeats : kRings - 1;
 
     float x = 0.0f, y = 0.0f, z = 0.0f, radius = 0.0f;
     const char* how = nullptr;
-    if (SearchGround(fell.x, fell.y, referenceZ + kProbeLift, firstRing, x, y, z, radius)) {
-        how = "ground";
-    } else if (SearchGround(fell.x, fell.y, r.originZ + kProbeHeight, firstRing, x, y, z, radius)) {
-        how = "ground from above";
-    } else if (gSafe.region == &r) {
-        // The safety net: the last spot the player was actually standing on. Probed again first,
-        // because the collision that was under them then may not be in memory now.
-        bool found = false;
-        float g = CWorld::FindGroundZFor3DCoord(gSafe.x, gSafe.y, gSafe.z + kProbeLift, &found, nullptr);
+    bool zIsGround = true;
+
+    // Once every ring has been a starting ring the search has run out of things to say; skip
+    // straight to the foothold rather than pay for it again.
+    if (gRepeats < kRingsExhausted) {
+        if (SearchGround(fell.x, fell.y, referenceZ + kProbeLift, firstRing, x, y, z, radius)) {
+            how = "the ground where you fell";
+        } else if (SearchGround(fell.x, fell.y, r.originZ + kProbeHeight, firstRing, x, y, z,
+                                radius)) {
+            how = "the ground below it, found from above";
+        } else if (!gForcedCollision) {
+            // Nothing answered. Before believing there is nothing there, make sure the region's
+            // collision really is in memory at this point - and say in the log whether that was the
+            // difference, because it is the difference between a streaming problem and a hole.
+            // Once per run of falls: it blocks on the disc, and the clock is stopped around it so
+            // the pause does not land on the physics as one enormous time step.
+            gForcedCollision = true;
+            CVector at(fell.x, fell.y, referenceZ);
+            CTimer::Suspend();
+            CStreaming::LoadSceneCollision(&at);
+            CTimer::Resume();
+            if (SearchGround(fell.x, fell.y, referenceZ + kProbeLift, firstRing, x, y, z, radius))
+                how = "the ground where you fell, which was not in memory until it was asked for";
+            else if (SearchGround(fell.x, fell.y, r.originZ + kProbeHeight, firstRing, x, y, z,
+                                  radius))
+                how = "the ground below it, which was not in memory until it was asked for";
+            Log::Write("[%s] fall recovery: nothing answered under (%.1f, %.1f), so the collision "
+                       "there was forced into memory - and %s. %s",
+                       r.name.c_str(), fell.x, fell.y,
+                       how ? "that found ground" : "there is still nothing",
+                       how ? "So this was the region's collision not being resident."
+                           : "So this is a real hole, not a streaming problem.");
+        }
+    }
+
+    if (!how && gSafe.region == &r) {
+        // The safety net: the last place the player was held up by something. If it came from a
+        // line test, probe it again for a current ground level; if it came from physics, it is an
+        // entity origin they were resting at and needs nothing confirmed at all.
         x = gSafe.x;
         y = gSafe.y;
-        z = found ? g : gSafe.z;
+        z = gSafe.z;
+        zIsGround = gSafe.zIsGround;
+        if (zIsGround) {
+            bool found = false;
+            float g = CWorld::FindGroundZFor3DCoord(x, y, z + kProbeLift, &found, nullptr);
+            if (found) z = g;
+        }
         radius = sqrtf((x - fell.x) * (x - fell.x) + (y - fell.y) * (y - fell.y));
-        how = found ? "the last ground you stood on" : "the last ground you stood on, unconfirmed";
+        how = "the last ground you stood on";
+    }
+
+    if (!how) {
+        // Still nothing, and the player has never had a foothold in this region - they arrived and
+        // fell, or arrived already falling. Try the region's own origin, which is a completely
+        // different piece of its map and may well have collision when the corner they fell into
+        // does not. It is a long way to be moved, but it is somewhere in the same city, which is
+        // the whole point.
+        if (SearchGround(r.originX, r.originY, r.originZ + kProbeHeight, 0, x, y, z, radius)) {
+            radius = sqrtf((x - fell.x) * (x - fell.x) + (y - fell.y) * (y - fell.y));
+            how = "the middle of the region, nothing at all having answered where you fell";
+        }
+    }
+
+    if (!how) {
+        // The region has answered nothing: no ground within reach at two heights, its collision
+        // forced in, and no foothold ever recorded in it. Hold the player in the air over their own
+        // x and y rather than send them to another state - which is also another chance for the
+        // collision to arrive - and only give the fall back to the game once that has failed this
+        // many times running, because by then the region genuinely has nothing under the player and
+        // an endless loop over it would be worse than being on the mainland.
+        gHeld++;
+        if (gHeld > kHoldAttempts) {
+            Log::Write("[%s] fall recovery: %d times running, this region has had no ground within "
+                       "%.0f units of (%.1f, %.1f) at any height, none at its own origin, its "
+                       "collision forced in, and no foothold ever recorded in it - so it has no "
+                       "collision anywhere the player has been. Letting San Andreas take this one, "
+                       "which means the mainland; check that the region's Col files loaded.",
+                       r.name.c_str(), gHeld - 1, kRingRadius[kRings - 1], fell.x, fell.y);
+            return false;
+        }
+        x = fell.x;
+        y = fell.y;
+        z = *kFallFloor + kHoldHeight;
+        zIsGround = false;
+        radius = 0.0f;
+        how = "held just above the floor while the region's collision catches up";
     } else {
-        Log::Write("[%s] fall recovery: nothing to stand on within %.0f units of (%.1f, %.1f) and "
-                   "no earlier foothold to go back to; letting San Andreas take this one",
-                   r.name.c_str(), kRingRadius[kRings - 1], fell.x, fell.y);
-        return false;
+        gHeld = 0;
     }
 
     // A car gets its rotation reset and a man does not, which is what the game does at 0x566012
     // (push 1) and 0x565DE6 (push 0).
-    if (!PlaceOnGround(mover, x, y, z, isVehicle)) return false;
+    if (!PlaceOnGround(mover, x, y, z, zIsGround, isVehicle)) return false;
     // The man in the car is carried by the car's own matrix from next frame, but the game's ped
     // pass may run before that happens and would see him still under the world. Put him where the
     // car now is so nothing else has an opinion about it.
@@ -311,10 +445,10 @@ bool Recover(CEntity* mover, CPlayerPed* player, const MapRegion& r, bool isVehi
 
     gLastRecoveryMs = now;
     gTotalRecoveries++;
-    Log::Write("[%s] fall recovery: %s went under the world at (%.1f, %.1f, %.1f) and is back on "
-               "%s at (%.1f, %.1f, %.1f), %.0f units away%s",
+    Log::Write("[%s] fall recovery: %s went under the world at (%.1f, %.1f, %.1f) and is now at "
+               "(%.1f, %.1f, %.1f), %.0f units away - %s%s",
                r.name.c_str(), isVehicle ? "the player's vehicle" : "the player", fell.x, fell.y,
-               fell.z, how, x, y, z, radius,
+               fell.z, x, y, z, radius, how,
                gRepeats ? " (repeat fall, searching wider)" : "");
     return true;
 }
@@ -336,19 +470,32 @@ void Check() {
     const MapRegion* r = RegionAt(pos.x, pos.y, kFootprintMargin);
 
     if (pos.z > *kFallFloor) {
-        if (!r) return;                 // on San Andreas' own map; none of this is our business
-        // If they are standing on something, remember it: it is both the height the ring search
-        // looks from and the safety net for when the search finds nothing at all.
+        if (!r) {                       // on San Andreas' own map; none of this is our business
+            gHavePrev = false;
+            return;
+        }
+        // Are they standing on something? Two ways to know, and only one of them asks anything of
+        // the collision - which is the whole point, because if the line test could always be
+        // trusted there would be no fall to recover from in the first place.
         bool found = false;
         float g = CWorld::FindGroundZFor3DCoord(pos.x, pos.y, pos.z + 2.0f, &found, nullptr);
         if (found && pos.z - g <= kStandingClearance) {
-            gSafe.region = r;
-            gSafe.x = pos.x;
-            gSafe.y = pos.y;
-            gSafe.z = g;
+            gSafe = { r, pos.x, pos.y, g, true };
+        } else {
+            // Nothing answered, but physics can still say it: nil vertical speed, and no drop
+            // since the previous check. Something is holding them up whatever the line test
+            // thinks, so where they are standing is a place they can be put back.
+            const CVector& speed = static_cast<CPhysical*>(mover)->m_vecMoveSpeed;
+            bool still = speed.z > -kRestingSpeed && speed.z < kRestingSpeed;
+            bool onFoot = !vehicle && player->bIsStanding;
+            if ((still || onFoot) && gHavePrev && pos.z >= gPrevZ - kRestingDrop)
+                gSafe = { r, pos.x, pos.y, pos.z, false };
         }
+        gPrevZ = pos.z;
+        gHavePrev = true;
         return;
     }
+    gHavePrev = false;   // falling; the next sample must not be compared against a mid-air one
 
     // Under the world. Over San Andreas that is the game's own business and it does it well.
     if (!r) return;
@@ -457,8 +604,9 @@ void Describe(std::string& out) {
     }
     if (gSafe.region)
         snprintf(buffer, sizeof(buffer),
-                 "%d recovered fall(s); last foothold [%s] (%.1f, %.1f) ground z %.1f",
-                 gTotalRecoveries, gSafe.region->name.c_str(), gSafe.x, gSafe.y, gSafe.z);
+                 "%d recovered fall(s); last foothold [%s] (%.1f, %.1f) z %.1f, %s",
+                 gTotalRecoveries, gSafe.region->name.c_str(), gSafe.x, gSafe.y, gSafe.z,
+                 gSafe.zIsGround ? "from a line test" : "from physics, no line test needed");
     else
         snprintf(buffer, sizeof(buffer),
                  "%d recovered fall(s); no foothold remembered in any region yet", gTotalRecoveries);
