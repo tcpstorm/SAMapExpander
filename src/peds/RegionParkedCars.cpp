@@ -76,6 +76,7 @@
 #include <string>
 #include <vector>
 #include "RegionParkedCars.h"
+#include "Ground.h"
 #include "VehicleSpawn.h"
 #include "Settings.h"
 #include "Log.h"
@@ -318,21 +319,41 @@ CVector BayWorld(const RegionState& rs, const Bay& b) {
     return CVector(b.x + rs.region->originX, b.y + rs.region->originY, z);
 }
 
-// Where a car is actually MADE, which is not the same question as where the bay is.
+// Where a tick's attempts to fill a bay went. Same reason as the traffic's: "0 parked at its
+// kerbs" is a count, and a count cannot say whether every bay was out of range, or remembered as
+// emptied, or in shot, or had no model in memory, or there was no floor under it.
+struct Tally {
+    int ticks, notReady, waiting, atBudget, poolFull;
+    int outOfRange, notArmed, taken, inShot, noModel, noGround, madeNothing, placed;
+    int lost, released;
+    unsigned nextReport;
+};
+Tally& Counts() { static Tally t{}; return t; }
+
+// Where a car is actually MADE, which is not the same question as where the bay is. False means
+// there is no floor under this bay and no car goes in it.
 //
-// Every bay goes in on the sentinel, not on the height its line claims, because
-// CCarCtrl::CreateCarForScript compares z against the float at 0x859014 (-100.0, tested at
-// 0x432117) and where they match goes and asks CWorld::FindGroundZForCoord - which ignores z and
-// casts from 1000 straight down, so it cannot be wrong about a datum it never reads. 317 of the
-// 320 mined bays across both cities carry a real height rather than the sentinel, and a real
-// height is only as good as the agreement between the donor's script and the collision that
-// actually got imported. The ground that is there wins.
-CVector BaySpawnPoint(const RegionState& rs, const Bay& b) {
-    return CVector(b.x + rs.region->originX, b.y + rs.region->originY, kGroundZ);
+// NOT the -100 sentinel, which is what this tried first. CCarCtrl::CreateCarForScript does resolve
+// that sentinel for itself (0x432117, against the -100.0 at 0x859014) - but the routine it resolves
+// it with is CWorld::FindGroundZForCoord, which returns the float at 0x858BA4, **twenty**, when it
+// finds nothing at all. Twenty is an ordinary street height in an imported city, so a failed probe
+// arrives as a plausible one and the car is created in the air. Ground::Under asks the honest
+// question instead; see the top of src/region/Ground.cpp.
+bool BaySpawnPoint(const RegionState& rs, const Bay& b, CVector& out) {
+    out = CVector(b.x + rs.region->originX, b.y + rs.region->originY, 0.0f);
+    // A bay whose line carries the sentinel has no claimed height to search from, so the search
+    // starts from the height of the bay's own neighbourhood - the region's vertical origin, which
+    // is where its ground is measured from.
+    float claimed = b.z <= kGroundZ ? rs.region->originZ : b.z + rs.region->originZ;
+    float ground = 0.0f;
+    if (!Ground::Under(out.x, out.y, claimed, ground)) return false;
+    out.z = ground;
+    return true;
 }
 
 bool CreateParkedCar(RegionState& rs, Bay& b, int model) {
-    CVector at = BaySpawnPoint(rs, b);
+    CVector at;
+    if (!BaySpawnPoint(rs, b, at)) { Counts().noGround++; return false; }
     CVehicle* car = CCarCtrl::CreateCarForScript(model, at, false);
     if (!car) return false;
     // Through the game's own setter, which moves the car between the counters San Andreas budgets
@@ -378,16 +399,6 @@ bool CreateParkedCar(RegionState& rs, Bay& b, int model) {
 // docs/save-compatibility.md: our state does not go in San Andreas' blocks, and until there is a
 // sidecar to put it in, a session's memory is what there is. A new game or a load starts every
 // bay full, which is what a new game should look like.
-// Where a tick's attempts to fill a bay went. Same reason as the traffic's: "0 parked at its
-// kerbs" is a count, and a count cannot say whether every bay was out of range, or remembered as
-// emptied, or in shot, or had no model in memory, or CreateCarForScript refused.
-struct Tally {
-    int ticks, notReady, waiting, atBudget, poolFull;
-    int outOfRange, notArmed, taken, inShot, noModel, madeNothing, placed;
-    int lost, released;
-    unsigned nextReport;
-};
-Tally& Counts() { static Tally t{}; return t; }
 
 void RememberEmptied(Bay& b) {
     b.taken = true;
@@ -504,10 +515,10 @@ void ReportTally() {
     if (!t.ticks) return;
     Log::Write("parked/sec: %d tick(s) -> %d not ready, %d waiting for the spawn interval, %d at "
                "budget, %d pool full; bays %d out of range, %d remembered as emptied, %d in shot, "
-               "%d no model in memory, %d CreateCarForScript said no, %d placed; %d vanished, "
-               "%d released to the player",
+               "%d no model in memory, %d no ground under the bay, %d CreateCarForScript said no, "
+               "%d placed; %d vanished, %d released to the player",
                t.ticks, t.notReady, t.waiting, t.atBudget, t.poolFull, t.outOfRange, t.notArmed,
-               t.inShot, t.noModel, t.madeNothing, t.placed, t.lost, t.released);
+               t.inShot, t.noModel, t.noGround, t.madeNothing, t.placed, t.lost, t.released);
     Tally fresh{};
     fresh.nextReport = t.nextReport;
     t = fresh;

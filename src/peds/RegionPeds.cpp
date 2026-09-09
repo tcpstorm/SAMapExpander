@@ -61,6 +61,7 @@
 #include <unordered_map>
 #include <vector>
 #include "RegionPeds.h"
+#include "Ground.h"
 #include "ModelLimits.h"
 #include "StreamedModels.h"
 #include "RegionPolice.h"
@@ -524,6 +525,20 @@ int SafePedType(int pedType) {
 // instead, keeping back the same eight slots the game's own RemovePedsIfThePoolGetsFull works to.
 constexpr int kPedPoolReserve = 8;
 
+// Where a tick's spawn attempts went, summed over a second.
+//
+// This exists because "16 walking and none of them visible" and "nothing spawns at all" are the
+// same line in the log - a count - and a count cannot say whether nobody was made, or everybody
+// was made and taken away again, or the same two people were made and unmade sixty times a second.
+// Three rounds of reasoning from counts got the wrong answer; this says which it is.
+struct Tally {
+    int ticks, attempts, tooNear, inShot, crowded, noModel, poolFull, madeNothing, placed;
+    int noGround, offDatum;
+    int lost, culled, kept;
+    unsigned nextReport;
+};
+Tally& Counts() { static Tally t{}; return t; }
+
 // The ground under a node, and WHICH question you ask matters.
 //
 // CPedPlacement::FindZCoorForPed (0x616920) is the ped-shaped one and it is what this used to
@@ -546,26 +561,26 @@ constexpr int kPedPoolReserve = 8;
 // city measured on the ground, with the player standing on an ordinary road and the nearest node
 // twenty units below their feet - this is the difference between a crowd and a rumour.
 constexpr float kDatumSlack = 2.0f;
-int gDatumReports = 0;
 
-CVector SettleOnGround(const CVector& at) {
-    CVector out = at;
-    float ground = CWorld::FindGroundZForCoord(out.x, out.y);
-    if (ground > -200.0f && ground < 2000.0f && fabsf(ground - out.z) > kDatumSlack) {
-        // Worth saying out loud the first few times: a graph that disagrees with the collision
-        // under it by more than a couple of units is a fact about the region's data, and the
-        // numbers are what somebody would need to fix the import rather than paper over it here.
-        if (Settings::world.debug && gDatumReports < 10) {
-            gDatumReports++;
-            Log::Write("peds: node at (%.1f, %.1f) says z %.1f, the collision there is at %.1f "
-                       "(%.1f units out); standing them on the collision",
-                       out.x, out.y, out.z, ground, ground - out.z);
-        }
-        out.z = ground;
-    }
+// False means there is no floor at this node and nobody may be put there.
+//
+// The first version of this called CWorld::FindGroundZForCoord, which looks like the right
+// question and is not: where there is no collision it returns the float at 0x858BA4, which is
+// **20.0**, and twenty is an ordinary street height in an imported city. Every failed probe
+// therefore came back as a plausible answer a few units above the road, and the peds stood in the
+// air and fell - which is what the player saw. Ground::Under asks
+// CWorld::FindGroundZFor3DCoord instead, which reports failure instead of inventing a height.
+// Read the top of src/region/Ground.cpp before changing this back.
+bool SettleOnGround(const CVector& at, CVector& out, float* datumError) {
+    out = at;
+    float ground = 0.0f;
+    if (!Ground::Under(out.x, out.y, out.z, ground)) return false;
+    if (datumError) *datumError = ground - out.z;
+    if (fabsf(ground - out.z) > kDatumSlack) out.z = ground;
+    // Now the ped-shaped placement, against a height that is known to be real.
     float z = CPedPlacement::FindZCoorForPed(&out);
     if (z > -200.0f && z < 2000.0f) out.z = z;
-    return out;
+    return true;
 }
 
 CPed* CreateWalker(RegionState& rs, int node, int modelId, bool walk) {
@@ -573,7 +588,12 @@ CPed* CreateWalker(RegionState& rs, int node, int modelId, bool walk) {
     if (!info) return nullptr;
     if (!RegionPeds::SafeToAddPed()) return nullptr;
     int pedType = SafePedType((int)reinterpret_cast<CPedModelInfo*>(info)->m_nPedType);
-    CVector at = SettleOnGround(NodeWorld(rs, node));
+    CVector at;
+    float datumError = 0.0f;
+    // No floor under this node means nobody stands on it. Refusing is the whole point: the old
+    // code could not tell "no ground" from "ground at twenty", so it put somebody in the air.
+    if (!SettleOnGround(NodeWorld(rs, node), at, &datumError)) { Counts().noGround++; return nullptr; }
+    if (fabsf(datumError) > kDatumSlack) Counts().offDatum++;
     CPed* ped = CPopulation::AddPed((ePedType)pedType, (unsigned)modelId, at, false);
     if (!ped) return nullptr;
     // Created by the game, not by a script: this is what makes CPopulation::ManagePopulation
@@ -594,19 +614,6 @@ int LivePedBudget() {
     if (want > kMaxPedCount) want = kMaxPedCount;
     return want;
 }
-
-// Where a tick's spawn attempts went, summed over a second.
-//
-// This exists because "16 walking and none of them visible" and "nothing spawns at all" are the
-// same line in the log - a count - and a count cannot say whether nobody was made, or everybody
-// was made and taken away again, or the same two people were made and taken away sixty times a
-// second. Three rounds of reasoning from counts got the wrong answer; this says which it is.
-struct Tally {
-    int ticks, attempts, tooNear, inShot, crowded, noModel, poolFull, madeNothing, placed;
-    int lost, culled, kept;
-    unsigned nextReport;
-};
-Tally& Counts() { static Tally t{}; return t; }
 
 // Forget the ones the game has taken away, keep the rest walking, and take back any that have
 // strayed further than this module looks after.
@@ -654,10 +661,12 @@ void ReportTally() {
     t.nextReport = CTimer::m_snTimeInMilliseconds + 1000;
     if (!t.ticks) return;
     Log::Write("peds/sec: %d tick(s), %d attempt(s) -> %d too near, %d in shot, %d on top of "
-               "somebody, %d no model in memory, %d pool full, %d AddPed said no, %d placed; "
+               "somebody, %d no model in memory, %d pool full, %d no ground under the node, "
+               "%d AddPed said no, %d placed (%d of them off the graph's own height); "
                "%d kept, %d vanished, %d taken back; %d model(s) still asked for",
                t.ticks, t.attempts, t.tooNear, t.inShot, t.crowded, t.noModel, t.poolFull,
-               t.madeNothing, t.placed, t.kept, t.lost, t.culled, StreamedModels::Held());
+               t.noGround, t.madeNothing, t.placed, t.offDatum, t.kept, t.lost, t.culled,
+               StreamedModels::Held());
     Tally fresh{};
     fresh.nextReport = t.nextReport;
     t = fresh;
@@ -774,7 +783,7 @@ bool FindSpawnPoint(const CVector& at, float minDist, float maxDist, bool avoidC
         float dx = world.x - at.x, dy = world.y - at.y;
         if (dx * dx + dy * dy < minDist * minDist) continue;
         if (avoidCamera && TheCamera.IsSphereVisible(world, 1.5f)) continue;
-        out = SettleOnGround(world);
+        if (!SettleOnGround(world, out, nullptr)) continue;
         return true;
     }
     return false;

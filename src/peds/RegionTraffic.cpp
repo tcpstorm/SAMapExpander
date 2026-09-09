@@ -54,6 +54,7 @@
 #include <unordered_map>
 #include <vector>
 #include "RegionTraffic.h"
+#include "Ground.h"
 #include "VehicleSpawn.h"
 #include "Settings.h"
 #include "Log.h"
@@ -72,7 +73,20 @@ constexpr int kMaxLanes = 4;
 // out and removes them past 65 off screen; this sits inside the same band so the two behave alike
 // either side of the border rather than one of them lingering.
 constexpr float kMinSpawnDistance = 40.0f;
-constexpr float kCullMargin = 1.4f;
+// How much further than the spawn radius a car may get before it is taken away.
+//
+// This was 1.4, and 1.4 was not enough, because the spawn radius is not the distance a car is
+// actually created at. NodesNear finds nodes within RegionTrafficRadius - 90 by default - and then
+// LanePoint steps sideways off the node by (lane + 0.5) * 5.4, which is another 18.9 units in the
+// outer lane of a four-lane road. So cars were being made as far out as 109 and taken away again
+// at 126: a seventeen-unit gap, which an eighteen-unit cruise speed crosses in about a second.
+// That is what "3 placed, 3 taken away, 0 driving" was, every second, for the whole session.
+//
+// San Andreas' own numbers are the shape to copy: it creates between about 42 and 50 and removes
+// past 65, so its gap is a third of its spawn radius rather than a sixth. Two changes make ours
+// the same shape - the lane offset now counts against the spawn radius (see SpawnSome) so nothing
+// is created past 90, and the cull sits at 1.75 of it, 157, which is 67 units of room to drive in.
+constexpr float kCullMargin = 1.75f;
 constexpr int kSpawnsPerTick = 1;
 constexpr unsigned kSpawnIntervalMs = 400;
 // How near the destination counts as arrived, and therefore when the next leg is handed out. Wider
@@ -445,20 +459,23 @@ void SetDestination(CVehicle* car, const RegionState& rs, const Driver& d) {
 // called rather than patched - but checked the same way anything else here is checked, because
 // calling the wrong address is worse than not calling it. VehicleSpawn::Ready() is that check,
 // shared with the parked cars, which call the same two.
-// The height a car is created at is NOT the height the graph claims.
+// The height a car is created at is NOT the height the graph claims - and it is not the -100
+// sentinel either, which is what this tried first and why it is worth writing down.
 //
 // CCarCtrl::CreateCarForScript compares the z it is given against the float at 0x859014, which is
-// -100.0 exactly (the test is at 0x432117 on the car path), and where they match it goes and asks
-// CWorld::FindGroundZForCoord itself. That routine ignores z and casts from 1000 straight down, so
-// it answers "what is the ground at this x and y" and cannot be wrong about a datum it never
-// reads. The parked cars have always used this; the traffic handed over the node's own z instead,
-// which puts a car wherever a twenty-year-old file says the road was rather than where the road
-// actually is. A car under the road is a car nobody sees.
-constexpr float kGroundZ = -100.0f;
-
+// -100.0 exactly (the test is at 0x432117 on the car path), and where they match it works the
+// height out itself. That looks like the right thing to lean on until you see WHICH routine it
+// calls: CWorld::FindGroundZForCoord, which returns the float at 0x858BA4 - **twenty** - when it
+// finds nothing, and twenty is an ordinary street height in an imported city. Handing over the
+// sentinel just moves the lie one level down.
+//
+// So the ground is found here, honestly, through Ground::Under, and a lane point with no floor
+// under it is not used at all. See the top of src/region/Ground.cpp.
 CVehicle* CreateCar(RegionState& rs, int from, int to, int lane, int model) {
     CVector at = LanePoint(rs, from, to, lane);
-    at.z = kGroundZ;
+    float ground = 0.0f;
+    if (!Ground::Under(at.x, at.y, at.z, ground)) return nullptr;
+    at.z = ground;
     // CreateCarForScript does the whole placement properly - ground height, clearing space, adding
     // to the world - and one thing that is wrong for us: at 0x43206C it calls
     // CCarCtrl::JoinCarWithRoadSystem, the PATH-BASED join, which will attach the car to whichever
@@ -538,7 +555,7 @@ bool ShouldYield(const RegionState& rs, const Driver& me, const CVector& myPos) 
 // bug and they were guessed at three times over. Summed and reported once a second under Debug.
 struct Tally {
     int ticks, notReady, atBudget, waiting, poolFull, noModel, noNodes;
-    int attempts, deadEnd, onSaGround, tooNear, inShot, crowded, madeNothing, placed;
+    int attempts, deadEnd, onSaGround, tooNear, tooFar, inShot, crowded, noGround, madeNothing, placed;
     int lost, gaveBack, tookAway;
     unsigned nextReport;
 };
@@ -651,12 +668,13 @@ void ReportTally(const RegionState* here) {
     if (!t.ticks) return;
     Log::Write("traffic/sec: %d tick(s) -> %d not ready, %d at budget, %d waiting for the spawn "
                "interval, %d pool full, %d no model in memory, %d no node in range; %d attempt(s) "
-               "-> %d dead end, %d on San Andreas' own ground, %d too near, %d in shot, %d "
-               "crowded, %d CreateCarForScript said no, %d placed; %d driving, %d vanished, %d "
-               "handed back, %d taken away",
+               "-> %d dead end, %d on San Andreas' own ground, %d too near, %d past the radius, "
+               "%d in shot, %d crowded, %d no ground under the lane, %d placed; %d driving, "
+               "%d vanished, %d handed back, %d taken away",
                t.ticks, t.notReady, t.atBudget, t.waiting, t.poolFull, t.noModel, t.noNodes,
-               t.attempts, t.deadEnd, t.onSaGround, t.tooNear, t.inShot, t.crowded, t.madeNothing,
-               t.placed, here ? (int)here->drivers.size() : 0, t.lost, t.gaveBack, t.tookAway);
+               t.attempts, t.deadEnd, t.onSaGround, t.tooNear, t.tooFar, t.inShot, t.crowded,
+               t.noGround, t.placed, here ? (int)here->drivers.size() : 0, t.lost, t.gaveBack,
+               t.tookAway);
     Tally fresh{};
     fresh.nextReport = t.nextReport;
     t = fresh;
@@ -693,6 +711,10 @@ void SpawnSome(RegionState& rs, const CVector& player, int wanted) {
         float dx = at.x - player.x, dy = at.y - player.y;
         float dist = sqrtf(dx * dx + dy * dy);
         if (dist < kMinSpawnDistance) { t.tooNear++; continue; }
+        // And not past the radius either. The node was within it; the lane offset can put the car
+        // outside it, and a car created outside the band it is culled against has a very short
+        // life - see kCullMargin.
+        if (dist > Settings::world.regionTrafficRadius) { t.tooFar++; continue; }
         // Never where the player is looking: a car appearing in shot is the one thing that reads
         // as a spawn rather than as traffic.
         if (TheCamera.IsSphereVisible(at, 4.0f)) { t.inShot++; continue; }
@@ -707,7 +729,7 @@ void SpawnSome(RegionState& rs, const CVector& player, int wanted) {
         }
         if (crowded) { t.crowded++; continue; }
         if (CreateCar(rs, from, to, lane, model)) { placed++; t.placed++; }
-        else t.madeNothing++;
+        else t.noGround++;   // CreateCarForScript cannot fail for a car; no floor is the only way
     }
 }
 
