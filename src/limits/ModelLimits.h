@@ -28,4 +28,11 @@ namespace ModelLimits {
     int AtomicCapacity();        // how many CAtomicModelInfo that store can hold
     uintptr_t TimeStore();       // CModelInfo::ms_timeModelInfoStore (int32 count, then objects)
     int TimeCapacity();          // how many CTimeModelInfo it can hold: what tobj lines become
+
+    // CModelInfo::ms_pedModelInfoStore. A `peds` IDE line does not land in the atomic store: it
+    // becomes a CPedModelInfo, 0x44 bytes against a CAtomicModelInfo's 0x20, in a store of its own
+    // that San Andreas' own 276 peds all but fill. CityLoader budgets `peds` lines against these
+    // exactly as it does tobj lines against the time store.
+    uintptr_t PedStore();
+    int PedCapacity();           // how many CPedModelInfo it can hold: what peds lines become
 }

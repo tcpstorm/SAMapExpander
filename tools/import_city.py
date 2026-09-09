@@ -581,6 +581,7 @@ RW_304 = 0x30400          # ... and at which a material grew surface properties 
 GEOM_TEXTURED, GEOM_PRELIT, GEOM_TEXTURED2, GEOM_NATIVE = 0x04, 0x08, 0x80, 0x01000000
 GEOM_TRISTRIP = 0x01      # the geometry's own "my meshes are strips" flag
 RW_BINMESH = 0x50E        # the mesh split the D3D pipeline instances from, one mesh per material
+RW_SKIN = 0x116           # the bone indices, weights and inverse-bind matrices of a skinned model
 
 # How far to lift a vertex's baked lighting towards white: out = in + (255 - in) * PRELIT_LIFT.
 #
@@ -724,11 +725,52 @@ def convert_extension(data, s, e, what):
     for kind, _ver, cs, ce in rw_children(data, s, e, what + " extension"):
         if kind in DROP_PLUGINS:
             continue
+        # The skin plugin is the one chunk whose LAYOUT changed between the donors' RenderWare and
+        # San Andreas', not just its version stamp: 3.3 writes a bone count with no used-bone list
+        # and pads every inverse-bind matrix to 68 bytes, 3.6 writes numBones/numUsedBones/
+        # maxWeightsPerVertex, the used-bone list, and 64-byte matrices. Passing one through with
+        # only the header restamped therefore produces a 3.3 body wearing a 3.6 label - which is
+        # what this function did, silently, until the models carrying one were taken out of this
+        # path entirely (see `dff_has_skin` and its caller).
+        #
+        # So it is dropped here rather than copied, and that is not a loss in either caller: a
+        # model with a skin is kept out of the region archive altogether, and convert_peds.py runs
+        # its geometry through this same code and then writes its own rebuilt skin over the top
+        # (`replace_skin`, which appends when there is nothing to replace). What the drop buys is
+        # that no route through this file can put a 3.3 skin in a San Andreas model again.
+        if kind == RW_SKIN:
+            continue
         if kind == RW_MATFX and ce - cs > 4:
             body.append(rw_chunk(kind, convert_matfx(data, cs, ce)))
         else:
             body.append(rw_chunk(kind, data[cs:ce]))
     return rw_chunk(RW_EXTENSION, b"".join(body))
+
+
+def dff_has_skin(data):
+    """Does this clump carry a skin plugin (0x116) anywhere inside it?
+
+    Walked rather than parsed, because the point is to decide whether the model belongs in this
+    path at all before anything tries to read it. Measured over the retail archives: 275 of Vice
+    City's 6043 entries and 18 of GTA III's 3856, and in both cases those are exactly the models
+    tools/convert_peds.py exists for plus the cutscene cast - Vice City's 107 `peds` models, its
+    168 `hier` ones, and GTA III's 18 cutscene heads. None of the 168 and 18 is referenced by any
+    section this importer emits.
+    """
+    def walk(at, end):
+        while at + 12 <= end:
+            kind, size, _lib = struct.unpack_from("<III", data, at)
+            body, tail = at + 12, at + 12 + size
+            if tail > end:
+                return False
+            if kind == RW_SKIN:
+                return True
+            if kind in RW_CONTAINERS and walk(body, tail):
+                return True
+            at = tail
+        return False
+
+    return len(data) >= 12 and walk(0, len(data))
 
 
 def convert_texture(data, s, e):
@@ -4217,6 +4259,7 @@ def main():
     failed_txds = []
     failed_dffs = []
     dropped_dups = []
+    skinned_out = []
 
     def blobs():
         """(index, name, bytes) for every source entry, in the order `sources` names them."""
@@ -4264,6 +4307,25 @@ def main():
                 part[1].extend(chunks)
                 part[2] += 1
         elif ext == ".dff":
+            # A skinned model does not belong in this archive, and until this check it was in it
+            # and wrong. convert_extension only restamps a plugin's header, and the skin plugin's
+            # LAYOUT differs between the donors' RenderWare and San Andreas' - so every one of
+            # these went in as a 3.3 body wearing a 3.6 label. Measured on the already-imported
+            # vicecity.img: v_wmyst, v_bfyst and v_hmyst hold a chunk whose length only adds up as
+            # 3.3's 68-byte bone stride with no used-bone list.
+            #
+            # It was harmless only because CityLoader skipped `peds` sections. It stops being
+            # harmless the moment it does not, because tools/convert_peds.py writes its correctly
+            # converted model under the SAME namespaced name into peds.img, and
+            # CStreaming::LoadCdDirectory keeps the FIRST archive entry it binds to a name
+            # (0x5B6449) - so which of the two a pedestrian streamed from would come down to
+            # archive registration order.
+            #
+            # The models this drops are the donor's pedestrians, which peds.img carries instead,
+            # and its cutscene cast, which lives in `hier` sections nothing here emits.
+            if dff_has_skin(blob):
+                skinned_out.append(name)
+                continue
             key = renamed(name)
             dff_refs[key.lower().rsplit(".", 1)[0]] = dff_texture_names(blob)
             dffs += 1
@@ -4426,6 +4488,12 @@ def main():
         if dff_merged:
             print("meshes: %d geometry/geometries had identical materials merged, so the D3D "
                   "pipeline instances one mesh per material instead of one per face" % dff_merged)
+        if skinned_out:
+            print("skinned models: %d .dff left out of the archive - this path only restamps a "
+                  "skin plugin's header and its layout differs between RenderWare 3.3 and 3.6, so "
+                  "a model with one has to come from tools/convert_peds.py (%s%s)"
+                  % (len(skinned_out), ", ".join(sorted(skinned_out)[:6]),
+                     ", ..." if len(skinned_out) > 6 else ""))
     if dropped_dups:
         print("dropped %d later cop%s of a .dff name the archive already carries (the source game "
               "binds only the first): %s" % (len(dropped_dups), "y" if len(dropped_dups) == 1 else "ies",
@@ -4846,6 +4914,19 @@ def main():
                   "Names        = %snames.txt" % base]
         if object_dat:
             lines.append("ObjectData   = %s%s" % (base, object_dat))
+        # The region's own pedestrians, written by tools/convert_peds.py rather than by this
+        # script - run it after this and it puts its models into the archive above and writes the
+        # peds.ide named here. A ped IDE is listed apart from the map ones because a `peds` line
+        # becomes a different model info out of a different store, and because the donor's ped ids
+        # start at 0 and so do GTA III's buildings, so the two need id maps of their own;
+        # src/core/Settings.h says the rest. Written whether or not convert_peds.py has been run:
+        # until it is, the loader logs one line naming the missing file and the region keeps San
+        # Andreas' own peds.
+        lines += ["PedIde       = %speds.ide" % base,
+                  "; PedImg is only needed when convert_peds.py could not merge into the archive",
+                  "; above and wrote a peds.img of its own. San Andreas has room for eight",
+                  "; archives in all and two imported cities already take it to seven.",
+                  "; PedImg     = %speds.img" % base]
         # One box per interior, measured off the placements rather than written by hand - see
         # interior_boxes. Emitted with the area and a count so the file says what it is looking at.
         boxes = interior_boxes(inst_areas)

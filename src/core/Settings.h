@@ -31,6 +31,20 @@ struct MapRegion {
     // The region's own map assets, all in the region's coordinate system.
     std::vector<std::string> imgFiles;  // IMG archives registered with the streamer
     std::vector<std::string> ideFiles;  // IDE files; model ids are remapped into the free range
+
+    // The region's pedestrians, written by tools/convert_peds.py rather than by the map import,
+    // and kept apart from the two lists above for three reasons that are all load-bearing:
+    //
+    //   * a `peds` line becomes a CPedModelInfo out of a different store, with a budget of its own;
+    //   * the donor's ped model ids start at 0 and so do GTA III's buildings, so a ped IDE needs an
+    //     id map of its own or a ped and a building would be handed the same San Andreas id;
+    //   * the map archive still carries the donor's own ped .dff files under the same namespaced
+    //     names, with a skin plugin in the donor's layout that San Andreas cannot use, and
+    //     CStreaming::LoadCdDirectory keeps the FIRST archive entry it binds to a name (0x5B6449).
+    //     So the ped archive has to be registered before the map archive, which is an ordering the
+    //     code can guarantee and a single comma-separated list cannot.
+    std::vector<std::string> pedImgFiles;
+    std::vector<std::string> pedIdeFiles;
     std::vector<std::string> iplFiles;  // IPL files to load with the origin added to every coordinate
     std::vector<std::string> colFiles;  // .col archives loaded into permanent collision slots
     std::string objectDataFile;         // SA-format object.dat: which of the region's models are

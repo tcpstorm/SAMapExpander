@@ -111,7 +111,7 @@ needs a hole in the collision to be found first. Leave it off for normal play.
 | `WorldOriginX/Y` | SA world position of the region's local (0,0) |
 | `WorldOriginZ` | height added to everything the region loads (water levels, zone boxes, IPL and inst coordinates) when the map was placed higher or lower than in its own game; default 0 |
 | `WorldMinX/MaxX/MinY/MaxY` | alternative to the origin: extent in SA space; the origin becomes its centre |
-| `Img`, `Ide`, `Ipl`, `Col` | the region's own map assets — see *Loading a city's own assets* |
+| `Img`, `Ide`, `Ipl`, `Col`, `PedIde` | the region's own map assets and its pedestrians — see *Loading a city's own assets* |
 | `Interior<N>` | `area, minX, minY, minZ, maxX, maxY, maxZ [, name]` — one box, in the region's own coordinates, that puts the player in that interior; see *Interiors* |
 | `Weapons` | the source game's guns, added as weapon types of their own alongside San Andreas' (or written over them, under `RegionWeaponMode = Replace`). Ignored under SA-MP. |
 | `Pickups` | the world pickups the source game's main script leaves around its map, in the region's own coordinates. Ignored under SA-MP. |
@@ -190,11 +190,18 @@ source game's `gta_vc.dat`/`gta3.dat` for the file order and writes `MapExpander
 
 - `<region>.img` — every `.dff`/`.txd` from the source `gta3.img`, repacked as an SA *VER2* archive
   (SA cannot read the III/VC *v1* `.img`+`.dir` pair, so never point `Img=` at the original).
+  Skinned models are the one exception and are left out: only `tools/convert_peds.py` can rewrite a
+  skin plugin, whose layout — not just its version stamp — differs between RenderWare 3.3 and 3.6.
 - `col\` — every `.col` from the archive plus the `.dat`'s `COLFILE` entries, as loose files.
 - `ide\`, `ipl\` — the files the `.dat` lists, copied in its order.
 - `tiles\radarNN.png` — decoded from the radar TXDs (DXT1/3, paletted and raw rasters).
 - `american.gxt`, `waterpro.dat`, `navig.zon`, `info.zon`.
 - `region.ini` — the `[region]` keys to paste, with `Ide`/`Ipl` in `.dat` order.
+
+Then run `tools/convert_peds.py` against the same two directories. It converts the donor game's
+own pedestrians onto San Andreas' skeleton, merges them into `<region>.img`, writes `peds.ide` and
+`peds.txt`, and points `pedgrp.dat`'s `DONOR/SAMODEL` pairs at the imported names — 105 models for
+Vice City and 78 for Liberty City. `docs/donor-peds.md` is the whole story.
 
 **Names.** San Andreas keeps no asset names - only a CRC32 of each (`CKeyGen`) - so a region's
 model or dictionary whose name matches one of SA's would silently lose to SA's copy, and two of a
@@ -224,7 +231,10 @@ Col = MapExpander\vicecity\col\*.col
 
 The models themselves must be RenderWare clumps San Andreas can read; Vice City geometry generally
 loads, and anything the game refuses shows up as a missing model, not as a crash. There are 8 archive
-slots in total and SA uses 3, so up to 5 region archives can be added.
+slots in total, and San Andreas has spent **5** of them by the time a region is registered — `gta3`,
+`gta_int`, and `carrec`, `script` and `cutscene` from `gta.dat` — with `player.img` still to come. So
+there is room for two region archives and no more, which is why a region's pedestrians go into its
+own archive rather than one of their own. The log names the slot each archive got.
 
 **What the plugin does with them.** Region archives are registered just before SA scans archive
 directories; the IDE files are then fed through the game's own parser with every model id rewritten
@@ -242,12 +252,21 @@ session and does not depend on the collision quad tree, which cannot address any
 **The ID limit.** Vanilla SA leaves model ids 18631–19999 free — 1369 for all regions together — and
 its 14000-entry *atomic model-info store* is almost full, so on its own only a few dozen models fit.
 `ModelIdLimit` (default 25000) adds 5000 ids and grows that store to match, which is enough for a
-Vice City. `tobj` (time-of-day) and `anim` models still have no room: SA fills those stores exactly,
-so a city's night-lit variants are dropped and logged. The plugin never overruns a store: it stops
-and writes to `MapExpander.log` how many models were dropped and which limit ran out.
+Vice City. The `tobj` (time-of-day) and ped stores are grown alongside it, because SA fills both to the
+brim — 169 of 169 and 276 of 278 — and neither adder checks its own count. The plugin never overruns
+a store: it stops and writes to `MapExpander.log` how many models were dropped and which limit ran
+out.
 
-**Under SA-MP** the region's `Img`/`Ide`/`Col` are ignored (the server places the city and owns the
-id space), so one INI serves single-player and multiplayer.
+**Pedestrians.** `PedIde` names the region's own people — `tools/convert_peds.py` converts the donor
+game's ped models to San Andreas' skeleton and merges them into the archive `Img` names. They are
+listed apart from `Ide` because a `peds` line becomes a `CPedModelInfo` out of a store San Andreas'
+own 276 peds all but fill, and because the donor's ped ids start at 0 and so do GTA III's buildings,
+so the two need id maps of their own. A `peds` section inside a *map* IDE is still ignored: those
+columns are never namespaced, so they name San Andreas' own peds. `docs/donor-peds.md` has the whole
+of it, including what each failure looks like in the log.
+
+**Under SA-MP** the region's `Img`/`Ide`/`Col`/`PedIde` are ignored (the server places the city and
+owns the id space), so one INI serves single-player and multiplayer.
 
 **Listing files.** `Ide`, `Ipl`, `Col` (and `Zones`, `Gxt`) take comma lists; an entry like
 `MapExpander\vicecity\ide\*.ide` expands to every match in name order. Put files whose order matters

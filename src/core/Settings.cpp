@@ -543,6 +543,8 @@ namespace Settings {
             r.waterXOffset = s.GetFloat("WaterXOffset", 0.0f);
             r.imgFiles = SplitPaths(s.GetString("Img", ""));
             r.ideFiles = SplitPaths(s.GetString("Ide", ""));
+            r.pedImgFiles = SplitPaths(s.GetString("PedImg", ""));
+            r.pedIdeFiles = SplitPaths(s.GetString("PedIde", ""));
             r.colFiles = SplitPaths(s.GetString("Col", ""));
             r.namesFile = s.GetString("Names", "");
             if (!r.namesFile.empty()) r.namesFile = ResolveGamePath(r.namesFile);

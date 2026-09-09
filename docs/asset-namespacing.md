@@ -233,9 +233,24 @@ archive filtering (8) is not yet.*
   248 Vice City TXD names are referenced only by sections the loader skips, and compete for global
   slots for nothing.
 
+  This is why a `peds` section in a map IDE is *still* skipped now that a region's pedestrians do
+  load: its model column names the donor's own `wmyst`, which is San Andreas' name for a ped of its
+  own. A region's peds come from `tools/convert_peds.py`'s `peds.ide`, whose names carry the tag,
+  under the region's own `PedIde` key. See `docs/donor-peds.md`.
+
+- **A skinned model cannot be carried by this path at all**, which is a stronger statement than a
+  naming one and was found while making peds load. `convert_extension` restamps a plugin's header,
+  and the skin plugin's *layout* differs between RenderWare 3.3 and San Andreas' 3.6 — so 275 of
+  Vice City's 6043 entries and 18 of GTA III's 3856 were packed as a 3.3 body under a 3.6 label.
+  Those models are now left out of the map archive entirely and come from `convert_peds.py`
+  instead. The 168 Vice City and 18 GTA III cutscene models among them are referenced by nothing
+  the importer emits.
+
 - The five duplicate `.dff` names in Vice City's `gta3.dir` (`chef`, `Pga`, `Pgb`, `camera`,
   `veg_fern_balcny_kb2`) have **no visible effect today** — all are in `peds`/`weap` sections the
-  loader skips, or are placed zero times. The risk is structural rather than live.
+  loader skips or that no longer reach this archive, or are placed zero times. The risk is
+  structural rather than live. (`Pga` and `Pgb` are why Vice City's 107 ped archive entries are 105
+  distinct model names.)
 
 ## What this does not address
 
