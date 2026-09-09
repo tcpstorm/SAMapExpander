@@ -105,6 +105,7 @@ struct WorldSettings {
     int extendWaterRendering;        // 0 off, 1 full, 2 only hide SA's ocean in coverage, 3 only draw region quads
     int modelIdLimit;                // number of DFF ids; 20000 leaves the game alone
     int freeModelIdStart, freeModelIdEnd;  // inclusive range of model ids region IDEs may claim; end < 0 = up to the model id limit
+    int freeModelIdGapStart;               // floor of the gaps below that range, drawn on once it runs out; < 0 = never
     int atomicModelInfoLimit;              // CModelInfo::ms_atomicModelInfoStore capacity; < 0 = ask ModelLimits
     int colModelPoolLimit;                 // CPools::ms_pColModelPool capacity; < 0 = vanilla + what the regions need
     int txdPoolLimit;                      // CTxdStore's dictionary pool; < 0 = vanilla + the regions' dictionary names

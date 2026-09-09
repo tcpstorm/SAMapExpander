@@ -10,8 +10,10 @@
 // they are reallocated and the 1407 instructions that name them or a shifted base are rewritten;
 // tools/model_limit_sites.txt is that inventory and tools/scan_model_limit_sites.py rebuilds it.
 //
-// The ceiling is 26400 models: the streaming lists link entries through int16 indices, so the
-// total entry count has to stay under 32768.
+// The ceiling is 26452 models, and it is a ceiling on the whole id space rather than on the models:
+// the streaming lists follow int16 indices into ms_aInfoForModel, so there can be at most 32768
+// entries, and 6316 of them are the ranges above the DFF one. See kMaxModelCount below for the
+// three instructions that fix it and what going past them would take.
 //
 // Nothing is written unless every single site still holds the value the table expects, so another
 // mod that moved one of these arrays first leaves the game vanilla instead of half-patched. Under
@@ -37,7 +39,28 @@ namespace {
 
 constexpr int kVanillaModelCount = 20000;
 constexpr int kVanillaTotal = 26316;
-constexpr int kMaxModelCount = 26400;
+
+// The ceiling, and it is not a number anybody chose. Every entry in CStreaming::ms_aInfoForModel
+// carries three int16 links into that same array - m_nNextIndex at +0, m_nPrevIndex at +2 and
+// m_nNextIndexOnCd at +4 - and three instructions read one back SIGN-EXTENDED before using it as
+// an index: 0x408B22 and 0x408B3E in CStreaming::RemoveFromList (`movsx eax, word [edi + info+0]`,
+// then `lea edx, [eax + eax*4]` and `[ecx + edx*4]`, which is entry eax of the array) and 0x40CEDB
+// in CStreaming::RequestModelStream. So the largest index the game can follow is 32767, and the
+// number of ENTRIES is what has to stay inside it - not the number of models.
+//
+// That is the part it is easy to get wrong. The DFF range is only the bottom of one flat id space:
+// TXD, COL, IPL, DAT, IFP, RRR and SCM all sit above it and every one of them is an entry in the
+// same array, 6316 of them plus the four list-head sentinels. So the DFF ceiling is 32768 - 6316 =
+// 26452, and at the 26400 this ships with there are FIFTY-TWO ids left in San Andreas' whole
+// resource id space. There is no headroom between 26400 and 32767 to go and get; the space between
+// those two numbers is already full of texture dictionaries and collision files.
+//
+// Going past it means making those three reads unsigned, and that is a larger job than flipping
+// 0F BF to 0F B7: -1 is the sentinel these fields carry when an entry is not in a list, and the
+// tests that recognise it (`cmp esi, -1` on a sign-extended 32-bit register) would each have to
+// become a 16-bit test. See docs/region-limits.md for what that would buy and what it would cost.
+constexpr int kMaxTotal = 32768;
+constexpr int kMaxModelCount = kMaxTotal - (kVanillaTotal - kVanillaModelCount);   // 26452
 
 constexpr uintptr_t kInfoArray = 0x8E4CC0;     // CStreaming::ms_aInfoForModel[26316]
 constexpr unsigned kInfoElem = 0x14;
@@ -296,8 +319,10 @@ void Install() {
         return;
     }
     if (wanted > kMaxModelCount) {
-        Log::Write("ModelIdLimit %d clamped to %d (the streaming lists index entries with int16)",
-                   wanted, kMaxModelCount);
+        Log::Write("ModelIdLimit %d clamped to %d: the streaming lists follow int16 indices into "
+                   "ms_aInfoForModel, so the whole id space has to fit in %d entries, and %d of "
+                   "them are the TXD, COL, IPL, DAT, IFP, RRR and SCM ranges above the models",
+                   wanted, kMaxModelCount, kMaxTotal, kVanillaTotal - kVanillaModelCount);
         wanted = kMaxModelCount;
     }
     if (Settings::RunningUnderSaMp()) {
