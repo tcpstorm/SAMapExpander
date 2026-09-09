@@ -54,6 +54,7 @@
 #include <unordered_map>
 #include <vector>
 #include "RegionTraffic.h"
+#include "PathDraw.h"
 #include "Ground.h"
 #include "VehicleSpawn.h"
 #include "Settings.h"
@@ -1028,6 +1029,154 @@ void Install() {
                "many that is right now), at most %d",
                (unsigned)Regions().size(), Settings::world.regionTrafficRadius,
                Settings::world.regionTrafficDensity, kMaxCars);
+}
+
+// ------------------------------------------------------------------ the debug overlay
+//
+// Drawn from NodeWorld() and LanePoint() and from nothing else, which is the whole point: see the
+// note in RegionTraffic.h. Called once a frame from PathDraw's hook on RenderEffects, and only
+// while [World] Debug=1 and the layer is switched on.
+
+// A link's length said out loud in colour, because the length of a link is the quantity every
+// arrival test is measured against and the one currently under suspicion. kArrivedFloor is the
+// smallest distance that ever counts as "arrived", so a link shorter than it is a link the car
+// finishes the instant it is aimed down it; kMinLegLength is the shortest leg the advance walk
+// will settle for. A street drawn red or orange is a street where a car will spend every frame
+// arriving rather than driving.
+constexpr unsigned kLinkTooShort = 0xFF3020FFu;   // red    - shorter than kArrivedFloor
+constexpr unsigned kLinkShort    = 0xFF9020FFu;   // orange - shorter than kArrivedDistance
+constexpr unsigned kLinkTight    = 0xFFE040FFu;   // yellow - shorter than kMinLegLength
+constexpr unsigned kLinkNormal   = 0x40E060FFu;   // green
+constexpr unsigned kNodeMark     = 0xFFFFFFC0u;   // the node itself
+constexpr unsigned kLaneStub     = 0x40C0FFB0u;   // node -> the lane point a car is aimed at
+constexpr unsigned kLaneStubOut  = 0x2070C090u;   // the same for the outermost lane
+
+constexpr unsigned kGroundOn     = 0x40FF80FFu;   // node sits on the surface probed under it
+constexpr unsigned kGroundOff    = 0xFF40FFFFu;   // it does not
+constexpr unsigned kGroundNone   = 0xFF0000FFu;   // there is no surface under it at all
+
+constexpr unsigned kCarMark      = 0xFFFFFFFFu;   // where the car is
+constexpr unsigned kAimLine      = 0xFFFF00FFu;   // car -> where the GAME says it is steering
+constexpr unsigned kLegFrom      = 0x006080FFu;   // the link it believes it is on, at the far end
+constexpr unsigned kLegTo        = 0x00E0FFFFu;   // ...and at the end it is driving towards
+constexpr unsigned kArriveBox    = 0xFF8000FFu;   // how near counts as having got there
+constexpr unsigned kLaneOffset   = 0x8060FFFFu;   // node -> the lane point offset from it
+
+constexpr float kProbeRadius = 45.0f;   // ground probes are raycasts; keep them near the camera
+constexpr int   kMaxProbes = 40;
+constexpr float kDriverLift = 0.6f;     // lift a driver's own lines clear of the graph underneath
+
+unsigned LinkColour(float length) {
+    if (length < kArrivedFloor) return kLinkTooShort;
+    if (length < kArrivedDistance) return kLinkShort;
+    if (length < kMinLegLength) return kLinkTight;
+    return kLinkNormal;
+}
+
+void DrawGraph(const CVector& eye, float radius, bool groundProbes) {
+    const float r2 = radius * radius;
+    for (const RegionState& rs : Regions()) {
+        if (!PlayerOver(rs, eye, radius)) continue;
+        std::vector<int> nearby;
+        NodesNear(rs, eye, radius, nearby);
+        int probes = 0;
+        for (int i : nearby) {
+            if (!PathDraw::Budget()) return;
+            const CVector a = NodeWorld(rs, i);
+            const Node& n = rs.nodes[i];
+            PathDraw::Cross(a, 0.6f, kNodeMark);
+
+            for (int k = 0; k < n.linkCount; k++) {
+                if (!PathDraw::Budget()) return;
+                const int j = rs.links[n.firstLink + k];
+                const CVector b = NodeWorld(rs, j);
+                // Each link once. When both ends are in range the lower index owns it; when only
+                // this end is, this end owns it - so a road leaving the culled circle still shows,
+                // which is what tells "the graph stops here" from "the drawing stops here".
+                const float bx = b.x - eye.x, by = b.y - eye.y;
+                const bool bothIn = (bx * bx + by * by) <= r2;
+                if (!bothIn || j > i) {
+                    const float dx = b.x - a.x, dy = b.y - a.y;
+                    PathDraw::Line(a, b, LinkColour(sqrtf(dx * dx + dy * dy)));
+                }
+                // The lane point this node would give a car that arrives here and carries on to
+                // j - i.e. an actual destination the driver can be handed, drawn as a stub from
+                // the node it is offset from. Which side of the road these land on, and how far
+                // out, is the entire lane question, and it is answered here by the same call
+                // SetDestination makes.
+                PathDraw::Line(a, LanePoint(rs, i, j, 0), kLaneStub);
+                if (n.lanes > 1)
+                    PathDraw::Line(a, LanePoint(rs, i, j, n.lanes - 1), kLaneStubOut);
+            }
+
+            if (!groundProbes || probes >= kMaxProbes) continue;
+            const float px = a.x - eye.x, py = a.y - eye.y;
+            if (px * px + py * py > kProbeRadius * kProbeRadius) continue;
+            probes++;
+            // The same question the spawner asks before it puts a car on this node, drawn where it
+            // was asked. A node floating above its road, or buried under it, has been guessed at
+            // twice in this project from log lines alone; this is the picture of it.
+            float ground = 0.0f;
+            if (Ground::Under(a.x, a.y, a.z, ground)) {
+                const unsigned c = fabsf(ground - a.z) <= 1.0f ? kGroundOn : kGroundOff;
+                PathDraw::Line(a, CVector(a.x, a.y, ground), c);
+                PathDraw::Line(CVector(a.x - 1.5f, a.y, ground), CVector(a.x + 1.5f, a.y, ground), c);
+                PathDraw::Line(CVector(a.x, a.y - 1.5f, ground), CVector(a.x, a.y + 1.5f, ground), c);
+            } else {
+                // No surface within Ground's search at all. A car will never be put here.
+                PathDraw::Line(a, CVector(a.x, a.y, a.z - 6.0f), kGroundNone);
+            }
+        }
+    }
+}
+
+void DrawDrivers(const CVector& eye, float radius) {
+    const float r2 = radius * radius;
+    for (const RegionState& rs : Regions()) {
+        for (const Driver& d : rs.drivers) {
+            if (!PathDraw::Budget()) return;
+            // Resolve, not CPools::GetVehicle - the same rule the tick follows, so the overlay can
+            // never draw a car that is no longer ours.
+            CVehicle* car = VehicleSpawn::Resolve(d.ref, d.model);
+            if (!car) continue;
+            const CVector p = car->GetPosition();
+            const float dx = p.x - eye.x, dy = p.y - eye.y;
+            if (dx * dx + dy * dy > r2) continue;
+
+            // Where the GAME says it is steering: the autopilot destination, read from the same
+            // bytes the once-a-second traffic log line reads. Not what this module last asked for
+            // - what the vehicle currently holds - so the two can disagree on screen.
+            const float* dest = (const float*)((const char*)car + kAutoPilotDestination);
+            const CVector target(dest[0], dest[1], dest[2]);
+
+            const CVector from = NodeWorld(rs, d.from), to = NodeWorld(rs, d.to);
+            // The leg it believes it is on, lifted clear of the graph line underneath so the two
+            // are distinguishable where they coincide. Dark at the end behind it, bright at the
+            // end it is driving towards.
+            PathDraw::Line(CVector(from.x, from.y, from.z + kDriverLift),
+                           CVector(to.x, to.y, to.z + kDriverLift), kLegFrom, kLegTo);
+            // The lane offset, drawn as itself: node -> the point the module aims at from it.
+            PathDraw::Line(to, LanePoint(rs, d.to, NextNode(rs, d.from, d.to), d.lane), kLaneOffset);
+
+            // How near the node counts as arriving. ManageDrivers measures this to the NODE, not
+            // to the lane point, so the box is drawn round the node. When the box reaches the next
+            // node along, the car finishes this leg the moment it starts it.
+            const float ar = ArriveRadius(rs, d);
+            const CVector c0(to.x - ar, to.y - ar, to.z), c1(to.x + ar, to.y - ar, to.z);
+            const CVector c2(to.x + ar, to.y + ar, to.z), c3(to.x - ar, to.y + ar, to.z);
+            PathDraw::Line(c0, c1, kArriveBox);
+            PathDraw::Line(c1, c2, kArriveBox);
+            PathDraw::Line(c2, c3, kArriveBox);
+            PathDraw::Line(c3, c0, kArriveBox);
+
+            // The car, and the line to what it is steering for. This is the one that settles it:
+            // if this line lies along the leg above, the route and the targeting are right and the
+            // fault is in how the car is driven.
+            PathDraw::Cross(p, 1.5f, kCarMark);
+            PathDraw::Line(p, target, kAimLine);
+            PathDraw::Cross(target, 1.0f, kAimLine);
+        }
+    }
 }
 
 }   // namespace RegionTraffic

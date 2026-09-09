@@ -76,6 +76,7 @@
 #include <string>
 #include <vector>
 #include "RegionParkedCars.h"
+#include "PathDraw.h"
 #include "Ground.h"
 #include "VehicleSpawn.h"
 #include "Settings.h"
@@ -671,6 +672,48 @@ void Install() {
         Log::Write("parked cars: ... but they are driven from the region pedestrian tick, and that "
                    "is not running (%s), so no car will actually be placed",
                    Settings::world.regionPeds ? "no region has a PedNodes graph" : "RegionPeds=0");
+}
+
+// ------------------------------------------------------------------ the debug overlay
+//
+// A bay is a point and a heading, so it draws as an arrow: tail at the bay, tip the way the source
+// game's script pointed the car. Two heights are drawn, not one - the height the file claims and
+// the height Ground::Under actually finds - because the difference between them is where every
+// parked car in this project has ever gone wrong, and a bay whose line is a metre long is telling
+// you the .dat and the collision disagree by a metre.
+constexpr unsigned kBayArmed   = 0x40A0FFFFu;   // armed and empty: a car could stand here
+constexpr unsigned kBayFilled  = 0x40FF80FFu;   // one is standing here now
+constexpr unsigned kBayIdle    = 0x8080806Fu;   // emptied by the player, or waiting to re-arm
+constexpr unsigned kBayDrop    = 0xFFC000FFu;   // claimed height -> probed ground
+constexpr unsigned kBayNoFloor = 0xFF0000FFu;   // nothing under it: no car will ever be placed
+
+void DrawBays(const CVector& eye, float radius) {
+    const float r2 = radius * radius;
+    for (const RegionState& rs : Regions()) {
+        for (const Bay& b : rs.bays) {
+            if (!PathDraw::Budget()) return;
+            const CVector at = BayWorld(rs, b);
+            const float dx = at.x - eye.x, dy = at.y - eye.y;
+            if (dx * dx + dy * dy > r2) continue;
+
+            // Where a car would actually be made, which is not the height on the line: a bay
+            // carrying the -100 sentinel has no claimed height at all.
+            CVector floor;
+            const bool hasFloor = BaySpawnPoint(rs, b, floor);
+            if (!hasFloor) {
+                const CVector top(at.x, at.y, rs.region->originZ + 2.0f);
+                PathDraw::Line(top, CVector(at.x, at.y, rs.region->originZ - 6.0f), kBayNoFloor);
+                continue;
+            }
+
+            const unsigned c = b.ref >= 0 ? kBayFilled : (BayIsArmed(b) ? kBayArmed : kBayIdle);
+            PathDraw::Arrow(floor, b.heading, 3.5f, c);
+            // The disagreement between the file and the collision, drawn as itself. A sentinel bay
+            // has no claimed height, so there is nothing to compare and nothing is drawn.
+            if (b.z > kGroundZ && fabsf(at.z - floor.z) > 0.25f)
+                PathDraw::Line(at, floor, kBayDrop);
+        }
+    }
 }
 
 }   // namespace RegionParkedCars

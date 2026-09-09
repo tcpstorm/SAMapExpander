@@ -27,4 +27,10 @@ namespace RegionPeds {
     // allocation fails it carries on with a null pointer and faults - so everything that calls it
     // has to ask first. The police module calls it too.
     bool SafeToAddPed();
+
+    // ---- the debug overlay (drawn by src/debug/PathDraw.cpp). Same rule as the traffic's: drawn
+    // from this module's own NodeWorld(), because pednodes.dat is a different file with a
+    // different derivation and the only useful comparison is between two graphs that each drew
+    // themselves. `eye` is the camera; culled to `radius`.
+    void DrawGraph(const CVector& eye, float radius);
 }

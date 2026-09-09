@@ -15,6 +15,7 @@
 #include "MapWindow.h"
 #include "DebugKeys.h"
 #include "Teleport.h"
+#include "PathDraw.h"
 #include "Watchdog.h"
 #include "TxdProbe.h"
 #include "RenderGuard.h"
@@ -94,6 +95,9 @@ public:
         IplLoader::Install();
         DebugKeys::Install();
         Teleport::Install();
+        // After the region modules, which is where its graphs come from, and after DebugKeys so
+        // the two key read-outs land next to each other in the log.
+        PathDraw::Install();
         Watchdog::Install();
         TxdProbe::Install();
         RenderGuard::Install();

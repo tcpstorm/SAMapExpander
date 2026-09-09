@@ -23,4 +23,10 @@ namespace RegionParkedCars {
     // radius right now - which is what tells an empty street apart from a street with no bays.
     int Budget();
     int ArmedNear(const CVector& playerPosition);
+
+    // ---- the debug overlay (drawn by src/debug/PathDraw.cpp). Drawn from this module's own
+    // BayWorld() and BaySpawnPoint(), so what is on screen is where a car would actually go -
+    // including the drop from the height the file claims to the height the ground probe finds.
+    // `eye` is the camera; culled to `radius`.
+    void DrawBays(const CVector& eye, float radius);
 }
