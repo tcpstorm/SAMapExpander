@@ -573,9 +573,10 @@ void FillBays(RegionState& rs, const CVector& player) {
         }
         int model = ChooseModel(rs, b);
         if (model < 0) { t.noModel++; return; }   // nothing of ours in memory yet; try next tick
-        if (CreateParkedCar(rs, b, model)) { t.placed++; return; }   // one a tick, like the rest
-        t.madeNothing++;
-        return;
+        // CreateParkedCar counts its own failures, for the reason written in the traffic's
+        // SpawnSome: inferring which one from a bool added two different ones together.
+        if (CreateParkedCar(rs, b, model)) t.placed++;
+        return;   // one a tick, like everything else here
     }
 }
 

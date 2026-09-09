@@ -542,6 +542,46 @@ no units. It became a bug the moment the tally was asked to record *how far away
 158-unit cull answers the question by itself. **A counter that records a decision should record the
 quantity the decision was made on.**
 
+### 9e. Settled, so that nobody re-opens it: there is one surface, not two
+
+`ground under the player: 1 surface(s) from 300.8 down: 3.65 (the player's own z is 0.85)`.
+
+**One surface.** Two rounds of work went into a theory that an imported city's streets sit about
+twenty units above the graph the spawners use, and there is no such second deck. The file evidence
+said so first — every ped and car node against the IPL props within fifteen units of it is a median
+disagreement of 1.3 units, 75th percentile 3.4, maximum 21.5 across 237 samples — and the in-game
+enumeration says so too. The readings that started the theory were the player being somewhere other
+than on the ground: once under the map in a jetpack, and once, in the same log line above, standing
+2.8 units *below* the only surface there is.
+
+### 9f. Two of the numbers we reasoned from were artefacts of how we measured
+
+Worth writing down as a rule, because it happened twice in one day and cost most of it.
+
+- **`CWorld::FindGroundZForCoord` returns 20.0 when it fails** (§9), so "the ground here is 20" and
+  "there is no ground here" were the same answer, and peds were placed in mid-air on the strength
+  of it.
+- **A `CVector` passed by value never reaches the game** (§9c), so every position we asked for was
+  a position the game never saw — while the log faithfully printed the one we meant.
+
+Both times the code was reasoned about from a number that was not measuring what it appeared to.
+The habit that follows: **before believing a tally, check the path each input came in by.** For this
+module that audit is now done and is worth keeping current —
+
+| input | how it arrives | sound? |
+|---|---|---|
+| a ped's or a vehicle's position | `CPlaceable::GetPosition()`, returns `CVector&` | yes — every distance measured with it is real |
+| a pool handle | `GetPedRef`/`GetPed` (0x54FF60/0x54FF90) and `GetVehicleRef`/`GetVehicle` (0x54FFC0/0x54FFF0) | yes — both are matched `(index << 8) | reuse byte` pairs, and the getter checks the byte |
+| "is it in shot" | `TheCamera::IsSphereVisible(CVector const&, float)` | yes — by reference |
+| a ped's placement | `CPopulation::AddPed(..., CVector const&, ...)` | yes — by reference, which is why the pedestrians always worked |
+| a vehicle's placement | `CCarCtrl::CreateCarForScript(int, CVector, uchar)` | **no** — by value; fixed in §9c |
+| the ground | `CWorld::FindGroundZForCoord` | **no** — fabricates 20.0; fixed in §9 |
+
+And one about the instrument itself: a run reported `32 no ground under the lane` and `32 refused
+for landing somewhere else` — the same 32 events, counted twice, because the caller inferred *which*
+failure had happened from a `bool` return that could mean either. **A counter must be incremented
+where the decision is made**, not where the result is read.
+
 ### 10. A spawn band that nearly touches its own cull band empties itself
 
 The traffic reported, every second for a whole session, `3 placed … 0 driving … 3 taken away`. Cars
