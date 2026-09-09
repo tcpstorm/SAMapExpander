@@ -2643,18 +2643,23 @@ PATH_SCALE = 16.0
 PATH_NODE_UNUSED, PATH_NODE_EXTERNAL, PATH_NODE_INTERNAL = 0, 1, 2
 PATH_GROUP_SLOTS = 12
 
-# Vice City's IPL path groups are headed "type, id": 0 is a vehicle path, 1 a pedestrian path and
-# 2 a boat path. Established from the data rather than assumed - across Vice City's IPLs type 0 has
-# 9514 nodes spread over the road heights, type 1 has 4588 with the lane-width column always zero,
-# and type 2 has 630 all sitting at z 6.0, which is its sea level.
-VC_PATH_CAR, VC_PATH_PED, VC_PATH_BOAT = 0, 1, 2
+# Vice City's IPL path groups are headed "type, id": 0 is a PEDESTRIAN path, 1 a vehicle path and
+# 2 a boat path. That is what the game's own loader does - CFileLoader::LoadScene sends type 0 to
+# LoadPedPathNode, 1 to LoadCarPathNode and 2 to LoadCarPathNode with the water flag - and San
+# Andreas' leftover paths*.ipl, written in the same format, agree: matched against its binary
+# NODES*.DAT, type 0 lands only on ped nodes and types 1 and 2 only on vehicle nodes, and the
+# pedestrian-crossing flag is set on type 0 alone. An earlier reading had 0 and 1 the other way
+# round, which put the cars on the pavements and the peds in the road; the "9514 type-0 nodes to
+# 4588 type-1" count that looked inverted was the pavement outnumbering the road, as it should.
+VC_PATH_PED, VC_PATH_CAR, VC_PATH_BOAT = 0, 1, 2
 # GTA III says it in words instead, in the group header's first column.
 III_PATH_KIND = {"car": VC_PATH_CAR, "ped": VC_PATH_PED}
 
 # Columns after the three coordinates. Both games write the first nine columns the same way -
 # type, next, crossing, x, y, z, median, left lanes, right lanes - and Vice City adds three more
-# that GTA III has no equivalent of. The median is in the same sixteenths as the coordinates:
-# GTA III writes 160 for every car node, which is 10 units, and Vice City varies it.
+# that GTA III has no equivalent of. GTA III writes 160 in the median column and its loader throws
+# it away; Vice City's car nodes carry the full width of the central reservation in metres there
+# (its loader stores 8 * min(width, 15)), and its ped nodes the width of the pavement.
 PATH_COL_CROSSING, PATH_COL_MEDIAN, PATH_COL_LEFT, PATH_COL_RIGHT = 2, 6, 7, 8
 
 # How close two external nodes have to be before they are taken to be the same point. The two games
