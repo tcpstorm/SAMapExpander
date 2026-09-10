@@ -129,6 +129,10 @@ constexpr int kTaskPrimaryDefault = 4;   // ePrimaryTasks::TASK_PRIMARY_DEFAULT
 constexpr unsigned char kPedCreatedByGame = 1;
 // How long a new walker is safe from CPopulation::ManagePed's off-screen removal; see CreateWalker.
 constexpr unsigned kGraceMs = 15000;
+// How many of a district's not-yet-loaded ped models to nudge toward memory per ChooseModel call,
+// so a street fills out its variety over a few seconds instead of repeating one face. Small so no
+// single frame spikes the streamer; the models are held only while peds stand in them.
+constexpr int kDistrictStreamAhead = 4;
 
 // The pedestrian graph, as pednodes.dat writes it. Links are held in one flat array because a
 // vector per node for several thousand nodes is a great deal of allocation for two or three
@@ -365,28 +369,36 @@ int ChooseModel(RegionState& rs, int node) {
     ResolveGroup(rs, g);
     if (g.ids.empty()) return -1;
 
+    // Gather every one of this district's people that is in memory and pick at random, so a
+    // district shows the crowd it has rather than the first face in the list - which, when only
+    // one model was resident, was the whole street wearing it, drivers included. At the same time
+    // nudge a few not-yet-loaded models toward memory (a small budget per call so no one frame
+    // spikes the streamer); over a few seconds the district fills out its variety. Everything
+    // asked for is handed back the moment it loads (StreamedModels), so this holds only what the
+    // peds and drivers standing in it protect by use - the current district's crowd, and nothing
+    // once the player leaves it.
+    int loaded[32];
+    int nLoaded = 0;
+    int wantLeft = kDistrictStreamAhead;
     int start = rand() % (int)g.ids.size();
-    int firstWanted = -1;
     for (size_t i = 0; i < g.ids.size(); i++) {
         int id = g.ids[(start + i) % g.ids.size()];
         if (id < 0) continue;
-        if (firstWanted < 0) firstWanted = id;
         if (ModelLimits::ModelIsLoaded(id)) {
-            Log::Debug("[%s] peds: %s in %s takes model %d from group %d (%s)",
-                       rs.region->name.c_str(), IsDaytime() ? "daytime" : "night",
-                       zone >= 0 && zone < (int)rs.zones.size() ? rs.zones[zone].name.c_str()
-                                                               : "nowhere in particular",
-                       id, groupIndex, g.name.c_str());
-            return id;
+            if (nLoaded < 32) loaded[nLoaded++] = id;
+        } else if (wantLeft > 0) {
+            StreamedModels::Want(id);
+            wantLeft--;
         }
     }
-    // Nobody from this district is in memory. Ask for one and come back later - through
-    // StreamedModels, which hands it back to the streamer the moment it has loaded. Asking with
-    // GAME_REQUIRED and leaving it at that is what this used to do, and it kept every model any
-    // district ever wanted resident for the session: read the top of StreamedModels.cpp before
-    // changing this back.
-    StreamedModels::Want(firstWanted);
-    return -1;
+    if (nLoaded == 0) return -1;   // nothing of this district loaded yet; the Want()s above will fix that
+    int id = loaded[rand() % nLoaded];
+    Log::Debug("[%s] peds: %s in %s takes model %d from group %d (%s), %d of it loaded",
+               rs.region->name.c_str(), IsDaytime() ? "daytime" : "night",
+               zone >= 0 && zone < (int)rs.zones.size() ? rs.zones[zone].name.c_str()
+                                                       : "nowhere in particular",
+               id, groupIndex, g.name.c_str(), nLoaded);
+    return id;
 }
 
 // ------------------------------------------------------------------ the graph
