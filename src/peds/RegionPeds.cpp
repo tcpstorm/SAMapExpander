@@ -46,6 +46,9 @@
 #include <CPopulation.h>
 #include <CPools.h>
 #include <CPedModelInfo.h>
+#include <CAnimManager.h>
+#include <CAnimBlendAssocGroup.h>
+#include <CAnimBlock.h>
 #include <CModelInfo.h>
 #include <CStreaming.h>
 #include <CClock.h>
@@ -357,6 +360,30 @@ void ResolveGroup(RegionState& rs, Group& g) {
 // A model from the group this node's district asks for, streamed in and ready to use. Returns -1
 // when nothing of the group is in memory yet, having asked the streamer for one; the next tick
 // tries again, which is how the game itself waits for a ped model.
+// Whether a ped model's animations are actually in memory, so creating a ped of it will not fault.
+//
+// A donor ped carries an animation group in its .ide (CPedModelInfo::m_nAnimType, +0x24), and the
+// group indexes CAnimManager::ms_aAnimAssocGroups. Nearly all of them - man, woman, the gangs -
+// live in the always-loaded "ped" block, but a few (skate) name a block San Andreas streams only
+// when it wants a ped of that kind itself. Create a ped whose group's associations have not been
+// built and CAnimBlendAssocGroup::CopyAnimation walks a null association array and faults in
+// Animation::CopyAnimation (0x4CE15C) - which is the crash a varied crowd started hitting once it
+// began using those models. So a model is not offered until its group is ready; nothing requests
+// the block here, so a skater simply does not appear until the game has the block loaded, which is
+// far better than taking the process down.
+bool AnimReady(int model) {
+    CBaseModelInfo* mi = CModelInfo::GetModelInfo(model);
+    if (!mi) return false;
+    int animType = *(const int*)((const char*)mi + 0x24);   // CPedModelInfo::m_nAnimType
+    if (animType < 0 || animType >= 1000) return true;      // no sane group id - do not block on it
+    CAnimBlendAssocGroup* groups = CAnimManager::ms_aAnimAssocGroups;
+    if (!groups) return true;
+    const CAnimBlendAssocGroup& g = groups[animType];
+    if (!g.m_pAssociations) return false;                   // associations never built = not loaded
+    if (g.m_pAnimBlock && !g.m_pAnimBlock->bLoaded) return false;
+    return true;
+}
+
 int ChooseModel(RegionState& rs, int node) {
     int groupIndex = 0;
     int zone = rs.nodes[node].zone;
@@ -384,9 +411,9 @@ int ChooseModel(RegionState& rs, int node) {
     for (size_t i = 0; i < g.ids.size(); i++) {
         int id = g.ids[(start + i) % g.ids.size()];
         if (id < 0) continue;
-        if (ModelLimits::ModelIsLoaded(id)) {
+        if (ModelLimits::ModelIsLoaded(id) && AnimReady(id)) {
             if (nLoaded < 32) loaded[nLoaded++] = id;
-        } else if (wantLeft > 0) {
+        } else if (!ModelLimits::ModelIsLoaded(id) && wantLeft > 0) {
             StreamedModels::Want(id);
             wantLeft--;
         }
