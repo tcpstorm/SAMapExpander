@@ -828,6 +828,30 @@ CPed* Spawn(int modelId, const CVector& at, bool wander) {
     return CreateWalker(*rs, node, modelId, wander);
 }
 
+// A donor pedestrian to sit behind the wheel of a traffic car, created at `at`. Picks the model
+// the way the walking crowd does - the district the nearest pavement node belongs to - so the
+// person driving through a neighbourhood is one of the people who live in it. Returns null when
+// no district model is in memory yet (having asked the streamer for one, as ChooseModel does) or
+// when there is no ped graph here; the caller falls back to San Andreas' own driver until one is
+// loaded. NOT added to the walker list: a driver is the car's to keep and to remove.
+CPed* MakeDriverPed(const CVector& at) {
+    RegionState* rs = RegionUnder(at);
+    if (!rs) return nullptr;
+    int node = NearestNode(*rs, at, kGridCell * 2.0f);
+    if (node < 0) return nullptr;
+    int model = ChooseModel(*rs, node);
+    if (model < 0) return nullptr;
+    if (!SafeToAddPed()) return nullptr;
+    CBaseModelInfo* info = CModelInfo::GetModelInfo(model);
+    if (!info) return nullptr;
+    int pedType = SafePedType((int)reinterpret_cast<CPedModelInfo*>(info)->m_nPedType);
+    CPed* ped = CPopulation::AddPed((ePedType)pedType, (unsigned)model, at, false);
+    if (!ped) return nullptr;
+    ped->SetCharCreatedBy(kPedCreatedByGame);
+    ped->m_nTimeTillWeNeedThisPed = CTimer::m_snTimeInMilliseconds + kGraceMs;
+    return ped;
+}
+
 int Count() {
     int n = 0;
     for (const RegionState& rs : Regions()) n += (int)rs.walkers.size();

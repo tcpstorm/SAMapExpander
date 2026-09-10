@@ -20,6 +20,12 @@ namespace RegionPeds {
     // and is forgotten when the game removes it. Returns null if the model is not in memory yet.
     CPed* Spawn(int modelId, const CVector& at, bool wander);
 
+    // A donor pedestrian created at `at` to drive a traffic car, chosen from the district the
+    // nearest pavement node belongs to; null when no district model is loaded yet or there is no
+    // ped graph here. The traffic module seats it with CCarEnterExit::SetPedInCarDirect and owns
+    // its life through the car; RegionPeds does not track it.
+    CPed* MakeDriverPed(const CVector& at);
+
     // How many peds this module currently has walking, for the log and the F8 read-out.
     int Count();
 
