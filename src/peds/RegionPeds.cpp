@@ -580,9 +580,14 @@ bool SettleOnGround(const CVector& at, CVector& out, float* datumError) {
     if (!Ground::Under(out.x, out.y, out.z, ground)) return false;
     if (datumError) *datumError = ground - out.z;
     if (fabsf(ground - out.z) > kDatumSlack) out.z = ground;
-    // Now the ped-shaped placement, against a height that is known to be real.
-    float z = CPedPlacement::FindZCoorForPed(&out);
-    if (z > -200.0f && z < 2000.0f) out.z = z;
+    // Now the ped-shaped placement, against a height that is known to be real. CPedPlacement::
+    // FindZCoorForPed (0x616920) writes the ped height into the vector it is given and returns a
+    // BOOL - whether it found a floor - in al. Reading that bool as a float gives 1.0, which is in
+    // range and clobbers the good z with a metre above sea level: the whole crowd goes under the
+    // map. So the call takes a copy, the bool gates it, and only the WRITTEN height is used.
+    CVector probe = out;
+    if (CPedPlacement::FindZCoorForPed(&probe) && probe.z > -200.0f && probe.z < 2000.0f)
+        out.z = probe.z;
     return true;
 }
 
