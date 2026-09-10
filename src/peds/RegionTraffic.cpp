@@ -45,6 +45,7 @@
 #include <CTimer.h>
 #include <CWorld.h>
 #include <CModelInfo.h>
+#include <CCarEnterExit.h>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -57,6 +58,7 @@
 #include "PathDraw.h"
 #include "Ground.h"
 #include "VehicleSpawn.h"
+#include "RegionPeds.h"
 #include "Settings.h"
 #include "Log.h"
 
@@ -619,7 +621,12 @@ CVehicle* CreateCar(RegionState& rs, int from, int to, int lane, int model) {
     // Face along the road rather than along whatever axis the constructor left it on.
     CVector b = NodeWorld(rs, to);
     car->SetHeading(atan2f(-(b.x - at.x), b.y - at.y));
-    CPopulation::AddPedInCar(car, true, -1, 0, true, false);
+    // The driver is one of the imported city's own people when a district model is in memory,
+    // seated the way the game seats its own occupants; until one has streamed in, San Andreas'
+    // own driver stands in, so a car is never driverless.
+    CPed* driver = RegionPeds::MakeDriverPed(at);
+    if (driver) CCarEnterExit::SetPedInCarDirect(driver, car, 0, true);
+    else        CPopulation::AddPedInCar(car, true, -1, 0, true, false);
     rs.drivers.push_back(Driver{ CPools::GetVehicleRef(car), model, from, to, -1, lane, CVector() });
     SetDestination(car, rs, rs.drivers.back());
     return car;
