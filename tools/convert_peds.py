@@ -1031,13 +1031,21 @@ def sa_anim_groups(sa_dir):
 # consulted for a name animgrp.dat does not hold, and on the retail files that is `player` alone.
 ANIM_GROUP_FALLBACK = {"player": "man", "casual": "man", "cop": "man", "shopping": "busywoman"}
 
+# Animation groups whose animations live in a block San Andreas STREAMS on demand rather than the
+# always-loaded "ped" block. animgrp.dat's second column names the block, and every group a donor
+# ped uses sits in "ped" except these. A region ped can be spawned anywhere at any time without the
+# game having decided to load that block, and CPed::SetModelIndex then faults building the ped -
+# CAnimBlendAssocGroup::CopyAnimation walks a null association array (crash at 0x4CE15C). So these
+# are never written out; the ped falls back to a "ped"-block group by gender instead.
+STREAMED_ANIM_BLOCKS = {"skate"}
+
 
 def sa_anim_group(donor_group, declared):
     g = (donor_group or "").strip().lower()
-    if g in declared and g != "player":
+    if g in declared and g != "player" and g not in STREAMED_ANIM_BLOCKS:
         return g
     hit = ANIM_GROUP_FALLBACK.get(g)
-    if hit and hit in declared:
+    if hit and hit in declared and hit not in STREAMED_ANIM_BLOCKS:
         return hit
     return "woman" if "wom" in g else "man"
 
