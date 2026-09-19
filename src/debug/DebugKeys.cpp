@@ -103,7 +103,102 @@ static void GiveRegionWeapons() {
     char msg[128];
     snprintf(msg, sizeof(msg), "MapExpander: %d imported weapon(s), 500 rounds each", given);
     CMessages::AddMessageJumpQ(msg, 4000, 0, false);
-    Log::Write("F9: %d imported weapon(s) given", given);
+    Log::Write("F9: %d imported weapon(s) given, %d refused for having no model", given, refused);
+}
+
+// F10, with [World] Debug=1: put the vehicle named by [World] DebugSpawnVehicle down six units in
+// front of the player. It exists so an imported car can be looked at on demand rather than waited
+// for in traffic. The model is streamed in first, the same way F9 streams a weapon's, and the car
+// is handed to the game as an ordinary random car so it is cleaned up like any other.
+static void SpawnDebugVehicle() {
+    CPlayerPed* player = FindPlayerPed();
+    if (!player) return;
+    const std::string& name = Settings::world.debugSpawnVehicle;
+    char msg[160];
+    int model = -1;
+    CBaseModelInfo* info = name.empty() ? nullptr : CModelInfo::GetModelInfo((char*)name.c_str(), &model);
+    if (!info || model < 0) {
+        snprintf(msg, sizeof(msg), "MapExpander: no model called %s", name.c_str());
+        CMessages::AddMessageJumpQ(msg, 4000, 0, false);
+        Log::Write("F10: no model is registered under the name \"%s\"", name.c_str());
+        return;
+    }
+    if (!VehicleSpawn::Ready()) {
+        CMessages::AddMessageJumpQ((char*)"MapExpander: vehicle creation is owned by another mod", 4000, 0, false);
+        Log::Write("F10: VehicleSpawn is not ready, so nothing is created");
+        return;
+    }
+    if (!VehicleSpawn::ModelIsLoaded(model)) {
+        CallRequestModel(model, 0x16);
+        CallLoadAllRequestedModels(false);
+    }
+    if (!VehicleSpawn::ModelIsLoaded(model) || !VehicleSpawn::ModelCanBeBuilt(model)) {
+        snprintf(msg, sizeof(msg), "MapExpander: %s (model %d) cannot be built - see log", name.c_str(), model);
+        CMessages::AddMessageJumpQ(msg, 4000, 0, false);
+        Log::Write("F10: %s is model %d, loaded=%d, buildable=%d - not spawning it", name.c_str(),
+                   model, VehicleSpawn::ModelIsLoaded(model) ? 1 : 0, VehicleSpawn::ModelCanBeBuilt(model) ? 1 : 0);
+        return;
+    }
+    if (!VehicleSpawn::PoolHasRoom(4)) {
+        CMessages::AddMessageJumpQ((char*)"MapExpander: the vehicle pool is full", 4000, 0, false);
+        Log::Write("F10: the vehicle pool has no room");
+        return;
+    }
+    CVector pos = player->GetPosition();
+    CVector forward(0.0f, 1.0f, 0.0f);
+    if (player->m_matrix) forward = player->m_matrix->up;
+    CVector at(pos.x + forward.x * 6.0f, pos.y + forward.y * 6.0f, pos.z + 0.5f);
+    CVehicle* car = VehicleSpawn::Create(model, at, false);
+    if (!car) {
+        snprintf(msg, sizeof(msg), "MapExpander: the game refused to create %s", name.c_str());
+        CMessages::AddMessageJumpQ(msg, 4000, 0, false);
+        Log::Write("F10: CreateCarForScript returned nothing for %s (model %d)", name.c_str(), model);
+        return;
+    }
+    VehicleSpawn::HandBackToTheGame(car);
+    snprintf(msg, sizeof(msg), "MapExpander: %s (model %d)", name.c_str(), model);
+    CMessages::AddMessageJumpQ(msg, 4000, 0, false);
+    Log::Write("F10: created %s (model %d) at SA (%.1f, %.1f, %.1f)", name.c_str(), model, at.x, at.y, at.z);
+}
+
+static bool gMissionKeyWasDown = false;
+static bool gMissionEndKeyWasDown = false;
+static size_t gNextMissionIndex = 0;
+
+// F11, with [World] Debug=1: start the next loaded mission (cycling through every one
+// MissionEngine::Install() found), so a mission can be tried without standing at its own
+// payphone - see docs/missions.md, "nothing places a ringing payphone marker yet". F12 ends
+// whatever is running early, the way walking away from a real mission does.
+static void CycleMission() {
+    const std::vector<std::string>& ids = MissionEngine::LoadedIds();
+    if (ids.empty()) {
+        CMessages::AddMessageJumpQ((char*)"MapExpander: no missions loaded", 4000, 0, false);
+        Log::Write("F11: no missions loaded - see docs/missions.md for how to deploy tools/"
+                   "import_missions.py's output and point a region's [region] Missions= at it");
+        return;
+    }
+    // While one is running, F11 reports it rather than failing to start the next: "could not
+    // start that mission" was every tester's first sight of a mission that was in fact running.
+    if (MissionEngine::Running()) {
+        std::string state;
+        MissionEngine::Describe(state);
+        Log::Write("F11: %s", state.c_str());
+        char msg[200];
+        snprintf(msg, sizeof(msg), "MapExpander: %.190s", state.c_str());
+        for (char* c = msg; *c; c++) if (*c == '\n') *c = ' ';
+        CMessages::AddMessageJumpQ(msg, 6000, 0, false);
+        return;
+    }
+    const std::string& id = ids[gNextMissionIndex % ids.size()];
+    gNextMissionIndex++;
+    if (MissionEngine::StartMission(id)) {
+        char msg[128];
+        snprintf(msg, sizeof(msg), "MapExpander: starting mission %s", id.c_str());
+        CMessages::AddMessageJumpQ(msg, 4000, 0, false);
+    } else {
+        CMessages::AddMessageJumpQ((char*)"MapExpander: could not start that mission (see log)",
+                                   4000, 0, false);
+    }
 }
 
 static void OnFrame() {

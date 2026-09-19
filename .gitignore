@@ -5,3 +5,4 @@ game/
 *.exe
 __pycache__/
 .claude/
+CLAUDE.local.md
