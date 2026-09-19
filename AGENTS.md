@@ -17,3 +17,4 @@ peds, vehicles, weapons and missions.
   to the plugin; docs-only changes leave it alone.
 - Never add attribution trailers, tool advertisements, or generated-by
   notes to commits, pull requests, or code.
+- Always work in branches/worktrees. Never commit straight to main.
