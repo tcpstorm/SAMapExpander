@@ -5,6 +5,7 @@
 // is what has to cover the frame instead.
 #include <plugin.h>
 #include <CMenuManager.h>
+#include <CRadar.h>
 #include <safetyhook.hpp>
 #include <cmath>
 #include "MenuMapFix.h"
@@ -92,6 +93,62 @@ static float __cdecl Hooked_LimitRadarPoint(CVector2D* point) {
     return gLimitRadarPointHook.ccall<float>(point);
 }
 
+// CRadar::ClipRadarPoly(out, in) clips a 4-point radar-space poly to the +/-1 square, and
+// CRadar::DrawAreaOnRadar -- what draws a gang zone (SA-MP's zones go through it too) -- runs
+// every rect through it. Opening the map page re-inits the radar (CMenuManager, 0x57517C) to
+// origin (0, 0) and range 2990, so on the pause map that square is exactly the vanilla map: a
+// zone in a region beyond it has all four corners outside one edge and clips away to nothing,
+// which is why the same zone still shows on the HUD radar, where the origin follows the player.
+// The map screen position is that same radar point scaled by m_fMapZoom, so the space has to
+// stay as it is -- only the clip box may grow. It grows to the extent's radius rather than its
+// box because DrawAreaOnRadar rotates radar space by the radar's cos/sin first.
+static SafetyHookInline gClipRadarPolyHook;
+
+static int ClipToBox(CVector2D* out, const CVector2D* in, int count, int axis, float limit, bool keepBelow) {
+    int n = 0;
+    for (int i = 0; i < count && n < 14; i++) {
+        const CVector2D& a = in[i];
+        const CVector2D& b = in[(i + 1) % count];
+        float av = axis == 0 ? a.x : a.y;
+        float bv = axis == 0 ? b.x : b.y;
+        bool aIn = keepBelow ? av <= limit : av >= limit;
+        bool bIn = keepBelow ? bv <= limit : bv >= limit;
+        if (aIn) out[n++] = a;
+        if (aIn != bIn) {
+            float t = (limit - av) / (bv - av);
+            out[n].x = a.x + (b.x - a.x) * t;
+            out[n].y = a.y + (b.y - a.y) * t;
+            n++;
+        }
+    }
+    return n;
+}
+
+static int __cdecl Hooked_ClipRadarPoly(CVector2D* out, CVector2D* in) {
+    RadarOverlay::EnsureInstalled();
+    const CMenuManager& menu = FrontEndMenuManager;
+    float range = CRadar::m_radarRange;
+    if (!menu.m_bMenuActive || menu.m_nCurrentMenuPage != MENUPAGE_MAP || range <= 0.0f)
+        return gClipRadarPolyHook.ccall<int>(out, in);
+
+    float minX, maxX, minY, maxY;
+    Settings::WorldExtent(minX, maxX, minY, maxY);
+    const CVector2D& origin = CRadar::vec2DRadarOrigin;
+    float dx = std::fmax(std::fabs(minX - origin.x), std::fabs(maxX - origin.x));
+    float dy = std::fmax(std::fabs(minY - origin.y), std::fabs(maxY - origin.y));
+    float limit = std::sqrt(dx * dx + dy * dy) / range;
+    if (limit < 1.0f) limit = 1.0f;
+
+    CVector2D a[16], b[16];
+    int n = ClipToBox(a, in, 4, 0, limit, true);
+    n = ClipToBox(b, a, n, 0, -limit, false);
+    n = ClipToBox(a, b, n, 1, limit, true);
+    n = ClipToBox(b, a, n, 1, -limit, false);
+    if (n > 8) n = 8;
+    for (int i = 0; i < n; i++) out[i] = b[i];
+    return n;
+}
+
 // AdditionalOptionInput+0x1451..+0x14A4 clamps the cursor's world position to +/-3000 with one
 // register per bound shared by both axes. Disable those compares and clamp to the extent ourselves.
 static SafetyHookMid gCursorClampHook;
@@ -136,6 +193,8 @@ namespace MenuMapFix {
                                                     reinterpret_cast<void*>(&Hooked_LimitToMap));
         gLimitRadarPointHook = safetyhook::create_inline(reinterpret_cast<void*>(0x5832F0),
                                                          reinterpret_cast<void*>(&Hooked_LimitRadarPoint));
+        gClipRadarPolyHook = safetyhook::create_inline(reinterpret_cast<void*>(0x585040),
+                                                      reinterpret_cast<void*>(&Hooked_ClipRadarPoly));
 
         float minX, maxX, minY, maxY;
         Settings::WorldExtent(minX, maxX, minY, maxY);
