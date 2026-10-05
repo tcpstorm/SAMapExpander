@@ -1,7 +1,17 @@
 // CPickup and CCarGenerator store positions as int16 * 1/8 (range +/-4095.9). The game inlines
 // the conversion everywhere via two shared constants (8.0 at 0x859000, 0.125 at 0x858C48), so we
 // point each of those sites at our own scale instead, trading precision for range.
+//
+// The conversion itself is `(int16)(x * scale)`, through the CRT's _ftol, which truncates toward
+// zero. So a pickup never sits where it was asked to put but up to one step nearer the origin on
+// each axis - 0.125 at the vanilla scale, which nobody noticed, 0.25 at the default 4, which puts
+// a pickup visibly beside the 3D text label somebody placed on the same float coordinates. The
+// two functions that compress a position - CPickups::GenerateNewOne and CPickup::SetPosn - are
+// therefore wrapped and each coordinate pushed half a step away from zero on its way in, which
+// turns the truncation into rounding to nearest and halves the worst case to what vanilla had.
 #include <plugin.h>
+#include <safetyhook.hpp>
+#include <cmath>
 #include <cstdint>
 #include "PickupFix.h"
 #include "MemPatch.h"
@@ -58,11 +68,32 @@ static int Retarget(const uintptr_t (&sites)[N], uint32_t expectedOld, const flo
     return patched;
 }
 
+static float gHalfStep = 0.0625f;
+
+static float Nudge(float v) {
+    return v + std::copysign(gHalfStep, v);
+}
+
+static SafetyHookInline& GenerateNewOneOriginal() { static SafetyHookInline h; return h; }
+static SafetyHookInline& SetPosnOriginal() { static SafetyHookInline h; return h; }
+
+static int __cdecl GenerateNewOneHook(float x, float y, float z, unsigned int modelIndex,
+                                      unsigned char type, unsigned int ammo, unsigned int moneyPerDay,
+                                      bool minigame, const char* message) {
+    return GenerateNewOneOriginal().ccall<int>(Nudge(x), Nudge(y), Nudge(z), modelIndex, type, ammo,
+                                               moneyPerDay, minigame, message);
+}
+
+static void __fastcall SetPosnHook(void* self, void*, float x, float y, float z) {
+    SetPosnOriginal().thiscall<void>(self, Nudge(x), Nudge(y), Nudge(z));
+}
+
 namespace PickupFix {
     void Install() {
         float scale = Settings::world.compressedPositionScale;
         gCompress = scale;
         gDecompress = 1.0f / scale;
+        gHalfStep = 0.5f / scale;
 
         if (Settings::world.fixPickupPositions) {
             int n = Retarget(PICKUP_DECOMPRESS_SITES, ORIGINAL_DECOMPRESS, &gDecompress)
@@ -70,6 +101,16 @@ namespace PickupFix {
             Log::Write("pickup positions: scale %.3g (range +/-%.0f, step %.3g), %d/%u sites patched",
                        scale, 32767.0f / scale, 1.0f / scale, n,
                        (unsigned)(sizeof(PICKUP_DECOMPRESS_SITES) / sizeof(uintptr_t) + sizeof(PICKUP_COMPRESS_SITES) / sizeof(uintptr_t)));
+
+            GenerateNewOneOriginal() = safetyhook::create_inline(reinterpret_cast<void*>(0x456F20),
+                                                                reinterpret_cast<void*>(&GenerateNewOneHook));
+            SetPosnOriginal() = safetyhook::create_inline(reinterpret_cast<void*>(0x454960),
+                                                         reinterpret_cast<void*>(&SetPosnHook));
+            if (GenerateNewOneOriginal() && SetPosnOriginal())
+                Log::Write("pickup positions: rounded to the nearest step rather than truncated");
+            else
+                Log::Write("pickup positions: the rounding hooks could not be placed; a pickup may sit "
+                           "up to %.3g nearer the origin than asked", 1.0f / scale);
         }
         if (Settings::world.fixCarGeneratorPositions) {
             int n = Retarget(CARGEN_DECOMPRESS_SITES, ORIGINAL_DECOMPRESS, &gDecompress)
