@@ -89,6 +89,7 @@ struct MapRegion {
     std::string carNodeFile;             // importer's carnodes.dat: the source game's carriageways
     std::string parkedCarFile;           // importer's parkedcars.dat: where its own script parked a car
     std::string restartFile;             // importer's restarts.dat: the city's own hospitals and police stations
+    std::string missionsPath;
 
     // Interior<N> lines from this region's ini section, in the region's own coordinates. Several
     // may name the same area: an interior split over rooms that are not one box (Vercetti's house
@@ -132,6 +133,8 @@ struct WorldSettings {
     bool regionPickups;                    // place the world pickups a region's pickups.dat lists
     bool fallRecovery;                     // a player who falls out of a region is put back on that region's own ground, not on San Andreas' path graph
     bool regionRestarts;                   // dying or being arrested inside a region wakes the player at that region's own hospital or police station
+    bool regionMissions;
+    std::string debugSpawnVehicle;
     int pickupReserve;                     // CPickup slots left for San Andreas' own script, of its 620
     bool regionPeds;                       // walk pedestrians on a region's own pednodes.dat graph
     float regionPedDensity;                // multiplier on how many of them, 1.0 being San Andreas' own
