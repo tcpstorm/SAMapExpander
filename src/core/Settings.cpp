@@ -19,6 +19,15 @@ namespace Settings {
     static std::string ResolveGamePath(const std::string& relative) {
         if (relative.size() > 1 && (relative[1] == ':' || relative[0] == '\\' || relative[0] == '/'))
             return relative;
+        std::string besidePlugin = PLUGIN_PATH(relative.c_str());
+        std::string probe = besidePlugin;
+        if (probe.find_first_of("*?") != std::string::npos)
+        {
+            size_t slash = probe.find_last_of("\\/");
+            probe = slash == std::string::npos ? std::string() : probe.substr(0, slash);
+        }
+        if (!probe.empty() && GetFileAttributesA(probe.c_str()) != INVALID_FILE_ATTRIBUTES)
+            return besidePlugin;
         return GAME_PATH(relative.c_str());
     }
 
