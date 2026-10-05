@@ -27,6 +27,8 @@
 #include "Interiors.h"
 #include "FallRecovery.h"
 #include "RegionRestarts.h"
+#include "VehicleSpawn.h"
+#include "MissionEngine.h"
 #include "Gxt.h"
 #include "Watchdog.h"
 #include "Log.h"
@@ -78,22 +80,28 @@ static void GiveRegionWeapons() {
     // texture in the model's own dictionary and that dictionary comes with the model.
     const int imported = RegionWeapons::ImportedCount();
     int wanted = 0;
-    for (int i = 0; i < imported; i++) {
+    int refused = 0;
+    for (int i = 0; i < imported; i++)
+    {
         const int type = RegionWeapons::ImportedType(i);
         if (type < 0) continue;
         const int model = RegionWeapons::WeaponModel(type);
-        if (model <= 0) continue;
-        CallRequestModel(model, 0x16);   // the flags CPickups uses for a weapon it is about to show
+        if (model <= 0)
+        {
+            refused++;
+            continue;
+        }
+        CallRequestModel(model, 0x16);
         wanted++;
     }
     if (wanted) CallLoadAllRequestedModels(false);
 
     int given = 0;
-    for (int i = 0; i < imported; i++) {
+    for (int i = 0; i < imported; i++)
+    {
         const int type = RegionWeapons::ImportedType(i);
-        // A type this never handed out has no record of its own and would arrive as whatever the
-        // slot happened to hold, so only the ones with a donor - the ones actually claimed - count.
         if (type < 0) continue;
+        if (RegionWeapons::WeaponModel(type) <= 0) continue;
         CallGiveWeapon(player, type, 500, false);
         Log::Write("F9: gave weapon type %d (behaving as %d), model %d", type,
                    WeaponTypes::DonorOf(type), RegionWeapons::WeaponModel(type));
@@ -132,11 +140,12 @@ static void SpawnDebugVehicle() {
         CallRequestModel(model, 0x16);
         CallLoadAllRequestedModels(false);
     }
-    if (!VehicleSpawn::ModelIsLoaded(model) || !VehicleSpawn::ModelCanBeBuilt(model)) {
+    if (!VehicleSpawn::ModelIsLoaded(model))
+    {
         snprintf(msg, sizeof(msg), "MapExpander: %s (model %d) cannot be built - see log", name.c_str(), model);
         CMessages::AddMessageJumpQ(msg, 4000, 0, false);
-        Log::Write("F10: %s is model %d, loaded=%d, buildable=%d - not spawning it", name.c_str(),
-                   model, VehicleSpawn::ModelIsLoaded(model) ? 1 : 0, VehicleSpawn::ModelCanBeBuilt(model) ? 1 : 0);
+        Log::Write("F10: %s is model %d, loaded=%d - not spawning it", name.c_str(),
+                   model, VehicleSpawn::ModelIsLoaded(model) ? 1 : 0);
         return;
     }
     if (!VehicleSpawn::PoolHasRoom(4)) {
