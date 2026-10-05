@@ -56,8 +56,8 @@ constexpr uintptr_t kZonesRevealed = 0xBA372C;
 // map's CPlaceName::GetForMap (0x571D90) uses the *player's* z for the hovered x/y, so a zone file's
 // ground-level band (Vice City: 0..300) would lose the name in the air or in interiors. Navigation
 // zones are ranked by x/y size alone, so the full altitude band costs nothing.
-constexpr float kZoneFloor = -2000.0f;
-constexpr float kZoneCeiling = 2000.0f;
+constexpr float kZoneFloor = -30000.0f;
+constexpr float kZoneCeiling = 30000.0f;
 
 constexpr int kVanillaNaviCapacity = 380;
 constexpr int kInfoCapacity = 380;           // CTheZones::ZoneInfoArray, not relocated
@@ -442,7 +442,7 @@ namespace Zones {
                 MakeKey(key, d.textLabel);
                 d.x1 = r.TileWest(0);        d.x2 = r.TileWest(r.tilesX);
                 d.y1 = r.TileNorth(r.tilesY); d.y2 = r.TileNorth(0);
-                d.z1 = -3000.0f;             d.z2 = 3000.0f;
+                d.z1 = kZoneFloor;           d.z2 = kZoneCeiling;
                 d.level = 0;
                 Defs().push_back(d);
                 NameMap()[std::string(d.textLabel, strnlen(d.textLabel, 8))] = r.regionName;
