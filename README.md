@@ -177,7 +177,7 @@ SA x 4171..6963, y −778..2626).
 | `RegionWeaponMode` | `Add` | `Add` gives the region's guns weapon types of their own and leaves San Andreas' forty-seven exactly as they were (ten new types is the hard limit); `Replace` writes them over the nearest San Andreas weapon, which changes that weapon for the whole game |
 | `RegionPickups` | 1 | master switch for every region's `Pickups` file. Skipped under SA-MP. |
 
-| `FallRecovery` | 1 | fall out of the world inside a region and you come back on that region's own ground rather than on San Andreas' path graph — and once you are over a region the answer always comes from that region, never from the mainland. Falls outside a region are left to the game. Skipped under SA-MP. |
+| `FallRecovery` | 1 | fall out of the world inside a region and you come back on that region's own ground rather than on San Andreas' path graph — and once you are over a region the answer always comes from that region, never from the mainland. Falls outside a region are left to the game. Under SA-MP the line tests also see server-placed objects, and the region's nearest restart point is the last resort. |
 | `RegionRestartPoints` | 1 | die or get arrested inside a region and you wake at that region’s own hospital or police station, mined from the donor’s `main.scm` into its `restarts.dat`. Answered by hooking the two `CRestart` searches: nothing is added to San Andreas’ restart arrays, so the savegame stays byte for byte what vanilla writes. Outside a region the game answers, untouched. Skipped under SA-MP. |
 
 | `PickupReserve` | 200 | how many free pickup slots to leave SA's own script once a region has taken what it wants. Counted into the enlarged array's size rather than deducted from SA's 620 |

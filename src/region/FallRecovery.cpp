@@ -124,6 +124,7 @@
 #include <CWorld.h>
 #include <CTimer.h>
 #include <CStreaming.h>
+#include <CColPoint.h>
 #include <CPlayerPed.h>
 #include <CVehicle.h>
 #include <CCutsceneMgr.h>
@@ -134,6 +135,7 @@
 #include <cstring>
 #include <string>
 #include "FallRecovery.h"
+#include "RegionRestarts.h"
 #include "Settings.h"
 #include "Log.h"
 
@@ -222,6 +224,8 @@ constexpr int kHoldAttempts = 8;
 // collision is not in memory can answer with anything.
 constexpr float kMaxBaseOffset = 5.0f;
 
+constexpr float kRestartLift = 2.0f;
+
 SafetyHookInline& PedsHook() { static SafetyHookInline h; return h; }
 SafetyHookInline& CarsHook() { static SafetyHookInline h; return h; }
 
@@ -259,6 +263,19 @@ const MapRegion* RegionAt(float x, float y, float margin) {
     return nullptr;
 }
 
+float GroundAt(float x, float y, float fromZ, bool& found)
+{
+    if (!Settings::RunningUnderSaMp())
+        return CWorld::FindGroundZFor3DCoord(x, y, fromZ, &found, nullptr);
+
+    CColPoint point;
+    CEntity* entity = nullptr;
+    CVector from(x, y, fromZ);
+    found = CWorld::ProcessVerticalLine(from, -1000.0f, point, entity,
+                                        true, false, false, true, false, false, nullptr);
+    return found ? point.m_vecPoint.z : 0.0f;
+}
+
 // The best ground under one ring, or false if nothing in it found any. "Best" is the highest hit:
 // the line is cast downward from just above where the player was, so the highest thing it meets is
 // the floor they were on rather than a basement or a tunnel below it.
@@ -270,7 +287,7 @@ bool ProbeRing(float x, float y, float fromZ, float radius, float& outX, float& 
         float px = x + radius * cosf(angle);
         float py = y + radius * sinf(angle);
         bool found = false;
-        float g = CWorld::FindGroundZFor3DCoord(px, py, fromZ, &found, nullptr);
+        float g = GroundAt(px, py, fromZ, found);
         // Ground below the floor would only put the player straight back into the fall.
         if (!found || g <= floor + 5.0f) continue;
         if (!any || g > outZ) { outX = px; outY = py; outZ = g; any = true; }
@@ -351,7 +368,7 @@ bool Recover(CEntity* mover, CPlayerPed* player, const MapRegion& r, bool isVehi
         } else if (SearchGround(fell.x, fell.y, r.originZ + kProbeHeight, firstRing, x, y, z,
                                 radius)) {
             how = "the ground below it, found from above";
-        } else if (!gForcedCollision) {
+        } else if (!gForcedCollision && !Settings::RunningUnderSaMp()) {
             // Nothing answered. Before believing there is nothing there, make sure the region's
             // collision really is in memory at this point - and say in the log whether that was the
             // difference, because it is the difference between a streaming problem and a hole.
@@ -386,7 +403,7 @@ bool Recover(CEntity* mover, CPlayerPed* player, const MapRegion& r, bool isVehi
         zIsGround = gSafe.zIsGround;
         if (zIsGround) {
             bool found = false;
-            float g = CWorld::FindGroundZFor3DCoord(x, y, z + kProbeLift, &found, nullptr);
+            float g = GroundAt(x, y, z + kProbeLift, found);
             if (found) z = g;
         }
         radius = sqrtf((x - fell.x) * (x - fell.x) + (y - fell.y) * (y - fell.y));
@@ -403,6 +420,13 @@ bool Recover(CEntity* mover, CPlayerPed* player, const MapRegion& r, bool isVehi
             radius = sqrtf((x - fell.x) * (x - fell.x) + (y - fell.y) * (y - fell.y));
             how = "the middle of the region, nothing at all having answered where you fell";
         }
+    }
+
+    if (!how && RegionRestarts::ClosestPoint(r, fell.x, fell.y, x, y, z))
+    {
+        z += kRestartLift;
+        radius = sqrtf((x - fell.x) * (x - fell.x) + (y - fell.y) * (y - fell.y));
+        how = "the region's nearest restart point";
     }
 
     if (!how) {
@@ -478,7 +502,7 @@ void Check() {
         // the collision - which is the whole point, because if the line test could always be
         // trusted there would be no fall to recover from in the first place.
         bool found = false;
-        float g = CWorld::FindGroundZFor3DCoord(pos.x, pos.y, pos.z + 2.0f, &found, nullptr);
+        float g = GroundAt(pos.x, pos.y, pos.z + 2.0f, found);
         if (found && pos.z - g <= kStandingClearance) {
             gSafe = { r, pos.x, pos.y, g, true };
         } else {
@@ -522,11 +546,6 @@ namespace FallRecovery {
 
 void Install() {
     if (Settings::regions.empty() || !Settings::world.fallRecovery) return;
-
-    if (Settings::RunningUnderSaMp()) {
-        Log::Write("SA-MP: the fall recovery is off, the server owns where the player is");
-        return;
-    }
 
     if (!BytesMatch(kRemoveFallenPeds, kPedsPrologue, sizeof(kPedsPrologue)) ||
         !BytesMatch(kRemoveFallenCars, kCarsPrologue, sizeof(kCarsPrologue))) {
