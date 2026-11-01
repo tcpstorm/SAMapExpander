@@ -113,9 +113,11 @@ SA x 4171..6963, y −778..2626).
 | `MapWindowMargin` | 400 | how far past a map's edge the player goes before the window follows |
 | `Gxt` | – | comma list of GXT files (III/VC/SA format) merged into the game's text table; ours win on a shared key |
 | `GxtLogMisses` | 0 | diagnostic: hook `CText::Get` to log keys nobody provides (conflicts with SA-MP's own hook; keep off) |
-| `ModelIdLimit` | 25000 | number of DFF model ids; 20000 turns it off, 26400 is the ceiling. Skipped under SA-MP. Savegames are not compatible across a change. |
+| `ModelIdLimit` | 25000 | number of DFF model ids; 20000 turns it off, **26452** is the ceiling and it is the size of the whole resource id space, not of the model range (`docs/region-limits.md`). Skipped under SA-MP. Savegames are not compatible across a change. |
 | `FreeModelIdStart`, `FreeModelIdEnd` | 18631, `ModelIdLimit`−1 | model ids region IDEs may claim |
-| `AtomicModelInfoLimit` | grows with `ModelIdLimit` (14000 stock) | capacity of SA's atomic model-info store; set only if another limit adjuster changed it |
+| `FreeModelIdGapStart` | 3000 | floor of the 3799 free ids San Andreas' own IDEs leave *below* that window, drawn on only once it runs out; `-1` never uses them |
+| `ArchiveSlotLimit` | 32 (the ceiling) | entries in `CStreaming::ms_files`; San Andreas ships 8 and spends 6 itself. Skipped under SA-MP. |
+| `AtomicModelInfoLimit` | one per model id with `ModelIdLimit` on (14000 stock) | capacity of SA's atomic model-info store; set only if another limit adjuster changed it |
 | `RegionWeapons` | 1 | master switch for every region's `Weapons` file. Skipped under SA-MP. |
 | `RegionWeaponMode` | `Add` | `Add` gives the region's guns weapon types of their own and leaves San Andreas' forty-seven exactly as they were (ten new types is the hard limit); `Replace` writes them over the nearest San Andreas weapon, which changes that weapon for the whole game |
 | `RegionPickups` | 1 | master switch for every region's `Pickups` file. Skipped under SA-MP. |
@@ -186,11 +188,12 @@ Col = MapExpander\vicecity\col\*.col
 ```
 
 The models themselves must be RenderWare clumps San Andreas can read; Vice City geometry generally
-loads, and anything the game refuses shows up as a missing model, not as a crash. There are 8 archive
-slots in total, and San Andreas has spent **5** of them by the time a region is registered — `gta3`,
-`gta_int`, and `carrec`, `script` and `cutscene` from `gta.dat` — with `player.img` still to come. So
-there is room for two region archives and no more, which is why a region's pedestrians go into its
-own archive rather than one of their own. The log names the slot each archive got.
+loads, and anything the game refuses shows up as a missing model, not as a crash. San Andreas ships
+**8** archive slots and has spent **5** of them by the time a region is registered — `gta3`,
+`gta_int`, and `carrec`, `script` and `cutscene` from `gta.dat` — with `player.img` still to come,
+which left room for two region archives and no more. `ArchiveSlotLimit` moves that table to **32**,
+which is where `CdStream`'s own file table stops, so there are 26. The log names the slot each
+archive got and how many are left.
 
 **What the plugin does with them.** Region archives are registered just before SA scans archive
 directories; the IDE files are then fed through the game's own parser with every model id rewritten
@@ -207,11 +210,16 @@ session and does not depend on the collision quad tree, which cannot address any
 
 **The ID limit.** Vanilla SA leaves model ids 18631–19999 free — 1369 for all regions together — and
 its 14000-entry *atomic model-info store* is almost full, so on its own only a few dozen models fit.
-`ModelIdLimit` (default 25000) adds 5000 ids and grows that store to match, which is enough for a
-Vice City. The `tobj` (time-of-day) and ped stores are grown alongside it, because SA fills both to the
-brim — 169 of 169 and 276 of 278 — and neither adder checks its own count. The plugin never overruns
-a store: it stops and writes to `MapExpander.log` how many models were dropped and which limit ran
-out.
+`ModelIdLimit` (default 25000) adds 5000 ids and gives that store one entry per id, which is enough
+for a Vice City; at 26400 there are 7769 ids in the window. Behind the window there are 3799 more:
+San Andreas' own IDEs stop at id 18630 and are not contiguous, so 5168 of the 20000 are declared by
+nothing at all, and `FreeModelIdGapStart` lets the allocator fall back on them once the window is
+spent — 11568 free ids in total, for no patching. The `tobj` (time-of-day) and ped stores are grown
+alongside, because SA fills both to the brim — 169 of 169 and 276 of 278 — and neither adder checks
+its own count. The plugin never overruns a store: it stops and writes to `MapExpander.log` how many
+models were dropped and which limit ran out, and after `CStreaming::Init2` it logs how full every id
+range is, including the two — texture dictionaries and collision — that have no complaint of their
+own. See `docs/region-limits.md`.
 
 **Pedestrians.** `PedIde` names the region's own people — `tools/convert_peds.py` converts the donor
 game's ped models to San Andreas' skeleton and merges them into the archive `Img` names. They are
@@ -301,6 +309,7 @@ All run in throwaway containers; nothing is installed on the host.
 - `tools/gen_functions.py` → `tools/sa_functions.txt` — 9.6k named addresses merged from gta-reversed and plugin-sdk, used to label scanner output.
 - `tools/montage.py`, `tools/montage_orders.py`, `tools/tile_order_score.py` — stitch tiles and score the eight possible grid orderings to verify a tile set's numbering.
 - `tools/scan_model_limit_sites.py` → `tools/model_limit_sites.txt` → `tools/gen_model_limit_sites.py` → `src/ModelLimitSites.h` — the 1407 instructions `ModelIdLimit` rewrites, with the candidates it deliberately leaves alone and why. `tools/verify_model_limit_sites.py` re-reads every one of them out of `gta_sa.exe` and must pass 100% before the table ships.
+- `tools/scan_archive_slot_sites.py` → `src/limits/ArchiveSlots.cpp` — the 27 instructions that name `CStreaming::ms_files`, told apart from the globals the linker put directly behind the array. `tools/verify_archive_slot_sites.py <gta_sa.exe>` re-reads both tables out of the executable, confirms every operand offset is unambiguous, checks the scan and the table name exactly the same instructions, and confirms none of the neighbouring globals is in either table. Must pass 100% before the table ships.
 - `tools/verify_weapon_types.py` — the same idea for the added weapons: it simulates `WidenDispatch` and `RouteDispatch` out of `src/WeaponTypes.cpp` and asserts that every new weapon type resolves to exactly the address its donor resolves to, in all seven switches, and decodes the camera mode each one ends up with. The plugin makes the same comparison at load time and logs an error if it fails.
 
 - `tools/verify_sector_sites.py <gta_sa.exe>` — the other side of `scan_sector_sites.py`. The scan
@@ -326,7 +335,7 @@ All run in throwaway containers; nothing is installed on the host.
   one call is enough to render arbitrary water out there without touching the block grid.
 - Path nodes (`nodes*.dat`) are `int16 / 8` at ~490 inline sites: traffic and ped paths cannot be extended past ±4096 without a rewrite. Irrelevant under SA-MP.
 - Audio zone boxes and occluders are also `int16 / 8` and stay limited to ±4096.
-- Every streamable resource shares one id space: DFF 0 (20000), TXD 20000 (5000), COL 25000 (255), IPL 25255 (256), DAT 25511 (64), IFP 25575 (180), RRR 25755 (475), SCM 26230 (82), plus 4 list-head sentinels — 26316 `CStreamingInfo` entries. `ModelIdLimit` shifts every base above the DFF range and reallocates the three arrays that size with it (`ms_aInfoForModel`, `ms_modelInfoPtrs`, `ms_atomicModelInfoStore`); the streaming lists link entries with `int16` indices, hence the 26400 ceiling. The other model-info stores keep their vanilla capacities (damage 70, time 169, weapon 51, clump 92, vehicle 212, ped 278, 2dfx 100) and none of them is bounds-checked.
+- Every streamable resource shares one id space: DFF 0 (20000), TXD 20000 (5000), COL 25000 (255), IPL 25255 (256), DAT 25511 (64), IFP 25575 (180), RRR 25755 (475), SCM 26230 (82), plus 4 list-head sentinels — 26316 `CStreamingInfo` entries. `ModelIdLimit` shifts every base above the DFF range and reallocates the arrays that size with it (`ms_aInfoForModel`, `ms_modelInfoPtrs`, `ms_atomicModelInfoStore`); the streaming lists follow `int16` indices into that array, so the whole space stops at 32768 entries and the DFF ceiling is 32768 − 6316 = **26452**. It grows *only* the DFF range: TXD stays 5000 wide, COL 255, IPL 256, and those are what actually run out — see `docs/region-limits.md`. The time and ped model-info stores are moved to the heap; the rest keep their vanilla capacities (damage 70, weapon 51, clump 92, vehicle 212, 2dfx 100) and none of them is bounds-checked.
 
 - **San Andreas takes ten new weapon types, and no more.** `src/WeaponTypes.cpp` widens the weapon system so a gun
   can be added rather than written over one of San Andreas' own; `RegionWeaponMode = Add` is the default and does it.
@@ -451,10 +460,21 @@ Every improvement to the grid quietly shortened the streaming distance. `[World]
 holds it at a fixed number of world units now; the file has the numbers, the audit of every other
 site where a distance and a position could have been confused, and what to check in game.
 
+[docs/region-limits.md](docs/region-limits.md) answers the other question people ask before adding a
+city: **how many fit, and what stops the next one?** It has every limit a region spends, as a
+fraction, with the arithmetic for five regions; how the archive table went from 8 slots to 32 and
+why 32 is the ceiling; why the model id ceiling is 26452 rather than 32767 and where the extra 3799
+ids came from; which limit really binds first (the texture dictionary range, with 71 ids left after
+two cities); and what to look for in the log, with a line-by-line table of what each failure means.
+
 ## Roadmap
 
-- **More than 26400 models.** `ModelIdLimit` frees DFF ids past 20000 and grows the atomic model-info
-  store to match, but the streaming lists link entries with int16 indices, so 26400 is where that
-  approach stops; a second city the size of Vice City needs those lists widened too.
+- **More than 26452 models, or more than 5000 texture dictionaries.** Every streamable resource San
+  Andreas has is one entry in one array that the streaming lists index with an `int16`, so the whole
+  id space holds 32768 entries — models, dictionaries, collision, IPLs and the rest together — and
+  at the shipped `ModelIdLimit` there are 52 of them spare. Making that budget bigger means making
+  three sign-extended reads unsigned and rewriting the tests that recognise their −1 sentinel;
+  `docs/region-limits.md` has the sites and the cost. The cheaper win first is fewer texture
+  dictionaries per region in the importer, which needs no patching at all.
 - Lighting and `timecyc` differences between the source game and San Andreas.
 - Zone/water array relocation for regions that exceed the vanilla pool sizes.

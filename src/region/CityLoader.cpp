@@ -29,6 +29,8 @@
 #include <string>
 #include <vector>
 #include "CityLoader.h"
+#include "ArchiveSlots.h"
+#include "IdSpace.h"
 #include "ModelLimits.h"
 #include "RegionWeapons.h"
 #include "Settings.h"
@@ -45,10 +47,9 @@ const AddImageToListFn CallAddImageToList = reinterpret_cast<AddImageToListFn>(0
 const LoadFileFn CallLoadObjectTypes = reinterpret_cast<LoadFileFn>(0x5B8400);
 const LoadFileFn CallLoadScene = reinterpret_cast<LoadFileFn>(0x5B8700);
 
-// CStreaming::ms_files: 8 x tStreamingFileDesc(0x30), the archive name at offset 0.
-constexpr uintptr_t kStreamingFiles = 0x8E48D8;
-constexpr unsigned kStreamingFileStride = 0x30;
-constexpr unsigned kMaxArchives = 8;
+// CStreaming::ms_files: tStreamingFileDesc(0x30) with the archive name at offset 0. Vanilla San
+// Andreas has eight of them; ArchiveSlots moves the table to 32, which is CdStream's own ceiling.
+// Both the count and the address are asked for rather than assumed, so this is right either way.
 // That name is 40 bytes, with the "not player.img" flag right behind it at 0x28, and
 // CStreaming::AddImageToList copies into it without leaving room for a terminator. A longer path
 // comes back out truncated, CFileMgr::OpenFile fails on it and CStreaming::LoadCdDirectory binds
@@ -445,11 +446,52 @@ std::string SafeName(const std::string& s) {
 // a model is a ped from its vtable rather than its number. The one real width limit is
 // CEntity::m_nModelIndex at +0x22, which is read sign-extended everywhere (0x5E48AE in
 // CPed::SetModelIndex among them) - so 32767, and ModelIdLimit stops at 26400 anyway.
+// ---------------------------------------------------------------- the gaps below the window
+//
+// FreeModelIdStart..FreeModelIdEnd is not the whole of the free id space, and once ModelIdLimit is
+// at its ceiling it is not even the larger half. San Andreas' own IDE files declare 14832 models
+// and the highest id any of them uses is 18630, so of the 20000 ids below the raised range 5168
+// are declared by nothing at all - 1369 of them above 18631, where the window already is, and
+// 3799 BELOW it, in runs as long as 1118 (11682..12799), 935 (15065..15999) and 492
+// (13891..14382). Counted out of the game's own data/ tree, not recalled.
+//
+// Those 3799 are worth about half a city, and they cost nothing to take: no operand is patched and
+// no array is moved, because an id with no CBaseModelInfo is an id the game has no way to name.
+// They are a FALLBACK rather than the first choice, and deliberately so:
+//
+//   * the ids a region already had do not move when a later region is added, which is the property
+//     docs/save-compatibility.md asks for. Two cities get exactly the ids they got before this;
+//     only the third reaches down here;
+//   * an id below the window is likelier to be one somebody else's mod also went looking for, and
+//     ModelInfoAt only sees what already exists when we look. Taking them last means taking as few
+//     as the regions actually need;
+//   * FreeModelIdGapStart keeps the floor above everything San Andreas addresses by number rather
+//     than by name: peds 0..312, weapon models 321..373, vehicles 400..611, and the 2000 that
+//     CPopulation's ped groups use as their empty-slot sentinel. 3000 clears all of them, and
+//     there are only 78 free ids below it in any case.
+//
+// Setting FreeModelIdGapStart to -1 turns the fallback off and leaves the window as the whole of it.
+int gGapCursor = -1;
+int gGapFirst = -1, gGapLast = -1, gGapTaken = 0;
+
+int GapFloor() { return Settings::world.freeModelIdGapStart; }
+int GapCeiling() { return Settings::world.freeModelIdStart; }   // the window starts where this stops
+
 int AllocateModelId() {
     int end = FreeIdEnd();
     while (gNextFreeId <= end) {
         int id = gNextFreeId++;
         if (id >= 0 && !ModelInfoAt(id)) return id;
+    }
+    if (GapFloor() < 0) return -1;
+    if (gGapCursor < GapFloor()) gGapCursor = GapFloor();
+    while (gGapCursor < GapCeiling()) {
+        int id = gGapCursor++;
+        if (ModelInfoAt(id)) continue;
+        if (gGapFirst < 0) gGapFirst = id;
+        gGapLast = id;
+        gGapTaken++;
+        return id;
     }
     return -1;
 }
@@ -458,6 +500,15 @@ int FreeIdsLeft() {
     int end = FreeIdEnd();
     int count = 0;
     for (int id = gNextFreeId; id <= end; id++)
+        if (id >= 0 && !ModelInfoAt(id)) count++;
+    return count;
+}
+
+// The same for the gaps, so the log can say how much is behind the window as well as in it.
+int FreeIdsInGaps() {
+    if (GapFloor() < 0) return 0;
+    int count = 0;
+    for (int id = gGapCursor < GapFloor() ? GapFloor() : gGapCursor; id < GapCeiling(); id++)
         if (id >= 0 && !ModelInfoAt(id)) count++;
     return count;
 }
@@ -985,12 +1036,17 @@ std::string FormatInstFile(const std::vector<Inst>& insts, size_t first, size_t 
 
 // ---------------------------------------------------------------- stages
 
-// PedImg is normally empty, and that is not an oversight: San Andreas has room for EIGHT archives
-// in all - CStreaming::ms_files is 8 x 0x30 at 0x8E48D8 - and it has spent five of them before this
-// runs (gta3, gta_int, carrec, script, cutscene) with player.img still to come in CGame::Init2. Two
-// imported cities take it to seven. There is no eighth for a ped archive, and a third city could
-// not register a map archive either. So tools/convert_peds.py puts its models into the region's own
-// archive and PedImg exists only for a region that has a slot to spare.
+// PedImg is normally empty, and that used to be a hard constraint rather than a preference: San
+// Andreas has room for EIGHT archives in all - CStreaming::ms_files is 8 x 0x30 at 0x8E48D8 - and
+// it has spent five of them before this runs (gta3, gta_int, carrec, script, cutscene) with
+// player.img still to come in CGame::Init2. Two imported cities took it to seven, there was no
+// eighth for a ped archive, and a third city could not have registered a map archive either. So
+// tools/convert_peds.py puts its models into the region's own archive.
+//
+// ArchiveSlots now moves the table to 32 entries, so there are 26 free rather than two, and PedImg
+// is simply an option again. The converter still defaults to one archive a region because one
+// archive is one directory scan and one open file handle, not because there is nowhere to put a
+// second.
 //
 // Where it is used, the ped archive goes in BEFORE the map archive, and the order is load-bearing
 // rather than tidy. The map import used to pack every .dff the donor shipped, pedestrians included,
@@ -1009,10 +1065,11 @@ void RegisterOneArchiveList(RegionState& rs, const std::vector<std::string>& pat
         }
         // CClothes::Init registers player.img later, in CGame::Init2, so one slot has to be
         // left for it - it would otherwise get archive 0 back and stream clothes from gta3.img.
-        if (used + 1 >= kMaxArchives) {
+        const unsigned slots = (unsigned)ArchiveSlots::Count();
+        if (used + 1 >= slots) {
             Log::Write("[%s] %s: %s NOT registered - CStreaming::ms_files is full (%u of %u "
                        "archives used, one reserved for player.img)",
-                       rs.region->name.c_str(), what, path.c_str(), used, kMaxArchives);
+                       rs.region->name.c_str(), what, path.c_str(), used, slots);
             continue;
         }
         std::string shortPath = GameRelativePath(path);
@@ -1027,14 +1084,12 @@ void RegisterOneArchiveList(RegionState& rs, const std::vector<std::string>& pat
         unsigned slot = CallAddImageToList(shortPath.c_str(), true);
         used++;
         Log::Write("[%s] %s: %s registered as archive %u (%u/%u slots used)",
-                   rs.region->name.c_str(), what, shortPath.c_str(), slot, used, kMaxArchives);
+                   rs.region->name.c_str(), what, shortPath.c_str(), slot, used, slots);
     }
 }
 
 void RegisterArchives() {
-    unsigned used = 0;
-    for (unsigned i = 0; i < kMaxArchives; i++)
-        if (*reinterpret_cast<char*>(kStreamingFiles + i * kStreamingFileStride)) used++;
+    unsigned used = (unsigned)ArchiveSlots::Used();
 
     for (RegionState& rs : Regions()) {
         RegisterOneArchiveList(rs, rs.region->pedImgFiles, "pedimg", used);
@@ -1059,10 +1114,13 @@ void LoadOneIde(RegionState& rs, const std::string& source, bool pedFile) {
 void LoadModelDefinitions() {
     gNextFreeId = Settings::world.freeModelIdStart;
     int available = FreeIdsLeft();
+    int gaps = FreeIdsInGaps();
     StoreBudget budget = CurrentBudget();
-    Log::Write("models: %d free id(s) in %d..%d; store headroom atomic %d, damage %d, time %d, "
+    Log::Write("models: %d free id(s) in %d..%d, and %d more in the gaps San Andreas' own IDEs "
+               "leave in %d..%d - %d in all; store headroom atomic %d, damage %d, time %d, "
                "clump %d, weapon %d, ped %d",
-               available, Settings::world.freeModelIdStart, FreeIdEnd(),
+               available, Settings::world.freeModelIdStart, FreeIdEnd(), gaps,
+               GapFloor() < 0 ? 0 : GapFloor(), GapCeiling() - 1, available + gaps,
                budget.atomic, budget.damage, budget.time, budget.clump, budget.weapon, budget.ped);
 
     for (RegionState& rs : Regions()) {
@@ -1085,9 +1143,12 @@ void LoadModelDefinitions() {
                        "store full), %d rejected by the game's own IDE parser",
                        rs.region->name.c_str(), rs.added, rs.droppedNoId, rs.droppedNoStore, missing);
         if (rs.droppedNoId)
-            Log::Write("[%s] models: the free id range %d..%d ran out - raise ModelIdLimit (or "
-                       "FreeModelIdEnd if it was lowered)", rs.region->name.c_str(),
-                       Settings::world.freeModelIdStart, FreeIdEnd());
+            Log::Write("[%s] models: the free id range %d..%d ran out, and so did the %d..%d gaps "
+                       "behind it - there is no more id space. ModelIdLimit is already at or near "
+                       "%d, which is every id San Andreas' int16 streaming links can follow; see "
+                       "docs/region-limits.md", rs.region->name.c_str(),
+                       Settings::world.freeModelIdStart, FreeIdEnd(),
+                       GapFloor() < 0 ? 0 : GapFloor(), GapCeiling() - 1, ModelLimits::ModelCount());
         if (rs.droppedNoStore)
             Log::Write("[%s] models: a model-info store ran out (atomic %d, damage %d, time %d, clump %d, "
                        "weapon %d in total; tobj lines need the time store, anim lines the clump store, "
@@ -1147,6 +1208,14 @@ void LoadModelDefinitions() {
                        "so ModelLimits moves it to the heap",
                        rs.region->name.c_str(), ModelLimits::PedCapacity(), 20000);
     }
+
+    if (gGapTaken)
+        Log::Write("models: the free id range ran out, so %d id(s) came from the gaps San Andreas' "
+                   "own IDEs leave below it, between %d and %d; %d such id(s) are still free. These "
+                   "are ids no IDE line of San Andreas' declares, so nothing of its own names them - "
+                   "but a mod that adds models at ids of its own choosing after this plugin loads "
+                   "could collide with them, and FreeModelIdGapStart = -1 turns this off",
+                   gGapTaken, gGapFirst, gGapLast, FreeIdsInGaps());
 }
 
 // A .col archive is a chain of chunks: 4cc, size, then 24 bytes of name and model id, with `size`
@@ -1835,6 +1904,9 @@ void __cdecl Hooked_StreamingInit2() {
     Init2Original().ccall<void>();
     ReportMissingArchiveEntries();
     ReportPedAssets();
+    // Last, because CStreaming::LoadCdDirectory has just created the final TXD and COL slots and
+    // this counts what is left of every range a region spends, not just the model one.
+    IdSpace::Report();
 }
 
 void __cdecl Hooked_LoadLevel(const char* filename) {

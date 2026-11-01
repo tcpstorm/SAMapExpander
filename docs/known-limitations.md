@@ -188,6 +188,40 @@ The thing the user asked for — several maps at a frame rate that does not degr
 added — is the fourth row against the fifth: adding a third, fourth and fifth map now costs
 nothing at all, where before each one widened the world.
 
+**Frame rate is no longer what stops a third map, though.** Identifiers are. That is a different
+problem with its own document — see below.
+
+---
+
+## How many regions fit: three, and the third is tight
+
+The frame-rate cost of another map is solved. What is not is that every model, texture dictionary,
+collision file and IPL a region brings needs an **id**, and those ids all come out of **one budget
+with a hard ceiling of 32768 entries** — not, as is easy to assume, out of separate pools.
+
+The short version, with San Andreas' own consumption counted out of its `data/` and `models/`:
+
+| limit | San Andreas takes | Vice City + Liberty City take | left | binds at |
+|---|---|---|---|---|
+| archive slots (raised 8 → 32) | 6 | 2 | 24 | never |
+| **texture dictionary ids (5000)** | **3687** | **1242** | **71** | **three regions** |
+| model ids (11568 free) | — | 7238 | 4330 | four regions |
+| collision ids (255) | 251 | 0 | 4 | — |
+| IPL ids (256) | 190 | 0 | 66 | — |
+
+**Texture dictionaries are the wall**, and unlike the others it cannot be widened, because there
+are 52 spare entries in the whole id space to widen into.
+
+It is nevertheless the cheapest of these to fix, and the fix needs no patching at all: Vice City
+splits 4131 models across **820 dictionaries, about five models each**, where San Andreas shares one
+per area across hundreds. Merging by area takes the two shipped cities from 1242 dictionaries to
+roughly 130, which clears the wall for five regions as a change to the importer.
+
+[region-limits.md](region-limits.md) is the whole account: how each number was established, what was
+raised and how, the arithmetic for five regions, and the two routes to more budget with their costs.
+It also records a savegame bug this work found and fixed — the model id limit had been growing the
+savegame's Streaming block, which in an unframed save silently shifts every block behind it.
+
 ---
 
 ## Imported weapons: what is not perfect

@@ -380,9 +380,11 @@ namespace Settings {
         world.modelIdLimit = 25000;
         world.freeModelIdStart = 18631;
         world.freeModelIdEnd = -1;         // up to ModelIdLimit - 1
+        world.freeModelIdGapStart = 3000;  // the gaps below the window, above everything SA names by number
         world.atomicModelInfoLimit = -1;   // the store's real capacity
         world.colModelPoolLimit = -1;      // vanilla 10150 plus the regions' own collision
         world.txdPoolLimit = -1;           // vanilla 5000 plus the regions' dictionary names
+        world.archiveSlotLimit = -1;       // CStreaming::ms_files at CdStream's own ceiling of 32
         world.buildingPoolLimit = -1;      // vanilla 13000 plus the regions' inst lines
         world.dummyPoolLimit = -1;         // vanilla 2500, same
         world.ptrNodePoolLimit = -1;       // vanilla 70000 plus what the regions need
@@ -426,9 +428,11 @@ namespace Settings {
             world.extendWaterRendering = w->GetInt("ExtendWaterRendering", 1);
             world.freeModelIdStart = w->GetInt("FreeModelIdStart", 18631);
             world.freeModelIdEnd = w->GetInt("FreeModelIdEnd", -1);   // -1: up to ModelIdLimit
+            world.freeModelIdGapStart = w->GetInt("FreeModelIdGapStart", 3000);
             world.atomicModelInfoLimit = w->GetInt("AtomicModelInfoLimit", -1);
             world.colModelPoolLimit = w->GetInt("ColModelPoolLimit", -1);
             world.txdPoolLimit = w->GetInt("TxdPoolLimit", -1);
+            world.archiveSlotLimit = w->GetInt("ArchiveSlotLimit", -1);
             world.buildingPoolLimit = w->GetInt("BuildingPoolLimit", -1);
             world.dummyPoolLimit = w->GetInt("DummyPoolLimit", -1);
             world.ptrNodePoolLimit = w->GetInt("PtrNodePoolLimit", -1);
