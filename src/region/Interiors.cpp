@@ -233,6 +233,12 @@ void Install() {
     for (const MapRegion& r : Settings::regions) total += (int)r.interiors.size();
     if (!total) return;
 
+    if (Settings::RunningUnderSaMp())
+    {
+        Log::Write("SA-MP: the region interior volumes are off, the server owns the interior");
+        return;
+    }
+
     for (const MapRegion& r : Settings::regions) {
         if (r.interiors.empty()) continue;
         Log::Write("[%s] interiors: %d volume(s); inside one of them the game shows only that "
