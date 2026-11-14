@@ -3320,7 +3320,7 @@ SCM_LABEL_BYTES = 8
 SCM_INT_SIZES = {0x04: 1, 0x05: 2, 0x06: 4}
 
 
-def scm_int(blob, at):
+def scm_imm_int(blob, at):
     """(value, bytes consumed) of an immediate integer parameter, or (None, 0)."""
     if at >= len(blob):
         return None, 0
@@ -3372,10 +3372,10 @@ def scm_zone_ped_groups(path, group_count, known_zones):
             continue
         if not re.fullmatch(r"[A-Za-z0-9_]+", label) or label.upper() not in known_zones:
             continue
-        day, used = scm_int(blob, p + SCM_LABEL_BYTES)
+        day, used = scm_imm_int(blob, p + SCM_LABEL_BYTES)
         if used == 0 or day not in (0, 1):
             continue
-        group, used2 = scm_int(blob, p + SCM_LABEL_BYTES + used)
+        group, used2 = scm_imm_int(blob, p + SCM_LABEL_BYTES + used)
         if used2 == 0 or not 0 <= group < group_count:
             continue
         pair = list(found.get(label.upper(), (0, 0)))
