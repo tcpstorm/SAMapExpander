@@ -496,6 +496,14 @@ namespace Zones {
                    gRevealedHook ? "installed" : "FAILED (region names may not show on the pause map)");
     }
 
+    const char* DisplayNameAt(float x, float y, float z) {
+        const float point[3] = { x, y, z };
+        SaZone* zone = reinterpret_cast<FindSmallestFn>(kFindSmallest)(point, 0);
+        if (!zone || !zone->textLabel[0]) return nullptr;
+        const char* name = Translate(zone->textLabel);
+        return (name && *name) ? name : nullptr;
+    }
+
     void LogPlayerZone(float x, float y, float z) {
         const float point[3] = { x, y, z };
         int16_t total = NaviTotal();

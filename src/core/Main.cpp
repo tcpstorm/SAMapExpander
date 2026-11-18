@@ -36,6 +36,8 @@
 #include "RegionTraffic.h"
 #include "RegionParkedCars.h"
 #include "PickupSlots.h"
+#include "ClassicHud.h"
+#include "ClassicMenu.h"
 
 using namespace plugin;
 
@@ -107,6 +109,10 @@ public:
         TxdProbe::Install();
         PathLoadProbe::Install();
         RenderGuard::Install();
+        // Outside the region block: whose HUD is drawn is a choice about San Andreas itself,
+        // and it is honoured with no region loaded and under SA-MP alike - it only draws.
+        ClassicHud::Install();
+        ClassicMenu::Install();
 
         Log::Write("MapExpander initialised: %u region(s)", (unsigned)Settings::regions.size());
     }

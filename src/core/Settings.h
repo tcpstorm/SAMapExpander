@@ -150,6 +150,11 @@ struct WorldSettings {
     bool regionPaths;                      // put a region's own carriageways into CPathFind, i.e. traffic
     bool widenPathNodes;                   // repoint the path coordinate scale so a node reaches a region
     float pathNodeScale;                   // int16 units per world unit; <= 0 = derive from the world
+    int hudStyle;                          // whose HUD is drawn: 0 San Andreas' own, 1 Vice City's, 2 GTA III's (not drawn yet)
+    int menuStyle;                         // whose pause menu, same values as hudStyle; follows it unless MenuStyle says otherwise
+    int hudZoneNames;                      // classic HUD zone name: 0 only what the game hands its HUD, 1 always looked up by the plugin, 2 looked up under SA-MP only
+    int hudKeepAspect;                     // size the classic HUD from the screen height on a wide screen instead of stretching it: 0 never, 1 always, 2 when the game's own Widescreen option is on
+    std::string hudAssets;                 // absolute folder holding that style's converted hud.txd, fonts.txd and weapons.txd
     bool debug;                      // verbose log, F8 diagnostics, water render statistics
 };
 
