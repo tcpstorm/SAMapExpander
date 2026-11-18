@@ -63,6 +63,30 @@ compiled plugin-sdk; the plugin is cross-compiled to a 32-bit Windows DLL.
 
 `build.sh` does the same on Linux/macOS/WSL.
 
+### Native Windows build (no Docker)
+
+`build-native.ps1` builds with the same toolchain directly on Windows: MSYS2's clang cross-compiling
+to `i686-w64-mingw32` against MSYS2's i686 GCC libstdc++. premake and plugin-sdk are pinned to the
+versions in the `Dockerfile`, fetched into `%LOCALAPPDATA%\SAMapExpander-toolchain` and built once.
+
+One-time setup:
+
+```powershell
+winget install MSYS2.MSYS2
+C:\msys64\usr\bin\bash.exe -lc "pacman -Syu --noconfirm"   # run twice: the first pass updates the core
+C:\msys64\usr\bin\bash.exe -lc "pacman -S --needed --noconfirm make mingw-w64-x86_64-clang mingw-w64-i686-gcc mingw-w64-i686-binutils"
+```
+
+Then:
+
+```powershell
+.\build-native.ps1            # Release -> output\Release\MapExpander.SA.asi
+.\build-native.ps1 debug
+.\build-native.ps1 -Rebuild   # re-fetch premake and rebuild plugin-sdk
+```
+
+`MSYS2_ROOT` and `MAPEXPANDER_TOOLCHAIN` override the default locations.
+
 ## Install
 
 Copy `MapExpander.SA.asi` and `MapExpander.ini` into the game folder (an ASI loader is required, as for
