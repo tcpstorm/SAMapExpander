@@ -41,13 +41,16 @@ constexpr int kVanillaModelCount = 20000;
 constexpr int kVanillaTotal = 26316;
 constexpr int kMaxModelCount = 26400;
 
-constexpr uintptr_t kInfoArray = 0x8E4CC0;     // CStreaming::ms_aInfoForModel[26316]
+// The addresses carry an Addr suffix because ModelLimitSites.h declares a SiteKind enum with the
+// bare names (kInfoArray = 0, kPtrArray = 1, ...) inside namespace ModelLimits. Code in that
+// namespace finds the enumerator first, so an address named the same way silently reads as 0..3.
+constexpr uintptr_t kInfoArrayAddr = 0x8E4CC0; // CStreaming::ms_aInfoForModel[26316]
 constexpr unsigned kInfoElem = 0x14;
-constexpr uintptr_t kPtrArray = 0xA9B0C8;      // CModelInfo::ms_modelInfoPtrs[20000]
+constexpr uintptr_t kPtrArrayAddr = 0xA9B0C8;  // CModelInfo::ms_modelInfoPtrs[20000]
 constexpr uintptr_t kArrayBasePtr = 0x9654B4;  // CStreamingInfo::ms_pArrayBase, filled by Init2
 
 // CStore<CAtomicModelInfo, 14000>: an int32 count followed by the objects.
-constexpr uintptr_t kAtomicStore = 0xAAE950;
+constexpr uintptr_t kAtomicStoreAddr = 0xAAE950;
 constexpr unsigned kAtomicElem = 0x20;
 constexpr int kVanillaAtomicCapacity = 14000;
 constexpr int kAtomicHeadroom = 1000;
@@ -57,7 +60,7 @@ constexpr uint32_t kAtomicVTable = 0x85BBF0;   // written by CAtomicModelInfo's 
 // so a region's timed models - the lit night variants of its buildings - had nowhere to go and
 // were dropped. Ten sites name it, all in CModelInfo, and AddTimeModel (0x4C66B0) never checks
 // the count against 169: it multiplies by 0x24 and increments, so a bigger array is all it takes.
-constexpr uintptr_t kTimeStore = 0xB1C960;
+constexpr uintptr_t kTimeStoreAddr = 0xB1C960;
 constexpr unsigned kTimeElem = 0x24;
 constexpr int kVanillaTimeCapacity = 169;
 constexpr int kTimeHeadroom = 1024;
@@ -143,16 +146,16 @@ uint32_t ShiftedIndex(uint32_t index) {
 uint32_t NewValue(const ModelLimits::Site& s) {
     switch (s.kind) {
         case ModelLimits::kInfoArray: {
-            uint32_t offset = s.oldValue - kInfoArray;
+            uint32_t offset = s.oldValue - kInfoArrayAddr;
             uint32_t index = offset / kInfoElem, field = offset % kInfoElem;
             return (uint32_t)(uintptr_t)gInfo + ShiftedIndex(index) * kInfoElem + field;
         }
         case ModelLimits::kPtrArray:
-            return (uint32_t)(uintptr_t)gPtrs + ShiftedIndex((s.oldValue - kPtrArray) / 4) * 4;
+            return (uint32_t)(uintptr_t)gPtrs + ShiftedIndex((s.oldValue - kPtrArrayAddr) / 4) * 4;
         case ModelLimits::kAtomicStore:
-            return (uint32_t)(uintptr_t)gStore + (s.oldValue - kAtomicStore);
+            return (uint32_t)(uintptr_t)gStore + (s.oldValue - kAtomicStoreAddr);
         case ModelLimits::kTimeStore:
-            return (uint32_t)(uintptr_t)gTimeStore + (s.oldValue - kTimeStore);
+            return (uint32_t)(uintptr_t)gTimeStore + (s.oldValue - kTimeStoreAddr);
         case ModelLimits::kResourceBase:
         case ModelLimits::kSentinelIndex:
             return s.oldValue + Shift();
@@ -299,10 +302,10 @@ bool ModelIsLoaded(int model) {
            == kLoadStateLoaded;
 }
 
-uintptr_t StreamingInfo() { return gActive ? (uintptr_t)gInfo : kInfoArray; }
-uintptr_t ModelInfoPtrs() { return gActive ? (uintptr_t)gPtrs : kPtrArray; }
-uintptr_t AtomicStore() { return gActive ? (uintptr_t)gStore : kAtomicStore; }
-uintptr_t TimeStore() { return gActive ? (uintptr_t)gTimeStore : kTimeStore; }
+uintptr_t StreamingInfo() { return gActive ? (uintptr_t)gInfo : kInfoArrayAddr; }
+uintptr_t ModelInfoPtrs() { return gActive ? (uintptr_t)gPtrs : kPtrArrayAddr; }
+uintptr_t AtomicStore() { return gActive ? (uintptr_t)gStore : kAtomicStoreAddr; }
+uintptr_t TimeStore() { return gActive ? (uintptr_t)gTimeStore : kTimeStoreAddr; }
 int TimeCapacity() { return gActive ? kVanillaTimeCapacity + kTimeHeadroom : kVanillaTimeCapacity; }
 uintptr_t PedStore() { return gPedStore ? (uintptr_t)gPedStore : kPedStoreCount; }
 int PedCapacity() { return gPedCapacity; }
