@@ -89,7 +89,9 @@ enum { kPageMap = 5, kPageControls = 38 };
 enum { kUntried = 0, kLoaded = 1, kFailed = -1 };
 int gState = kUntried;
 RwTexture* gBackground = nullptr;
+RwTexture* gPanels[4] = {};   // GTA III's background in quarters: upper left, upper right, lower left, lower right
 RwTexture* gLogo = nullptr;
+bool gLibertyCity = false;
 RwTexture* gPointer = nullptr;
 
 RwTexDictionary* LoadDictionary(const std::string& path) {
@@ -115,24 +117,37 @@ bool Ready() {
     // to load, since the menu's text is drawn with them either way.
     if (!ClassicFont::Ready()) {
         RwTexDictionary* fonts = LoadDictionary(folder + "\\fonts.txd");
+        ClassicFont::SetGame(gLibertyCity ? ClassicFont::LibertyCity : ClassicFont::ViceCity);
         ClassicFont::SetTextures(FindTexture(fonts, "font1"), FindTexture(fonts, "font2"));
     }
-    RwTexDictionary* menu = LoadDictionary(folder + "\\fronten1.txd");
-    gBackground = FindTexture(menu, "background");
-    gLogo = FindTexture(menu, "vc_logo");
+    // Vice City's menu art is one dictionary, converted whole. GTA III's is spread over two large
+    // ones, so the importer gathers the few textures used here into a menu.txd of its own.
+    const char* file = gLibertyCity ? "menu.txd" : "fronten1.txd";
+    RwTexDictionary* menu = LoadDictionary(folder + "\\" + file);
+    if (gLibertyCity) {
+        static const char* const kNames[4] = { "fe2_mainpanel_ul", "fe2_mainpanel_ur",
+                                               "fe2_mainpanel_dl", "fe2_mainpanel_dr" };
+        bool all = true;
+        for (int i = 0; i < 4; i++) all &= (gPanels[i] = FindTexture(menu, kNames[i])) != nullptr;
+        gBackground = all ? gPanels[0] : nullptr;
+        gLogo = FindTexture(menu, "gta3logo256");
+    } else {
+        gBackground = FindTexture(menu, "background");
+        gLogo = FindTexture(menu, "vc_logo");
+    }
     gPointer = FindTexture(menu, "mouse");
 
     if (!ClassicFont::Ready() || !gBackground) {
         Log::Write("menu: MenuStyle is set, but %s could not be loaded from %s, so San Andreas' own "
                    "menu is drawn. tools\\import-city.ps1 <donor game> <San Andreas> -HudOnly writes "
-                   "it; a folder imported before the menu was supported has no fronten1.txd",
-                   !gBackground ? "fronten1.txd" : "fonts.txd", folder.c_str());
+                   "it; a folder imported before the menu was supported has no %s",
+                   !gBackground ? file : "fonts.txd", folder.c_str(), file);
         return false;
     }
     gState = kLoaded;
-    Log::Write("menu: Vice City style, drawn from %s%s%s", folder.c_str(),
-               gLogo ? "" : " (no vc_logo in fronten1.txd, so no logo)",
-               gPointer ? "" : " (no mouse in fronten1.txd, so San Andreas' pointer)");
+    Log::Write("menu: %s style, drawn from %s%s%s", gLibertyCity ? "GTA III" : "Vice City", folder.c_str(),
+               gLogo ? "" : " (no logo in its dictionary, so none is drawn)",
+               gPointer ? "" : " (no mouse in its dictionary, so San Andreas' pointer)");
     return true;
 }
 
@@ -167,7 +182,15 @@ void PaintBackground(CMenuManager* menu) {
     gBackgroundPending = false;
 
     const float w = ScreenW(), h = ScreenH();
-    DrawSprite(gBackground, 0.0f, 0.0f, w, h);
+    if (gLibertyCity) {
+        // A quarter of the screen each, as GTA III lays them.
+        DrawSprite(gPanels[0], 0.0f, 0.0f, w * 0.5f, h * 0.5f);
+        DrawSprite(gPanels[1], w * 0.5f, 0.0f, w, h * 0.5f);
+        DrawSprite(gPanels[2], 0.0f, h * 0.5f, w * 0.5f, h);
+        DrawSprite(gPanels[3], w * 0.5f, h * 0.5f, w, h);
+    } else {
+        DrawSprite(gBackground, 0.0f, 0.0f, w, h);
+    }
     const int page = menu->m_nCurrentMenuPage;
     if (gLogo && page != kPageMap && page != kPageControls) {
         const float size = h * (130.0f / 480.0f);
@@ -201,7 +224,14 @@ CRGBA Recolour(const CRGBA& c) {
         {  14,  30,  47, 110,  50,  95 },   // entry that cannot be used -> darker again
         { 225, 225, 225, 255, 190, 235 },   // body text                 -> a pale pink
     };
-    for (const Pair& p : kPairs)
+    // GTA III writes its entries in orange and lights the selected one.
+    static const Pair kPairsIII[] = {
+        { 172, 203, 241, 255, 217, 106 },   // selected entry, page title
+        {  74,  90, 107, 235, 170,  50 },   // entry not selected
+        {  14,  30,  47, 118,  85,  25 },   // entry that cannot be used
+        { 225, 225, 225, 235, 170,  50 },   // body text
+    };
+    for (const Pair& p : gLibertyCity ? kPairsIII : kPairs)
         if (c.r == p.r && c.g == p.g && c.b == p.b) return CRGBA(p.R, p.G, p.B, c.a);
     return c;
 }
@@ -345,10 +375,7 @@ namespace ClassicMenu {
     void Install() {
         const int style = Settings::world.menuStyle;
         if (style == 0) return;
-        if (style == 2) {
-            Log::Write("menu: MenuStyle = III is not drawn yet, so San Andreas' own menu is used");
-            return;
-        }
+        gLibertyCity = style == 2;
 
         // The page hooks first and the wrapper last: with the wrapper missing nothing else ever
         // switches on, which is the safe way round for a partial install.
@@ -365,8 +392,8 @@ namespace ClassicMenu {
         placed += Place(RenderBufferHook(), kRenderFontBuffer, reinterpret_cast<void*>(&RenderBufferThunk), "CFont::RenderFontBuffer");
         if (placed == 5)
             placed += Place(FrontEndHook(), kDrawFrontEnd, reinterpret_cast<void*>(&FrontEndThunk), "CMenuManager::DrawFrontEnd");
-        Log::Write("menu: Vice City style requested, %d of 6 hooks placed%s; %d of %d width calls "
-                   "repointed", placed, placed == 6 ? "" : " - without all of them the menu is left San "
+        Log::Write("menu: %s style requested, %d of 6 hooks placed%s; %d of %d width calls "
+                   "repointed", gLibertyCity ? "GTA III" : "Vice City", placed, placed == 6 ? "" : " - without all of them the menu is left San "
                    "Andreas'", measured, (int)(sizeof(kStringWidthCalls) / sizeof(kStringWidthCalls[0])));
     }
 }

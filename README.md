@@ -192,7 +192,7 @@ SA x 4171..6963, y −778..2626).
 | `RegionParkedCarsDensity` | 1.0 | ceiling on how many exist at once (1.0 = 14), not a thinning of the source game's own spaces |
 | `RegionParkedCarsRadius` | 110.0 | how far from the player a space is worth filling in |
 | `RegionParkedCarsRespawn` | 720.0 | seconds a space stays empty after the player takes or destroys the car in it; 0 = for the rest of the session |
-| `HudStyle` | `SA` | whose HUD is drawn: `SA`, `VC`, or `III` (accepted, not drawn yet). See *The HUD*. |
+| `HudStyle` | `SA` | whose HUD is drawn: `SA`, `VC`, or `III` (`LC` is read as `III`). See *The HUD*. |
 | `MenuStyle` | follows `HudStyle` | whose pause menu: a reskin with the donor's background, logo, pointer, fonts and colours over San Andreas' own pages. See *The HUD*. |
 | `HudZoneNames` | `Auto` | where a classic HUD gets the zone name: `Auto` looks it up in the plugin under SA-MP (which switches the game's own off) and uses the game's in single player; `1` always looks it up, `0` never |
 | `HudKeepAspect` | `Auto` | on a screen wider than 4:3 with no widescreen fix, size the classic HUD from the height instead of stretching it. `Auto` follows the game's own Widescreen option; `1` always, `0` never |
@@ -371,8 +371,16 @@ and camera behaviour, not interiors, and San Andreas' dialect of the section dif
 
 ## The HUD
 
-`[World] HudStyle = VC` swaps San Andreas' HUD for Vice City's. `SA` is the default; `III` is
-accepted and falls back to `SA` with a line in the log until GTA III's layout is written.
+`[World] HudStyle = VC` swaps San Andreas' HUD for Vice City's, and `HudStyle = III` for GTA
+III's. `SA` is the default. One style is drawn for the whole session; it does not follow the
+region the player is in.
+
+GTA III's is the same block in its own colours and faces: the ammunition in black across the foot
+of the weapon icon, the stars' black shadows always showing, the zone and vehicle names at the
+very bottom right, a plain black ring round the radar. Its import (`-HudOnly` against a GTA III
+install) writes `MapExpander\libertycity\hud\` with `hud.txd`, which holds its weapon icons,
+`fonts.txd`, and a `menu.txd` gathered from the six textures its pause menu skin uses. The rest of
+this section describes Vice City's; where GTA III differs it is in the numbers, not the method.
 
 ```powershell
 .\tools\import-city.ps1 "D:\Games\GTA Vice City" "D:\Games\GTA San Andreas" -HudOnly

@@ -56,6 +56,12 @@ using namespace plugin;
 // out of its archive - converted by tools/import_city.py, because San Andreas' raster reader
 // refuses a Direct3D 8 texture outright.
 //
+// GTA III's HUD is the same block with other numbers - Vice City's was made from it - so it is
+// drawn by the same code: its own colours, the heavy face a little larger, the ammunition written
+// in black across the foot of the weapon icon, the stars as glyphs of the heavy face with their
+// shadows always showing, the names smaller and at the very bottom, and a plain black ring. Its
+// layout is CHud::Draw as the re3 project documents it; its weapon icons are in hud.txd itself.
+//
 // What stays San Andreas': the radar itself and where it sits, the blips, subtitles, help boxes,
 // mission timers and the stats panel. The radar is not moved down to where Vice City had it: its
 // position is a set of constants shared with every blip and marker transform, and with the
@@ -83,18 +89,38 @@ SafetyHookInline& VehicleNameHook() { static SafetyHookInline h; return h; }
 SafetyHookInline& RadarHook()       { static SafetyHookInline h; return h; }
 SafetyHookInline& BlipsHook()       { static SafetyHookInline h; return h; }
 
-// Vice City's palette.
-const CRGBA kMoney(0, 207, 133, 255);
-const CRGBA kDebt(180, 25, 29, 255);        // San Andreas' own red: Vice City never showed a debt
-const CRGBA kAmmo(255, 150, 225, 255);
-const CRGBA kHealth(255, 150, 225, 255);
-const CRGBA kArmour(185, 185, 185, 255);
-const CRGBA kWanted(97, 194, 247, 255);
-const CRGBA kWantedFlash(62, 141, 181, 255);
-const CRGBA kNotWanted(27, 89, 130, 255);
-const CRGBA kZone(45, 155, 90, 255);
-const CRGBA kVehicle(97, 194, 247, 255);
-const CRGBA kClock(97, 194, 247, 255);
+// Whose HUD: 1 Vice City's, 2 GTA III's. Set once, at install.
+int gStyle = 1;
+bool LibertyCity() { return gStyle == 2; }
+const char* StyleName() { return LibertyCity() ? "GTA III" : "Vice City"; }
+
+// Each game's palette, and the few numbers of the layout that differ between them.
+struct Look {
+    CRGBA money, ammo, health, armour, wanted, wantedFlash, notWanted, zone, vehicle, clock;
+    float numberScaleX, numberScaleY;   // the heavy face of the clock, the money and the health
+    const char* armourGlyph;            // the shield: a different character in each game's atlas
+    float nameScaleX, nameScaleY, nameShadow;
+    float zoneFromBottom, vehicleFromBottom;
+    float ringGrow;                     // how far the ring stands out from the radar's own box
+};
+const Look kLooks[2] = {
+    {   // Vice City
+        CRGBA(0, 207, 133, 255), CRGBA(255, 150, 225, 255), CRGBA(255, 150, 225, 255),
+        CRGBA(185, 185, 185, 255), CRGBA(97, 194, 247, 255), CRGBA(62, 141, 181, 255),
+        CRGBA(27, 89, 130, 255), CRGBA(45, 155, 90, 255), CRGBA(97, 194, 247, 255),
+        CRGBA(97, 194, 247, 255),
+        0.7f, 1.25f, "<", 1.7f, 1.8f, 2.0f, 128.0f, 105.0f, 6.0f
+    },
+    {   // GTA III
+        CRGBA(89, 115, 150, 255), CRGBA(0, 0, 0, 255), CRGBA(186, 101, 50, 255),
+        CRGBA(124, 140, 95, 255), CRGBA(193, 164, 120, 255), CRGBA(193, 164, 120, 255),
+        CRGBA(0, 0, 0, 255), CRGBA(152, 154, 82, 255), CRGBA(194, 165, 120, 255),
+        CRGBA(194, 165, 120, 255),
+        0.8f, 1.35f, "[", 1.2f, 1.2f, 1.0f, 30.0f, 55.0f, 4.0f
+    }
+};
+const Look& L() { return kLooks[LibertyCity() ? 1 : 0]; }
+const CRGBA kDebt(180, 25, 29, 255);        // San Andreas' own red: neither game ever showed a debt
 
 // CHud::m_ItemToFlash, which the mission script uses to point at part of the HUD.
 enum { kFlashArmour = 3, kFlashHealth = 4 };
@@ -105,7 +131,7 @@ enum { kNameHidden = 0, kNameShown = 1, kNameFadeIn = 2, kNameFadeOut = 3, kName
 
 enum { kUntried = 0, kLoaded = 1, kFailed = -1 };
 int gState = kUntried;
-RwTexDictionary* gWeaponIcons = nullptr;   // optional: the donor's own weapon icons, by model name
+RwTexDictionary* gWeaponIcons = nullptr;   // optional: the donor's own weapon icons, by name
 RwTexture* gFist = nullptr;
 RwTexture* gRadarDisc = nullptr;
 RwTexture* gBlank = nullptr;               // stands in for San Andreas' ring while the radar draws
@@ -171,11 +197,14 @@ bool Ready() {
         return false;
     }
 
+    ClassicFont::SetGame(LibertyCity() ? ClassicFont::LibertyCity : ClassicFont::ViceCity);
     ClassicFont::SetTextures(font1, font2);
-    gWeaponIcons = LoadDictionary(folder + "\\weapons.txd");
+    // Vice City keeps each icon in its weapon's own dictionary, gathered by the importer into
+    // weapons.txd; GTA III keeps them all beside the fist.
+    gWeaponIcons = LibertyCity() ? hud : LoadDictionary(folder + "\\weapons.txd");
     gBlank = MakeBlankTexture();
     gState = kLoaded;
-    Log::Write("hud: Vice City style, drawn from %s%s%s", folder.c_str(),
+    Log::Write("hud: %s style, drawn from %s%s%s", StyleName(), folder.c_str(),
                gWeaponIcons ? "" : " (no weapons.txd there, so every weapon but the fist keeps "
                                    "its San Andreas icon)",
                gBlank ? "" : " (the blank texture could not be made, so the radar keeps San "
@@ -235,8 +264,8 @@ void DrawSprite(RwTexture* texture, float left, float top, float right, float bo
 ClassicFont::Format NumberFormat(const CRGBA& color) {
     ClassicFont::Format f;
     f.style = ClassicFont::Heading;
-    f.scaleX = ScaleX(0.7f);
-    f.scaleY = ScaleY(1.25f);
+    f.scaleX = ScaleX(L().numberScaleX);
+    f.scaleY = ScaleY(L().numberScaleY);
     f.proportional = false;
     f.align = ClassicFont::Right;
     f.color = color;
@@ -251,7 +280,27 @@ ClassicFont::Format NumberFormat(const CRGBA& color) {
 // The Vice City weapon whose icon stands for a San Andreas weapon type: the same gun where both
 // games have it, and nothing where San Andreas' has no counterpart - a spray can keeps its own
 // icon rather than borrowing somebody else's.
+const char* DonorIconNameIII(int weaponType) {
+    switch (weaponType) {
+    case 5:  return "bat";
+    case 16: return "grenade";
+    case 18: return "molotov";
+    case 22: return "pistol";
+    case 25: return "shotgun";
+    case 28: return "uzi";
+    case 30: return "ak47";
+    case 31: return "m16";
+    case 34: return "sniper";
+    case 35:
+    case 36: return "rocket";
+    case 37: return "flame";
+    case 40: return "detonator";
+    default: return nullptr;
+    }
+}
+
 const char* DonorIconName(int weaponType) {
+    if (LibertyCity()) return DonorIconNameIII(weaponType);
     switch (weaponType) {
     case 1:  return "brassknuckle";
     case 2:  return "golfclub";
@@ -335,11 +384,19 @@ void DrawWeapon(CPlayerPed* ped) {
     }
 
     ClassicFont::Format f;
+    f.align = ClassicFont::Centre;
+    f.color = L().ammo;
+    if (LibertyCity()) {
+        // Small and black, across the foot of the icon rather than under it.
+        f.style = ClassicFont::Bank;
+        f.scaleX = ScaleX(0.4f);
+        f.scaleY = ScaleY(0.6f);
+        ClassicFont::Print(f, FromRight(66.0f), ScaleY(73.0f), text);
+        return;
+    }
     f.style = ClassicFont::Standard;
     f.scaleX = ScaleX(0.5f);
     f.scaleY = ScaleY(0.8f);
-    f.align = ClassicFont::Centre;
-    f.color = kAmmo;
     f.shadowX = ScaleX(2.0f);
     f.shadowY = ScaleY(2.0f);
     ClassicFont::Print(f, FromRight(66.0f), ScaleY(90.0f), text);
@@ -357,13 +414,13 @@ void DrawPlayerInfoClassic() {
 
     if (CHud::bDrawClock) {
         snprintf(text, sizeof(text), "%02d:%02d", CClock::ms_nGameClockHours, CClock::ms_nGameClockMinutes);
-        ClassicFont::Print(NumberFormat(kClock), FromRight(111.0f), ScaleY(22.0f), text);
+        ClassicFont::Print(NumberFormat(L().clock), FromRight(111.0f), ScaleY(22.0f), text);
     }
 
     const int money = info.m_nDisplayMoney;
     if (money < 0) snprintf(text, sizeof(text), "-$%07d", -money);
     else           snprintf(text, sizeof(text), "$%08d", money);
-    ClassicFont::Print(NumberFormat(money < 0 ? kDebt : kMoney), FromRight(110.0f), ScaleY(43.0f), text);
+    ClassicFont::Print(NumberFormat(money < 0 ? kDebt : L().money), FromRight(110.0f), ScaleY(43.0f), text);
 
     DrawWeapon(ped);
 
@@ -371,7 +428,7 @@ void DrawPlayerInfoClassic() {
     // whole line blinks, and the script can make it blink to point at it.
     const bool blink = (frame & 8) != 0;
     if (!((CHud::m_ItemToFlash == kFlashHealth || ped->m_fHealth < 10.0f) && blink)) {
-        ClassicFont::Format f = NumberFormat(kHealth);
+        ClassicFont::Format f = NumberFormat(L().health);
         snprintf(text, sizeof(text), "%03d", (int)(ped->m_fHealth + 0.5f));
         ClassicFont::Print(f, FromRight(110.0f), ScaleY(65.0f), text);
         if (!info.m_nLastTimeEnergyLost || now > info.m_nLastTimeEnergyLost + 2000 || (frame & 4))
@@ -379,27 +436,45 @@ void DrawPlayerInfoClassic() {
     }
 
     if (ped->m_fArmour > 1.0f && !(CHud::m_ItemToFlash == kFlashArmour && blink)) {
-        ClassicFont::Format f = NumberFormat(kArmour);
+        ClassicFont::Format f = NumberFormat(L().armour);
         snprintf(text, sizeof(text), "%03d", (int)(ped->m_fArmour + 0.5f));
         ClassicFont::Print(f, FromRight(182.0f), ScaleY(65.0f), text);
         if (!info.m_nLastTimeArmourLost || now > info.m_nLastTimeArmourLost + 2000 || (frame & 4))
-            ClassicFont::Print(f, FromRight(234.0f), ScaleY(65.0f), "<");
+            ClassicFont::Print(f, FromRight(234.0f), ScaleY(65.0f), L().armourGlyph);
     }
 
     // The wanted level: six stars from the right, the ones not earned drawn dark. A level that
     // has just changed blinks for two seconds, and so does one that is only suspended.
-    if (CWanted* wanted = ped->m_pPlayerData->m_pWanted) {
-        ClassicFont::Format f = NumberFormat(kWanted);
+    CWanted* wanted = ped->m_pPlayerData->m_pWanted;
+    if (wanted && LibertyCity()) {
+        // GTA III's: the star is a glyph of the heavy face, set from its left edge, and what is
+        // always there is its black shadow - the star itself only once it has been earned.
+        ClassicFont::Format f = NumberFormat(L().wanted);
+        f.proportional = true;
+        f.align = ClassicFont::Left;
+        f.shadowX = f.shadowY = 0.0f;
+        for (unsigned i = 0; i < 6; i++) {
+            const float x = FromRight(60.0f + 23.0f * (float)i);
+            f.color = CRGBA(0, 0, 0, 255);
+            ClassicFont::Print(f, x + ScaleX(2.0f), ScaleY(89.0f), "]");
+            if (wanted->m_nWantedLevel > i &&
+                (now > wanted->m_nLastTimeWantedLevelChanged + 2000 || (frame & 4))) {
+                f.color = L().wanted;
+                ClassicFont::Print(f, x, ScaleY(87.0f), "]");
+            }
+        }
+    } else if (wanted) {
+        ClassicFont::Format f = NumberFormat(L().wanted);
         f.style = ClassicFont::Standard;
         f.proportional = true;
         for (unsigned i = 0; i < 6; i++) {
             if (wanted->m_nWantedLevel > i &&
                 (now > wanted->m_nLastTimeWantedLevelChanged + 2000 || (frame & 4)))
-                f.color = kWanted;
+                f.color = L().wanted;
             else if (wanted->m_nWantedLevelBeforeParole > i && (frame & 4))
-                f.color = kWantedFlash;
+                f.color = L().wantedFlash;
             else if (wanted->m_nWantedLevel <= i)
-                f.color = kNotWanted;
+                f.color = L().notWanted;
             else
                 continue;
             ClassicFont::Print(f, FromRight(110.0f + 23.0f * (float)i), ScaleY(87.0f), ">");
@@ -416,7 +491,7 @@ void DrawPlayerInfoClassic() {
         float percent = ped->m_pPlayerData->m_fBreath / lungs * 100.0f;
         percent = percent < 0.0f ? 0.0f : percent > 100.0f ? 100.0f : percent;
         CSprite2d::DrawBarChart(FromRight(110.0f), ScaleY(113.0f), (unsigned short)ScaleX(62.0f),
-                                (unsigned char)ScaleY(9.0f), percent, 0, 0, 1, kClock, CRGBA(0, 0, 0, 0));
+                                (unsigned char)ScaleY(9.0f), percent, 0, 0, 1, L().clock, CRGBA(0, 0, 0, 0));
     }
 }
 
@@ -427,12 +502,12 @@ void DrawPlayerInfoClassic() {
 void PrintName(const char* text, float fromBottom, const CRGBA& color, float alpha) {
     ClassicFont::Format f;
     f.style = ClassicFont::Bank;
-    f.scaleX = ScaleX(1.7f);
-    f.scaleY = ScaleY(1.8f);
+    f.scaleX = ScaleX(L().nameScaleX);
+    f.scaleY = ScaleY(L().nameScaleY);
     f.align = ClassicFont::Right;
     f.color = WithAlpha(color, alpha);
-    f.shadowX = ScaleX(2.0f);
-    f.shadowY = ScaleY(2.0f);
+    f.shadowX = ScaleX(L().nameShadow);
+    f.shadowY = ScaleY(L().nameShadow);
     f.dropColor = WithAlpha(CRGBA(0, 0, 0, 255), alpha);
     f.slant = 0.15f;
     f.slantRefX = FromRight(32.0f);
@@ -521,7 +596,7 @@ void DrawAreaNameClassic() {
     }
 
     CHud::m_ZoneNameTimer += (int)StepMs();
-    PrintName(CHud::m_ZoneToPrint, 128.0f, kZone, alpha);
+    PrintName(CHud::m_ZoneToPrint, L().zoneFromBottom, L().zone, alpha);
 }
 
 // The zone name under SA-MP, where the code above never gets a name to show.
@@ -591,7 +666,7 @@ void DrawZoneNameTracked(CPlayerPed* ped) {
     }
     held += step;
     if (state != kNameHidden && shown && !TheCamera.GetFading())
-        PrintName(shown, 128.0f, kZone, fade * 0.001f * 255.0f);
+        PrintName(shown, L().zoneFromBottom, L().zone, fade * 0.001f * 255.0f);
 }
 
 void DrawVehicleNameClassic() {
@@ -659,7 +734,7 @@ void DrawVehicleNameClassic() {
     if (CHud::m_Message[0]) return;
     CHud::m_VehicleNameTimer += (int)StepMs();
     if (CTheScripts::bDisplayHud)
-        PrintName(CHud::m_pVehicleNameToPrint, 105.0f, kVehicle, alpha);
+        PrintName(CHud::m_pVehicleNameToPrint, L().vehicleFromBottom, L().vehicle, alpha);
 }
 
 // --------------------------------------------------------------------------------------- radar
@@ -671,9 +746,15 @@ bool gDrawingHudRadar = false;
 
 void DrawRadarRing() {
     // The radar is 94 x 76 with its corner 40 in and 104 up; Vice City's ring is that grown by 6,
-    // drawn once in black two units low and once in its own colours.
-    const float left = GameScaleX(34.0f), right = GameScaleX(140.0f);
-    const float top = FromBottom(110.0f), bottom = FromBottom(22.0f);
+    // drawn once in black two units low and once in its own colours. GTA III's is grown by 4 and
+    // drawn once, in black.
+    const float grow = L().ringGrow;
+    const float left = GameScaleX(40.0f - grow), right = GameScaleX(134.0f + grow);
+    const float top = FromBottom(104.0f + grow), bottom = FromBottom(28.0f - grow);
+    if (LibertyCity()) {
+        DrawSprite(gRadarDisc, left, top, right, bottom, CRGBA(0, 0, 0, 255));
+        return;
+    }
     const float drop = ScaleY(2.0f);
     DrawSprite(gRadarDisc, left, top + drop, right, bottom + drop, CRGBA(0, 0, 0, 255));
     DrawSprite(gRadarDisc, left, top, right, bottom, CRGBA(255, 255, 255, 255));
@@ -743,11 +824,7 @@ namespace ClassicHud {
     void Install() {
         const int style = Settings::world.hudStyle;
         if (style == 0) return;
-        if (style == 2) {
-            Log::Write("hud: HudStyle = III is not drawn yet - GTA III's layout and font tables are "
-                       "still to be written - so San Andreas' own HUD is used");
-            return;
-        }
+        gStyle = style;
 
         gTrackZoneName = Settings::world.hudZoneNames == 1 ||
                          (Settings::world.hudZoneNames == 2 && Settings::RunningUnderSaMp());
@@ -758,8 +835,8 @@ namespace ClassicHud {
         placed += Place(VehicleNameHook(), kDrawVehicleName, reinterpret_cast<void*>(&VehicleNameThunk), "CHud::DrawVehicleName");
         placed += Place(RadarHook(), kDrawRadar, reinterpret_cast<void*>(&RadarThunk), "CHud::DrawRadar");
         placed += Place(BlipsHook(), kDrawBlips, reinterpret_cast<void*>(&BlipsThunk), "CRadar::DrawBlips");
-        Log::Write("hud: Vice City style requested, %d of 6 hooks placed; its art is loaded from %s "
-                   "on the first frame that draws a HUD; zone names %s", placed,
+        Log::Write("hud: %s style requested, %d of 6 hooks placed; its art is loaded from %s "
+                   "on the first frame that draws a HUD; zone names %s", StyleName(), placed,
                    Settings::world.hudAssets.c_str(),
                    gTrackZoneName ? "are looked up by the plugin each frame"
                                   : "are the ones the game hands to its own HUD");

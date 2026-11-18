@@ -5008,7 +5008,8 @@ def write_hud_assets(out, src):
     texture (see convert_texture_native) and nothing else about them changes: names, sizes and
     pixels are the source's.
 
-    Vice City's hud.txd holds only the fist. Every other weapon's icon is in that weapon's own
+    GTA III keeps every weapon icon in hud.txd itself, and its menu art is gathered into a
+    menu.txd (see below). Vice City's hud.txd holds only the fist. Every other weapon's icon is in that weapon's own
     dictionary inside gta3.img, under the model's name - python.txd holds `python` beside the
     gun's skin - so those are gathered into one weapons.txd, named as the source names them. A
     game that keeps its icons somewhere else simply yields none, and no file is written.
@@ -5018,8 +5019,11 @@ def write_hud_assets(out, src):
     folder = os.path.join(out, "hud")
     os.makedirs(folder, exist_ok=True)
     written = []
-    # fronten1.txd is the pause menu's: its background, the logo and the mouse pointer.
-    for rel in ("models/hud.txd", "models/fonts.txd", "models/fronten1.txd"):
+    # fronten1.txd is Vice City's pause menu: its background, the logo and the mouse pointer.
+    # GTA III has no such file - see the menu.txd gathered below - so its absence there is not
+    # worth a line.
+    iii = find_file(src, "models/fronten1.txd") is None and find_file(src, "models/frontend.txd") is not None
+    for rel in ("models/hud.txd", "models/fonts.txd") + (() if iii else ("models/fronten1.txd",)):
         path = find_file(src, rel)
         if not path:
             print("  hud: %s not found under %s" % (rel, src))
@@ -5032,6 +5036,36 @@ def write_hud_assets(out, src):
         written.append(name)
         print("  hud: %s - %d texture(s) converted%s"
               % (name, converted, ", %d could not be" % failed if failed else ""))
+
+    if iii:
+        # GTA III's menu art is a few textures out of two dictionaries of twelve megabytes
+        # between them: the background, in quarters, from frontend.txd, and the logo and the
+        # pointer from menu.txd. Only those are carried over, as one menu.txd.
+        wanted = {"models/frontend.txd": ("fe2_mainpanel_ul", "fe2_mainpanel_ur",
+                                          "fe2_mainpanel_dl", "fe2_mainpanel_dr"),
+                  "models/menu.txd": ("gta3logo256", "mouse")}
+        picked = []
+        for rel, names in wanted.items():
+            path = find_file(src, rel)
+            if not path:
+                print("  hud: %s not found under %s" % (rel, src))
+                continue
+            with open(path, "rb") as f:
+                chunks, _converted, _failed = txd_texture_chunks(f.read())
+            found = {name.lower(): (name, chunk) for name, chunk in chunks or []}
+            for name in names:
+                if name in found:
+                    picked.append(found[name])
+                else:
+                    print("  hud: %s has no %s" % (rel, name))
+        if picked:
+            with open(os.path.join(folder, "menu.txd"), "wb") as f:
+                f.write(build_txd(picked))
+            written.append("menu.txd")
+            print("  hud: menu.txd - %d texture(s) for the pause menu: %s"
+                  % (len(picked), ", ".join(name for name, _chunk in picked)))
+        # Its weapon icons are in hud.txd beside the fist, so there is nothing to gather.
+        return written
 
     img, dirf = find_file(src, "models/gta3.img"), find_file(src, "models/gta3.dir")
     icons, seen = [], set()

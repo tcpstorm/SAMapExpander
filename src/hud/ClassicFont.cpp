@@ -41,6 +41,46 @@ static const short kSize[2][210] = {
     }
 };
 
+// The same for GTA III, whose atlases are laid out the same way and hold other faces: font2 is
+// the leaning sans it writes names and body text in, font1 the heavy face of its numbers and
+// menus - with the heart, the shield and the star among its glyphs - and there is no second face
+// in font1's lower half. 192 is the fixed advance. These are CFont::Size as GTA III's own
+// executable holds it (the third table, the pager's, is not used here).
+static const short kSizeIII[2][193] = {
+    {   // font2
+        13, 12, 31, 35, 23, 35, 31,  9, 14, 15, 25, 30, 11, 17, 13, 31,
+        23, 16, 22, 21, 24, 23, 23, 20, 23, 22, 10, 35, 26, 26, 26, 26,
+        30, 26, 24, 23, 24, 22, 21, 24, 26, 10, 20, 26, 22, 29, 26, 25,
+        23, 25, 24, 24, 22, 25, 24, 29, 29, 23, 25, 37, 22, 37, 35, 37,
+        35, 21, 22, 21, 21, 22, 13, 22, 21, 10, 16, 22, 11, 32, 21, 21,
+        23, 22, 16, 20, 14, 21, 20, 30, 25, 21, 21, 33, 33, 33, 33, 35,
+        27, 27, 27, 27, 32, 24, 23, 23, 23, 23, 11, 11, 11, 11, 26, 26,
+        26, 26, 26, 26, 26, 25, 26, 21, 21, 21, 21, 32, 23, 22, 22, 22,
+        22, 11, 11, 11, 11, 22, 22, 22, 22, 22, 22, 22, 22, 26, 21, 24,
+        12, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26,
+        26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 18, 26, 26,
+        26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26,
+        20
+    },
+    {   // font1
+        15, 14, 16, 25, 19, 26, 22, 11, 18, 18, 27, 26, 13, 19,  9, 27,
+        19, 18, 19, 19, 22, 19, 20, 18, 19, 20, 12, 32, 15, 32, 15, 35,
+        15, 19, 19, 19, 19, 19, 16, 19, 20,  9, 19, 20, 14, 29, 19, 20,
+        19, 19, 19, 19, 21, 19, 20, 32, 20, 19, 19, 33, 31, 39, 37, 39,
+        37, 21, 21, 21, 23, 21, 19, 23, 23, 10, 19, 20, 16, 26, 23, 23,
+        20, 20, 20, 22, 21, 22, 22, 26, 22, 22, 23, 35, 35, 35, 35, 37,
+        19, 19, 19, 19, 29, 19, 19, 19, 19, 19,  9,  9,  9,  9, 19, 19,
+        19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 30, 19, 19, 19, 19,
+        19, 10, 10, 10, 10, 19, 19, 19, 19, 19, 19, 19, 19, 19, 23, 35,
+        12, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19,
+        19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 11, 19, 19,
+        19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19,
+        19
+    }
+};
+
+static ClassicFont::Game gGame = ClassicFont::ViceCity;
+
 static RwTexture* gFont1 = nullptr;
 static RwTexture* gFont2 = nullptr;
 
@@ -65,11 +105,14 @@ static unsigned HeavyCell(unsigned c) {
 
 static unsigned Cell(ClassicFont::Style style, unsigned char ch) {
     unsigned c = ch < 32 ? 0 : ch - 32u;
+    if (gGame == ClassicFont::LibertyCity) return c > 191 ? 0 : c;
     if (style == ClassicFont::Heading) return HeavyCell(c);
     return c > 155 ? 0 : c;
 }
 
 static float Advance(const ClassicFont::Format& f, unsigned cell) {
+    if (gGame == ClassicFont::LibertyCity)
+        return f.scaleX * (float)kSizeIII[f.style == ClassicFont::Heading ? 1 : 0][f.proportional ? cell : 192];
     const short* table = kSize[f.style == ClassicFont::Bank ? 0 : 1];
     return f.scaleX * (float)table[f.proportional ? cell : 209];
 }
@@ -84,7 +127,9 @@ static const char* SkipToken(const char* s) {
 
 static void Run(const ClassicFont::Format& f, float x, float y, const char* text, const CRGBA& color,
                 float slantRefX, float slantRefY) {
-    RwTexture* texture = f.style == ClassicFont::Bank ? gFont2 : gFont1;
+    // GTA III has one face to an atlas; Vice City keeps two of its three in font1.
+    const bool iii = gGame == ClassicFont::LibertyCity;
+    RwTexture* texture = (iii ? f.style != ClassicFont::Heading : f.style == ClassicFont::Bank) ? gFont2 : gFont1;
     RwRenderStateSet(rwRENDERSTATETEXTURERASTER, texture->raster);
 
     for (const char* s = text; *s;) {
@@ -93,7 +138,7 @@ static void Run(const ClassicFont::Format& f, float x, float y, const char* text
         // Cell 0 is a space - and, in font1, where the heavy face keeps its exclamation mark,
         // which is why a space is skipped by what it was asked for rather than by where it lands.
         const bool blank = cell == 0;
-        const unsigned drawn = (f.style == ClassicFont::Heading && cell == 208) ? 0 : cell;
+        const unsigned drawn = (!iii && f.style == ClassicFont::Heading && cell == 208) ? 0 : cell;
 
         if (!blank) {
             const float top = f.slant != 0.0f ? (slantRefX - x) * f.slant + slantRefY : y;
@@ -102,13 +147,14 @@ static void Run(const ClassicFont::Format& f, float x, float y, const char* text
             const float v = row / 12.8f, vNext = (row + 1.0f) / 12.8f;
             float height = 40.0f * f.scaleY * 0.5f;
             float uv[8];
-            if (f.slant != 0.0f) {
-                // The quad stays upright; the texture is sampled on a lean instead.
+            if (f.slant != 0.0f && !iii) {
+                // The quad stays upright; the texture is sampled on a lean instead. Vice City
+                // only: GTA III's slanted line is upright characters on a climbing baseline.
                 uv[0] = u0; uv[1] = v + 0.00055f;
                 uv[2] = u1; uv[3] = v + 0.0021f + 0.01f;
                 uv[4] = u1; uv[5] = vNext - 0.0021f + 0.01f;
                 uv[6] = u0; uv[7] = vNext - 0.009f;
-            } else if (drawn < 192) {
+            } else if (drawn < 192 || iii) {
                 uv[0] = u0; uv[1] = v + 0.0021f;
                 uv[2] = u1; uv[3] = v + 0.0021f;
                 uv[4] = u1; uv[5] = vNext - 0.0021f;
@@ -131,6 +177,8 @@ static void Run(const ClassicFont::Format& f, float x, float y, const char* text
 }
 
 namespace ClassicFont {
+    void SetGame(Game game) { gGame = game; }
+
     void SetTextures(RwTexture* font1, RwTexture* font2) {
         gFont1 = font1;
         gFont2 = font2;

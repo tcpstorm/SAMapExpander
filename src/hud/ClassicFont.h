@@ -10,10 +10,15 @@
 // is a second, much smaller text renderer that knows the donor's layout: sixteen 32x40 cells to a
 // row, the donor's own advance widths, and its three styles over two textures.
 namespace ClassicFont {
+    // Which game's atlases and widths. Vice City's is the default.
+    enum Game { ViceCity, LibertyCity };
+
     enum Style {
-        Bank,       // font2: the handwritten face of the zone and vehicle names
-        Standard,   // font1, upper half: the plain face, and the heart, shield and star glyphs
-        Heading     // font1, lower half: the heavy face of the money, the clock and the health
+        Bank,       // font2: the face of the zone and vehicle names
+        Standard,   // Vice City: font1's upper half, the plain face, and the heart, shield and star
+                    // glyphs. GTA III has no such face and writes its body text in font2.
+        Heading     // the heavy face of the money, the clock and the health: font1's lower half in
+                    // Vice City, the whole of font1 - icons included - in GTA III
     };
     enum Align { Left, Centre, Right };
 
@@ -29,6 +34,8 @@ namespace ClassicFont {
         // (slantRefX - x) * slant + slantRefY, and the y handed to Print is not used.
         float slant = 0.0f, slantRefX = 0.0f, slantRefY = 0.0f;
     };
+
+    void SetGame(Game game);
 
     // font1 and font2 out of the donor's fonts.txd. Either may be null, and then nothing draws.
     void SetTextures(RwTexture* font1, RwTexture* font2);
