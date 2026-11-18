@@ -63,6 +63,7 @@ project "MapExpander"
         "src/patches",
         "src/debug",
         "src/missions",
+        "src/hud",
         sdkdir .. "/shared",
         sdkdir .. "/shared/game",
         sdkdir .. "/shared/dxsdk",

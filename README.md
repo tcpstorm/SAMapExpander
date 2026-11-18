@@ -43,6 +43,11 @@ What it does today:
   fixed 500-entry save block written by array index with positions compressed to ±4096, which a
   region cannot even be expressed in. A space the player empties stays empty rather than refilling
   the moment they look away. See *docs/parked-cars.md*.
+- **Vice City's HUD, switchable.** `[World] HudStyle = VC` draws the clock, money, weapon icon and
+  ammo, health, armour, wanted stars, radar ring and the zone and vehicle names the way Vice City
+  did, out of Vice City's own `hud.txd` and `fonts.txd`. San Andreas cannot be asked to: `CFont`'s
+  glyph tables are compiled in, so the donor's atlas gets a small text renderer of its own, and the
+  five `CHud` functions that draw those parts are answered at their entry. See *The HUD*.
 - **A region's own map assets.** Point a region at its original `.img`, `.ide`, `.ipl` and `.col` and the
   plugin registers the archive, remaps the model ids into a free range and places every `inst` line at
   the region's origin — through the game's own loaders. See *Loading a city's own assets*; `ModelIdLimit`
@@ -62,6 +67,30 @@ compiled plugin-sdk; the plugin is cross-compiled to a 32-bit Windows DLL.
 ```
 
 `build.sh` does the same on Linux/macOS/WSL.
+
+### Native Windows build (no Docker)
+
+`build-native.ps1` builds with the same toolchain directly on Windows: MSYS2's clang cross-compiling
+to `i686-w64-mingw32` against MSYS2's i686 GCC libstdc++. premake and plugin-sdk are pinned to the
+versions in the `Dockerfile`, fetched into `%LOCALAPPDATA%\SAMapExpander-toolchain` and built once.
+
+One-time setup:
+
+```powershell
+winget install MSYS2.MSYS2
+C:\msys64\usr\bin\bash.exe -lc "pacman -Syu --noconfirm"   # run twice: the first pass updates the core
+C:\msys64\usr\bin\bash.exe -lc "pacman -S --needed --noconfirm make mingw-w64-x86_64-clang mingw-w64-i686-gcc mingw-w64-i686-binutils"
+```
+
+Then:
+
+```powershell
+.\build-native.ps1            # Release -> output\Release\MapExpander.SA.asi
+.\build-native.ps1 debug
+.\build-native.ps1 -Rebuild   # re-fetch premake and rebuild plugin-sdk
+```
+
+`MSYS2_ROOT` and `MAPEXPANDER_TOOLCHAIN` override the default locations.
 
 ## Install
 
@@ -148,7 +177,7 @@ SA x 4171..6963, y −778..2626).
 | `RegionWeaponMode` | `Add` | `Add` gives the region's guns weapon types of their own and leaves San Andreas' forty-seven exactly as they were (ten new types is the hard limit); `Replace` writes them over the nearest San Andreas weapon, which changes that weapon for the whole game |
 | `RegionPickups` | 1 | master switch for every region's `Pickups` file. Skipped under SA-MP. |
 
-| `FallRecovery` | 1 | fall out of the world inside a region and you come back on that region's own ground rather than on San Andreas' path graph — and once you are over a region the answer always comes from that region, never from the mainland. Falls outside a region are left to the game. Skipped under SA-MP. |
+| `FallRecovery` | 1 | fall out of the world inside a region and you come back on that region's own ground rather than on San Andreas' path graph — and once you are over a region the answer always comes from that region, never from the mainland. Falls outside a region are left to the game. Under SA-MP the line tests also see server-placed objects, and the region's nearest restart point is the last resort. |
 | `RegionRestartPoints` | 1 | die or get arrested inside a region and you wake at that region’s own hospital or police station, mined from the donor’s `main.scm` into its `restarts.dat`. Answered by hooking the two `CRestart` searches: nothing is added to San Andreas’ restart arrays, so the savegame stays byte for byte what vanilla writes. Outside a region the game answers, untouched. Skipped under SA-MP. |
 
 | `PickupReserve` | 200 | how many free pickup slots to leave SA's own script once a region has taken what it wants. Counted into the enlarged array's size rather than deducted from SA's 620 |
@@ -163,6 +192,11 @@ SA x 4171..6963, y −778..2626).
 | `RegionParkedCarsDensity` | 1.0 | ceiling on how many exist at once (1.0 = 14), not a thinning of the source game's own spaces |
 | `RegionParkedCarsRadius` | 110.0 | how far from the player a space is worth filling in |
 | `RegionParkedCarsRespawn` | 720.0 | seconds a space stays empty after the player takes or destroys the car in it; 0 = for the rest of the session |
+| `HudStyle` | `SA` | whose HUD is drawn: `SA`, `VC`, or `III` (`LC` is read as `III`). See *The HUD*. |
+| `MenuStyle` | follows `HudStyle` | whose pause menu: a reskin with the donor's background, logo, pointer, fonts and colours over San Andreas' own pages. See *The HUD*. |
+| `HudZoneNames` | `Auto` | where a classic HUD gets the zone name: `Auto` looks it up in the plugin under SA-MP (which switches the game's own off) and uses the game's in single player; `1` always looks it up, `0` never |
+| `HudKeepAspect` | `Auto` | on a screen wider than 4:3 with no widescreen fix, size the classic HUD from the height instead of stretching it. `Auto` follows the game's own Widescreen option; `1` always, `0` never |
+| `HudAssets` | `MapExpander\vicecity\hud` | folder holding that style's converted `hud.txd`, `fonts.txd` and `weapons.txd` |
 | `Debug` | 0 | verbose log, F8 diagnostics, water render statistics |
 
 ### Region data (feature branches)
@@ -197,6 +231,8 @@ source game's `gta_vc.dat`/`gta3.dat` for the file order and writes `MapExpander
 - `tiles\radarNN.png` — decoded from the radar TXDs (DXT1/3, paletted and raw rasters).
 - `american.gxt`, `waterpro.dat`, `navig.zon`, `info.zon`.
 - `region.ini` — the `[region]` keys to paste, with `Ide`/`Ipl` in `.dat` order.
+- `hud\hud.txd`, `hud\fonts.txd`, `hud\weapons.txd` — the source game's HUD art for `HudStyle`,
+  converted to San Andreas' raster format. `-HudOnly` writes just this folder.
 
 Then run `tools/convert_peds.py` against the same two directories. It converts the donor game's
 own pedestrians onto San Andreas' skeleton, merges them into `<region>.img`, writes `peds.ide` and
@@ -332,6 +368,83 @@ The `enex` section is still loaded from region IPLs by `IplLoader` for anyone wh
 behaviour. Vice City's `cull.ipl` is a red herring: cull zones control fading, wanted-level drops
 and camera behaviour, not interiors, and San Andreas' dialect of the section differs anyway
 (III/VC write centre + min + max, SA writes centre + length/bottom/width).
+
+## The HUD
+
+`[World] HudStyle = VC` swaps San Andreas' HUD for Vice City's, and `HudStyle = III` for GTA
+III's. `SA` is the default. One style is drawn for the whole session; it does not follow the
+region the player is in.
+
+GTA III's is the same block in its own colours and faces: the ammunition in black across the foot
+of the weapon icon, the stars' black shadows always showing, the zone and vehicle names at the
+very bottom right, a plain black ring round the radar. Its import (`-HudOnly` against a GTA III
+install) writes `MapExpander\libertycity\hud\` with `hud.txd`, which holds its weapon icons,
+`fonts.txd`, and a `menu.txd` gathered from the six textures its pause menu skin uses. The rest of
+this section describes Vice City's; where GTA III differs it is in the numbers, not the method.
+
+```powershell
+.\tools\import-city.ps1 "D:\Games\GTA Vice City" "D:\Games\GTA San Andreas" -HudOnly
+```
+
+writes `MapExpander\vicecity\hud\` in a second or two — `hud.txd`, `fonts.txd`, and `weapons.txd`
+with the 32 weapon icons Vice City keeps in each weapon's own dictionary inside `gta3.img`. A full
+or `-Lite` import writes the same folder. The files have to be converted: San Andreas' raster
+reader accepts platform 9 only and Vice City's are Direct3D 8, so `HudAssets` cannot simply name
+the Vice City install.
+
+**What is replaced.** San Andreas draws its HUD from free functions that do nothing but draw, so
+each is answered whole at its entry: `CHud::DrawPlayerInfo` (0x58EAF0 — clock, money, weapon, ammo,
+health, armour, breath), `CHud::DrawWanted` (0x58D9A0), `CHud::DrawAreaName` (0x58AA50) and
+`CHud::DrawVehicleName` (0x58AEA0). The zone and vehicle name keep San Andreas' own fade state
+machines step for step, because `SetZoneName` and `SetVehicleName` drive them; only what is printed
+changes. `CHud::DrawRadar` (0x58A330) is left to the game: its ring sprite is lent a transparent
+texture for the length of the call and Vice City's ring is drawn from a hook on `CRadar::DrawBlips`,
+so it lands between the map and the blips where San Andreas' own went.
+
+**What is not.** The radar stays where San Andreas puts it rather than moving down to Vice City's
+corner — its position is a set of constants shared with every blip and marker transform. Subtitles,
+help boxes, mission timers, the stats panel and the crosshairs are San Andreas'. Only the player in
+focus is drawn, so the second player of a two-player mission has no weapon icon. The zone name is
+always Vice City's green, gang-war colours included.
+
+**Text.** `src/hud/ClassicFont.cpp` is a second, small text renderer for the donor's atlas: sixteen
+32×40 cells to a row, Vice City's own advance widths, and its three styles over two textures — the
+handwritten face (`font2`), the plain one, and the heavy one, which is the lower half of `font1`
+reached through a remapping table. The heart, shield and star are glyphs in the plain half. San
+Andreas' text encoding addresses the same cells, so zone and vehicle names print as they are.
+
+**Scale.** Coordinates are Vice City's 640×448 ones, multiplied by the screen size and by the two
+floats San Andreas itself uses (0x859520, 0x859524). Widescreen fixes work by rewriting those, so
+this HUD keeps the shape of the radar it is drawn beside whichever is installed.
+
+### The pause menu
+
+`MenuStyle` (which follows `HudStyle` unless set) reskins the pause menu, and the title menu with
+it, since they are one function. It is a reskin and deliberately no more: every page, entry and
+position stays San Andreas', so nothing about how the menu works can change.
+
+`CMenuManager::DrawFrontEnd` (0x57C290) puts everything on screen through very few doors, and for
+the length of that one call each is answered:
+
+- **The page.** `DrawBackground` paints a black rectangle and one piece of art, then calls exactly
+  one of `DrawStandardMenus` (0x5794A0), `PrintMap` (0x575130) or `DrawControllerSetupScreen`
+  (0x57F300). The donor's `background` and `vc_logo` are drawn at the entry of whichever comes
+  first, which covers the first two and precedes everything else. The logo sits top right rather
+  than Vice City's top left, because that is where San Andreas writes the page title.
+- **The text.** `CFont::PrintString` (0x71A700) is answered whole: the line is wrapped, recoloured
+  and queued in the donor's font, and drawn when `CFont::RenderFontBuffer` (0x719840) would have
+  drawn San Andreas' own, so text still lands over the box drawn for it.
+  The menu's five calls to `CFont::GetStringWidth` (0x71A0E0) are pointed at a thunk that answers
+  in the donor's widths, so anything positioned by measuring is positioned for what will appear.
+  The function itself must not be hooked at its entry: in the HOODLUM executable it begins with
+  a stolen-bytes jump, and the protection reads the dword at 0x71A0E2 - the middle of that jump -
+  as a rotation count when decoding a pointer (0x40641C). Overwrite it and the texture-find
+  callback used while vehicles load comes out wrong, which kills the game in `CGame::Init2`.
+- **The pointer.** One sprite in `CMenuManager`'s table, lent the donor's texture.
+
+Outside that call all of them forward untouched. Not done: Vice City's own layout (title top right,
+the sliding highlight bar), colour codes inside strings, and the colours of sliders and list boxes,
+which San Andreas writes inline.
 
 ## Tools
 

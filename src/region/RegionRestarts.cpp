@@ -404,18 +404,19 @@ void Install() {
     for (const MapRegion& r : Settings::regions) any |= !r.restartFile.empty();
     if (!any || !Settings::world.regionRestarts) return;
 
-    if (Settings::RunningUnderSaMp()) {
-        Log::Write("SA-MP: the region restart points are off, the server owns where a dead or "
-                   "arrested player comes back");
-        return;
-    }
-
     for (const MapRegion& r : Settings::regions) {
         if (r.restartFile.empty()) continue;
         RegionState rs;
         rs.region = &r;
         if (ReadRestartFile(rs)) Regions().push_back(rs);
     }
+
+    if (Settings::RunningUnderSaMp()) {
+        Log::Write("SA-MP: the region restart hooks are off, the server owns where a dead or "
+                   "arrested player comes back; the points stay loaded for the fall recovery");
+        return;
+    }
+
     if (Regions().empty()) return;
 
     if (!FunctionIsVanilla(kFindHospital, kHospitalRadiusLoad) ||
@@ -450,6 +451,33 @@ void Install() {
         Log::Write("[%s] restarts: %u hospital and %u police point(s) of its own; San Andreas' own "
                    "arrays are not touched and the savegame is unchanged", rs.region->name.c_str(),
                    (unsigned)rs.points[kHospital].size(), (unsigned)rs.points[kPolice].size());
+}
+
+bool ClosestPoint(const MapRegion& region, float x, float y, float& outX, float& outY, float& outZ)
+{
+    bool found = false;
+    float bestDistance = 0.0f;
+    for (const RegionState& rs : Regions())
+    {
+        if (rs.region != &region) continue;
+        for (const std::vector<RestartPoint>& list : rs.points)
+        {
+            for (const RestartPoint& p : list)
+            {
+                if (p.z <= kGroundSentinelZ) continue;
+                float dx = x - (p.x + region.originX);
+                float dy = y - (p.y + region.originY);
+                float d = dx * dx + dy * dy;
+                if (found && d >= bestDistance) continue;
+                found = true;
+                bestDistance = d;
+                outX = p.x + region.originX;
+                outY = p.y + region.originY;
+                outZ = p.z + region.originZ;
+            }
+        }
+    }
+    return found;
 }
 
 // What F8 says: where the player would wake if they died, and if they were arrested, from exactly

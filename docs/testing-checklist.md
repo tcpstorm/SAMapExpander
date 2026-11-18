@@ -21,6 +21,46 @@ The branches, and what each needs:
 
 ---
 
+## 0. The Vice City HUD (`feature/vc-hud`)
+
+Independent of everything below, and the quickest thing here to check. Run
+`tools\import-city.ps1 <Vice City> <San Andreas> -HudOnly`, set `[World] HudStyle = VC`.
+
+- **The log.** `hud: Vice City style requested, 6 of 6 hooks placed`, then on the first frame in
+  game `hud: Vice City style, drawn from ...`. If it says the files could not be loaded, San
+  Andreas' HUD is drawn and nothing else is wrong.
+- **Top right.** Blue clock, green `$00000000`, pink three-digit health with a heart, the fist in
+  Vice City's box at the far right, six dark stars. Nothing of San Andreas' bars underneath.
+- **Each number lines up on its right edge** with the others, clear of the weapon icon. If the
+  digits overlap or drift, the advance widths or the screen scale are off — say at what resolution.
+- **Armour** (cheat or pickup): grey number and shield to the left of the health.
+- **A weapon.** A pistol shows Vice City's Colt icon and a pink `spare-clip` count under it; a
+  spray can keeps San Andreas' icon. An imported Vice City gun (F9) shows its own.
+- **Wanted level.** Stars light from the right and blink for two seconds on a change.
+- **Radar.** Pink ring, no black San Andreas ring under it, blips at the rim drawn over the ring.
+  In a plane the artificial horizon still shows.
+- **Names.** Walk between zones and get in a car: green and blue handwritten names at the bottom
+  right, leaning up to the right, fading as San Andreas' did.
+- **Zone names under SA-MP.** Cross from Ocean Beach into Washington Beach: the first name fades
+  out and the second fades in, stays about ten seconds, and goes. Nothing shows indoors.
+- **Swim.** A blue bar appears under the stars and goes half a second after surfacing.
+- **Take damage.** The heart blinks for two seconds; below 10 health the whole line blinks.
+- **A widescreen fix, if you use one.** The HUD should be the same shape as the radar.
+- **`HudStyle = SA`** puts everything back; the log then has no `hud:` line at all.
+
+**The pause menu** follows `HudStyle` (or `MenuStyle`). The log should say `menu: Vice City style
+requested, 6 of 6 hooks placed; 5 of 5 width calls repointed`, then `menu: Vice City style, drawn from ...` the first time a menu
+is drawn - which is the title screen.
+
+- **Every page**: Vice City's background, its logo top right, pink text in its fonts, its pointer.
+  No black page, none of San Andreas' artwork showing through.
+- **Walk the pages** - Stats, Brief, Map, Options and each of its sub-pages, Controls, Load, Save,
+  Quit. Look for text that overlaps its neighbour, runs off the page, or sits under a box. Say
+  which page and which line: the layout is San Andreas' and the widths are Vice City's.
+- **Mouse hover and click** still select the entry under the pointer.
+- **Map page**: no logo, legend names readable, the map itself unchanged.
+- **Back in game** the HUD, subtitles and help boxes are untouched by any of it.
+
 ## 1. The sector grid — start here
 
 This is the one already installed, and the one whose failure would be least confusing. Only

@@ -427,6 +427,10 @@ namespace Settings {
         world.fallRecovery = true;
         world.regionRestarts = true;
         world.regionMissions = true;
+        world.hudStyle = 0;                // San Andreas' own
+        world.menuStyle = 0;
+        world.hudZoneNames = 2;            // looked up by the plugin under SA-MP, the game's own otherwise
+        world.hudKeepAspect = 2;           // follow the game's Widescreen option
 
         IniFile ini;
         if (!ini.Load(PLUGIN_PATH("MapExpander.ini"))) {
@@ -500,6 +504,34 @@ namespace Settings {
             world.gxtFiles = SplitPaths(w->GetString("Gxt", ""));
             world.gxtLogMisses = w->GetBool("GxtLogMisses", false);
             world.modelIdLimit = w->GetInt("ModelIdLimit", 25000);
+
+            // Whose HUD. Anything unrecognised reads as San Andreas', which is the one that
+            // needs nothing imported. The art comes out of the region folder the importer
+            // filled for that game, unless HudAssets names somewhere else.
+            world.hudKeepAspect = _stricmp(w->GetString("HudKeepAspect", "Auto").c_str(), "Auto") == 0
+                                ? 2 : (w->GetBool("HudKeepAspect", true) ? 1 : 0);
+            world.hudZoneNames = _stricmp(w->GetString("HudZoneNames", "Auto").c_str(), "Auto") == 0
+                               ? 2 : (w->GetBool("HudZoneNames", true) ? 1 : 0);
+            auto styleOf = [&](const char* key, const char* fallback) {
+                std::string v = w->GetString(key, fallback);
+                for (char& c : v) c = (char)tolower((unsigned char)c);
+                v.erase(std::remove_if(v.begin(), v.end(),
+                                       [](char c) { return c == ' ' || c == '_' || c == '-'; }), v.end());
+                if (v == "vc" || v == "vicecity") return 1;
+                if (v == "iii" || v == "3" || v == "gta3" || v == "lc" || v == "libertycity") return 2;
+                if (v != "sa" && v != "sanandreas" && v != "0")
+                    Log::Write("[World] %s = %s is not a style this knows (SA, VC, III); using San Andreas'",
+                               key, w->GetString(key, "").c_str());
+                return 0;
+            };
+            static const char* const kStyleNames[] = { "SA", "VC", "III" };
+            world.hudStyle = styleOf("HudStyle", "SA");
+            // The pause menu follows the HUD unless it is told otherwise, so one key switches both.
+            world.menuStyle = styleOf("MenuStyle", kStyleNames[world.hudStyle]);
+            const int artOf = world.hudStyle ? world.hudStyle : world.menuStyle;
+            if (artOf)
+                world.hudAssets = ResolveGamePath(w->GetString(
+                    "HudAssets", artOf == 1 ? "MapExpander\\vicecity\\hud" : "MapExpander\\libertycity\\hud"));
         }
 
         // Take the regions the importer has already described, then anything the user has written

@@ -10,9 +10,11 @@ peds, vehicles, weapons and missions.
 
 ## How to work here
 
-- Build with Docker only: `.\build.ps1` (or `docker build --target export
-  -o dist .`). Nothing is installed on the host. The build runs the tests
-  first.
+- Build with Docker (`.\build.ps1` or `docker build --target export
+  -o dist .`; nothing installed on the host) or natively on Windows
+  (`.\build-native.ps1`, needs MSYS2; see README *Native Windows build*).
+  Both use the toolchain versions pinned in the `Dockerfile`; bump them
+  there, not in the scripts.
 - The version lives in `VERSION` and nowhere else. Bump it for any change
   to the plugin; docs-only changes leave it alone.
 - Never add attribution trailers, tool advertisements, or generated-by

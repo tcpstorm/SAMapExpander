@@ -2,7 +2,7 @@
 """Turn a GTA III / Vice City install into a MapExpander region folder.
 
     import_city.py <source game dir> <SA game dir> [--region=vicecity] [--lite] [--no-rename]
-                                                   [--parked-cars-only]
+                                                   [--parked-cars-only] [--hud-only]
 
 Writes <SA game dir>/MapExpander/<region>/ with
 
@@ -30,6 +30,9 @@ Writes <SA game dir>/MapExpander/<region>/ with
                    it. These are the plugin's own spawns, not San Andreas car generators
     region.ini     the [region] keys to paste into MapExpander.ini, lists in .dat order, with the
                    origin the conversion this project follows places that city at
+    hud/           the source game's HUD art for [World] HudStyle: its hud.txd and fonts.txd,
+                   and weapons.txd holding the weapon icons it keeps in each weapon's own
+                   dictionary - all converted, because San Andreas cannot read them as shipped
 
 The dictionaries a source .dat loads from disk rather than out of the archive - III's
 models/generic.txd and models/misc.txd, named by TEXDICTION in data/default.dat - travel with the
@@ -38,6 +41,9 @@ dictionary, so it has to be packed and renamed like everything else.
 
 --lite writes only the last three groups (tiles, text/water/zones, region.ini): what a region
 needs when something else - a server, a map mod - already places the buildings.
+
+--hud-only writes just the hud/ folder, creating the region folder if it has to: the HUD is a
+choice about San Andreas itself and does not need a city imported to go with it.
 
 --parked-cars-only writes parkedcars.dat into a region folder that already exists and adds the
 one key to its region.ini, touching nothing else. A full import rewrites the archive, the
@@ -3314,7 +3320,7 @@ SCM_LABEL_BYTES = 8
 SCM_INT_SIZES = {0x04: 1, 0x05: 2, 0x06: 4}
 
 
-def scm_int(blob, at):
+def scm_imm_int(blob, at):
     """(value, bytes consumed) of an immediate integer parameter, or (None, 0)."""
     if at >= len(blob):
         return None, 0
@@ -3366,10 +3372,10 @@ def scm_zone_ped_groups(path, group_count, known_zones):
             continue
         if not re.fullmatch(r"[A-Za-z0-9_]+", label) or label.upper() not in known_zones:
             continue
-        day, used = scm_int(blob, p + SCM_LABEL_BYTES)
+        day, used = scm_imm_int(blob, p + SCM_LABEL_BYTES)
         if used == 0 or day not in (0, 1):
             continue
-        group, used2 = scm_int(blob, p + SCM_LABEL_BYTES + used)
+        group, used2 = scm_imm_int(blob, p + SCM_LABEL_BYTES + used)
         if used2 == 0 or not 0 <= group < group_count:
             continue
         pair = list(found.get(label.upper(), (0, 0)))
@@ -4165,6 +4171,9 @@ def main():
         os.makedirs(os.path.join(out, sub), exist_ok=True)
     print("source: %s (%s)%s" % (src, dat_name, " - lite: tiles, text, water and zones only" if lite else ""))
     print("output: %s" % out)
+    # First, and whatever kind of import this is: it is small, it depends on nothing below, and a
+    # --lite region wants the source game's HUD as much as a full one does.
+    write_hud_assets(out, src)
 
     img = find_file(src, "models/gta3.img")
     dirf = find_file(src, "models/gta3.dir")
@@ -4988,6 +4997,128 @@ def main():
     print("\nwrote %s - paste it into MapExpander.ini" % os.path.join(out, "region.ini"))
 
 
+# ---------------------------------------------------------------- the source game's HUD
+
+def write_hud_assets(out, src):
+    """<region>/hud/: the art [World] HudStyle draws the source game's HUD from.
+
+    hud.txd and fonts.txd are loose files in the source's models folder, and both are Direct3D 8
+    dictionaries, which San Andreas' raster reader refuses outright - so the plugin cannot simply
+    be pointed at the source install. They go through the same header rewrite as every map
+    texture (see convert_texture_native) and nothing else about them changes: names, sizes and
+    pixels are the source's.
+
+    GTA III keeps every weapon icon in hud.txd itself, and its menu art is gathered into a
+    menu.txd (see below). Vice City's hud.txd holds only the fist. Every other weapon's icon is in that weapon's own
+    dictionary inside gta3.img, under the model's name - python.txd holds `python` beside the
+    gun's skin - so those are gathered into one weapons.txd, named as the source names them. A
+    game that keeps its icons somewhere else simply yields none, and no file is written.
+
+    Returns the names of the files written.
+    """
+    folder = os.path.join(out, "hud")
+    os.makedirs(folder, exist_ok=True)
+    written = []
+    # fronten1.txd is Vice City's pause menu: its background, the logo and the mouse pointer.
+    # GTA III has no such file - see the menu.txd gathered below - so its absence there is not
+    # worth a line.
+    iii = find_file(src, "models/fronten1.txd") is None and find_file(src, "models/frontend.txd") is not None
+    for rel in ("models/hud.txd", "models/fonts.txd") + (() if iii else ("models/fronten1.txd",)):
+        path = find_file(src, rel)
+        if not path:
+            print("  hud: %s not found under %s" % (rel, src))
+            continue
+        with open(path, "rb") as f:
+            data, converted, failed = convert_txd(f.read())
+        name = os.path.basename(rel)
+        with open(os.path.join(folder, name), "wb") as f:
+            f.write(data)
+        written.append(name)
+        print("  hud: %s - %d texture(s) converted%s"
+              % (name, converted, ", %d could not be" % failed if failed else ""))
+
+    if iii:
+        # GTA III's menu art is a few textures out of two dictionaries of twelve megabytes
+        # between them: the background, in quarters, from frontend.txd, and the logo and the
+        # pointer from menu.txd. Only those are carried over, as one menu.txd.
+        wanted = {"models/frontend.txd": ("fe2_mainpanel_ul", "fe2_mainpanel_ur",
+                                          "fe2_mainpanel_dl", "fe2_mainpanel_dr"),
+                  "models/menu.txd": ("gta3logo256", "mouse")}
+        picked = []
+        for rel, names in wanted.items():
+            path = find_file(src, rel)
+            if not path:
+                print("  hud: %s not found under %s" % (rel, src))
+                continue
+            with open(path, "rb") as f:
+                chunks, _converted, _failed = txd_texture_chunks(f.read())
+            found = {name.lower(): (name, chunk) for name, chunk in chunks or []}
+            for name in names:
+                if name in found:
+                    picked.append(found[name])
+                else:
+                    print("  hud: %s has no %s" % (rel, name))
+        if picked:
+            with open(os.path.join(folder, "menu.txd"), "wb") as f:
+                f.write(build_txd(picked))
+            written.append("menu.txd")
+            print("  hud: menu.txd - %d texture(s) for the pause menu: %s"
+                  % (len(picked), ", ".join(name for name, _chunk in picked)))
+        # Its weapon icons are in hud.txd beside the fist, so there is nothing to gather.
+        return written
+
+    img, dirf = find_file(src, "models/gta3.img"), find_file(src, "models/gta3.dir")
+    icons, seen = [], set()
+    if img and dirf:
+        where = {name.lower(): (off, size) for name, off, size in read_img_v1(img, dirf)}
+        with open(img, "rb") as archive:
+            for tok in read_weap_ide(src).values():
+                model, dictionary = tok[1].lower(), tok[2].lower()
+                entry = where.get(dictionary + ".txd")
+                if model in seen or not entry or not entry[1]:
+                    continue
+                archive.seek(entry[0])
+                chunks, _converted, _failed = txd_texture_chunks(archive.read(entry[1]))
+                for name, chunk in chunks or []:
+                    if name.lower() == model:
+                        icons.append((name, chunk))
+                        seen.add(model)
+                        break
+    if icons:
+        with open(os.path.join(folder, "weapons.txd"), "wb") as f:
+            f.write(build_txd(icons))
+        written.append("weapons.txd")
+        print("  hud: weapons.txd - %d weapon icon(s) out of gta3.img: %s"
+              % (len(icons), ", ".join(sorted(seen))))
+    else:
+        print("  hud: no weapon icons found in the weapons' own dictionaries; no weapons.txd")
+    return written
+
+
+def hud_only():
+    """--hud-only: write just <region>/hud/, for [World] HudStyle, and touch nothing else."""
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    opts = [a for a in sys.argv[1:] if a.startswith("--")]
+    if len(args) < 2:
+        sys.exit(__doc__)
+    src, sa = args[0], args[1]
+    region = None
+    for o in opts:
+        if o.startswith("--region="):
+            region = o.split("=", 1)[1]
+    if region is None:
+        # The plugin looks in the folder its style is named for, so follow the source game
+        # rather than the importer's usual default of vicecity.
+        region = "libertycity" if read_dat(src)[0].lower() == "gta3.dat" else "vicecity"
+    out = os.path.join(sa, "MapExpander", region)
+    print("source: %s\noutput: %s" % (src, os.path.join(out, "hud")))
+    written = write_hud_assets(out, src)
+    if "hud.txd" in written and "fonts.txd" in written:
+        print("\nset [World] HudStyle in MapExpander.ini to use it%s"
+              % ("" if region in ("vicecity", "libertycity")
+                 else ", with HudAssets = MapExpander\\%s\\hud" % region))
+
+
 def parked_cars_only():
     """--parked-cars-only: write just parkedcars.dat into a region folder that already exists.
 
@@ -5045,5 +5176,7 @@ def parked_cars_only():
 if __name__ == "__main__":
     if "--parked-cars-only" in sys.argv:
         parked_cars_only()
+    elif "--hud-only" in sys.argv:
+        hud_only()
     else:
         main()

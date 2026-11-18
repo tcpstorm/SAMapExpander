@@ -1,6 +1,8 @@
 #pragma once
 #include <string>
 
+struct MapRegion;
+
 // Dying or being arrested inside an imported city wakes the player in that city, at one of its own
 // hospitals or police stations, instead of throwing them thousands of units back to San Andreas.
 //
@@ -10,4 +12,5 @@ namespace RegionRestarts {
     // One line for the F8 read-out: where the player would wake if they died, and if they were
     // arrested, standing where they are now.
     void Describe(std::string& out);
+    bool ClosestPoint(const MapRegion& region, float x, float y, float& outX, float& outY, float& outZ);
 }

@@ -36,6 +36,9 @@
 #include "RegionTraffic.h"
 #include "RegionParkedCars.h"
 #include "PickupSlots.h"
+#include "ObjectNodePools.h"
+#include "ClassicHud.h"
+#include "ClassicMenu.h"
 
 using namespace plugin;
 
@@ -58,6 +61,9 @@ public:
         }
 
         ModelLimits::Install();   // must move the streaming arrays before the game initialises them
+        // Before CPools::Initialise, and with or without regions of our own: under SA-MP it is
+        // the server's objects that fill these.
+        ObjectNodePools::Install();
         // Before anything reads a path node, which is everything about traffic. It only rewrites
         // operands, so it does not care what else has been installed - but it must be in place
         // before CPathFind loads its first area.
@@ -107,6 +113,10 @@ public:
         TxdProbe::Install();
         PathLoadProbe::Install();
         RenderGuard::Install();
+        // Outside the region block: whose HUD is drawn is a choice about San Andreas itself,
+        // and it is honoured with no region loaded and under SA-MP alike - it only draws.
+        ClassicHud::Install();
+        ClassicMenu::Install();
 
         Log::Write("MapExpander initialised: %u region(s)", (unsigned)Settings::regions.size());
     }
