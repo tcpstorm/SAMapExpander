@@ -18,9 +18,21 @@ The pooled constants cannot simply be edited: the compiler shares one 0.02 and o
 unrelated use in the game (516 and 373 references). So each conversion's operand is repointed at a
 private copy instead, the way ModelLimits repoints the streaming arrays.
 
+A conversion is written one of two ways, and both count:
+
+    fmul dword ptr [scale]; fadd dword ptr [centre]        the common one
+    fld dword ptr [scale]; fmul st(N); fadd [centre]       when the scale is loaded once and the
+                                                           value being converted is already on the
+                                                           stack, which is what a loop body does
+
+The second shape exists in exactly one function, Camera::Process_Editor, whose four `while` loops
+step a coordinate by 1.0 until its sector index leaves 5..115. Each loop's entry test is written the
+first way and its body the second, so a scan that knows only the first shape repoints the test and
+leaves the body correcting against vanilla's grid - which is what this did until the two disagreed.
+
 Site kinds:
-    fine        fmul operand of a 50-unit conversion    -> our fine scale
-    coarse      fmul operand of a 200-unit conversion   -> our coarse scale
+    fine        scale operand of a 50-unit conversion    -> our fine scale
+    coarse      scale operand of a 200-unit conversion   -> our coarse scale
     finecentre  fadd operand of the same conversion     -> our fine centre
     coarsecentre  fadd operand of the same conversion   -> our coarse centre
     low/high    the +/-3000 bound a coordinate is clamped to before conversion, as a disp32
@@ -89,9 +101,20 @@ def scan(pe):
             if disp in (FINE_CENTRE, COARSE_CENTRE) and ins.mnemonic.startswith("fadd"):
                 scale = FINE_SCALE if disp == FINE_CENTRE else COARSE_SCALE
                 kind = "fine" if disp == FINE_CENTRE else "coarse"
-                for prev in reversed(window[:-1]):
-                    if disp_of(prev) == scale and prev.mnemonic.startswith("fmul"):
-                        rows.append((prev.address + prev.encoding.disp_offset, kind, scale))
+                for i in range(len(window) - 2, -1, -1):
+                    prev = window[i]
+                    operand = None
+                    if prev.mnemonic.startswith("fmul"):
+                        if disp_of(prev) == scale:
+                            operand = prev.address + prev.encoding.disp_offset
+                        elif prev.op_str.startswith("st(") and i > 0 and \
+                                window[i - 1].mnemonic == "fld" and \
+                                disp_of(window[i - 1]) == scale:
+                            # `fld [scale]; fmul st(N)` - the same conversion, other shape. The
+                            # site to repoint is the fld's operand, not the register multiply's.
+                            operand = window[i - 1].address + window[i - 1].encoding.disp_offset
+                    if operand is not None:
+                        rows.append((operand, kind, scale))
                         # The centre too. Repointing only the scale keeps the grid centred on 0, so
                         # it has to reach as far the wrong way as the right way and the cells come
                         # out twice as big as they need to be. With the centre ours as well the grid

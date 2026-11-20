@@ -17,9 +17,21 @@
 // unrelated use in the game (516 and 373 references). So each conversion's operand is repointed at a
 // private copy instead, the way ModelLimits repoints the streaming arrays.
 //
+// A conversion is written one of two ways, and both count:
+//
+//     fmul dword ptr [scale]; fadd dword ptr [centre]        the common one
+//     fld dword ptr [scale]; fmul st(N); fadd [centre]       when the scale is loaded once and the
+//                                                            value being converted is already on the
+//                                                            stack, which is what a loop body does
+//
+// The second shape exists in exactly one function, Camera::Process_Editor, whose four `while` loops
+// step a coordinate by 1.0 until its sector index leaves 5..115. Their entry tests are written the
+// first way and their bodies the second, so recognising only the first repointed half of each loop and
+// left it correcting against vanilla's grid.
+//
 // Site kinds:
-//     fine        fmul operand of a 50-unit conversion    -> our fine scale
-//     coarse      fmul operand of a 200-unit conversion   -> our coarse scale
+//     fine        scale operand of a 50-unit conversion    -> our fine scale
+//     coarse      scale operand of a 200-unit conversion   -> our coarse scale
 //     finecentre  fadd operand of the same conversion     -> our fine centre
 //     coarsecentre  fadd operand of the same conversion   -> our coarse centre
 //     low/high    the +/-3000 bound a coordinate is clamped to before conversion, as a disp32
@@ -54,7 +66,7 @@ struct Site {
     uint8_t  kind;
 };
 
-// 604 sites: coarse=26, coarsecentre=26, fine=268, finecentre=268, high=4, highimm=4, low=5, lowimm=3
+// 612 sites: coarse=26, coarsecentre=26, fine=272, finecentre=272, high=4, highimm=4, low=5, lowimm=3
 constexpr Site kSites[] = {
     { 0x408538, 0x00858B38, kFineScale },
     { 0x40853E, 0x00858B34, kFineCentre },
@@ -142,12 +154,20 @@ constexpr Site kSites[] = {
     { 0x4539A7, 0x00858B34, kFineCentre },
     { 0x50F724, 0x00858B38, kFineScale },
     { 0x50F72A, 0x00858B34, kFineCentre },
+    { 0x50F748, 0x00858B38, kFineScale },
+    { 0x50F750, 0x00858B34, kFineCentre },
     { 0x50F767, 0x00858B38, kFineScale },
     { 0x50F76D, 0x00858B34, kFineCentre },
+    { 0x50F788, 0x00858B38, kFineScale },
+    { 0x50F790, 0x00858B34, kFineCentre },
     { 0x50F7AB, 0x00858B38, kFineScale },
     { 0x50F7B1, 0x00858B34, kFineCentre },
+    { 0x50F7D8, 0x00858B38, kFineScale },
+    { 0x50F7E0, 0x00858B34, kFineCentre },
     { 0x50F7FF, 0x00858B38, kFineScale },
     { 0x50F805, 0x00858B34, kFineCentre },
+    { 0x50F828, 0x00858B38, kFineScale },
+    { 0x50F830, 0x00858B34, kFineCentre },
     { 0x53306A, 0x00858B38, kFineScale },
     { 0x533073, 0x00858B34, kFineCentre },
     { 0x533087, 0x00858B38, kFineScale },
